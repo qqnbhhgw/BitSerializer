@@ -7,7 +7,7 @@
 		<PackageId>Jlzeng.BitSerializer</PackageId>
 		<GeneratePackageOnBuild>False</GeneratePackageOnBuild>
 		<Title>BitSerializer</Title>
-		<Version>0.0.2</Version>
+		<Version>0.1.1</Version>
 		<Authors>zeng jl</Authors>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<RepositoryUrl>https://github.com/qqnbhhgw/BitSerializer</RepositoryUrl>

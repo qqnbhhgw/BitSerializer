@@ -30,6 +30,29 @@ internal static class BitHelperLSB
         return UnsafeConvertHelper.ConvertTo<T>(result);
     }
 
+    public static void SetValueLength<T>(Span<byte> bytes, int startIndex, int length, T value)
+    {
+        var maxBits = Unsafe.SizeOf<T>() * 8;
+        if (length <= 0 || length > maxBits)
+            throw new ArgumentException($"length 必须在1-{maxBits}之间");
+
+        SetValueRange(bytes, startIndex, startIndex + length, value);
+    }
+
+    public static void SetValueRange<T>(Span<byte> bytes, int startIndex, int endIndex, T value)
+    {
+        var bitCount = endIndex - startIndex;
+        var maxBits = Unsafe.SizeOf<T>() * 8;
+        if (bitCount <= 0 || bitCount > maxBits)
+            throw new ArgumentException($"位长度必须在1-{maxBits}之间");
+
+        // 转换值为 ulong
+        var ulongValue = UnsafeConvertHelper.ConvertFrom(value);
+
+        // 写入位到字节数组
+        WriteBitsFromULongLSB(bytes, startIndex, endIndex, ulongValue);
+    }
+
     private static ulong ExtractBitsToULongLSB(ReadOnlySpan<byte> bytes, int startIndex, int endIndex)
     {
         ulong result = 0;
@@ -55,6 +78,40 @@ internal static class BitHelperLSB
         }
 
         return result;
+    }
+
+    private static void WriteBitsFromULongLSB(Span<byte> bytes, int startIndex, int endIndex, ulong value)
+    {
+        var startByte = startIndex / 8;
+        var startBit = startIndex % 8;
+        var endByte = (endIndex - 1) / 8;
+
+        // LSB模式：字节内位序从低到高 (bit 0 是第一位，bit 7 是最后一位)
+        for (var byteIdx = startByte; byteIdx <= endByte && byteIdx < bytes.Length; byteIdx++)
+        {
+            var firstBit = byteIdx == startByte ? startBit : 0;
+            var lastBit = byteIdx == endByte ? (endIndex - 1) % 8 : 7;
+
+            for (var bit = firstBit; bit <= lastBit; bit++)
+            {
+                // 计算在值中的位置
+                var resultBit = byteIdx * 8 + bit - startIndex;
+
+                // 获取值的对应位
+                var bitValue = (value >> resultBit) & 1;
+
+                if (bitValue == 1)
+                {
+                    // 设置位为1
+                    bytes[byteIdx] |= (byte)(1 << bit);
+                }
+                else
+                {
+                    // 设置位为0
+                    bytes[byteIdx] &= (byte)~(1 << bit);
+                }
+            }
+        }
     }
 }
 

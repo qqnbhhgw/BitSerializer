@@ -2,9 +2,9 @@
 
 namespace BitSerializer;
 
-public static class BitSerializerMSB
+public static class BitSerializerLSB
 {
-    private static readonly BitSerializerBase Instance = new(typeof(BitHelperMSB));
+    private static readonly BitSerializerBase Instance = new(typeof(BitHelperLSB));
 
     public static T Deserialize<T>(ReadOnlySpan<byte> bytes) where T : new()
     {

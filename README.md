@@ -5,7 +5,7 @@
 ## 特性
 
 - **位级别精度** — 字段可以是任意位长度（如 4-bit、12-bit），不受字节边界限制
-- **MSB 大端序** — 采用高位优先的位序和大端字节序编码
+- **MSB / LSB 双模式** — 支持 MSB（高位优先）和 LSB（低位优先）两种位序编码
 - **Attribute 驱动** — 通过特性标注即可声明序列化结构，无需手写编解码逻辑
 - **自动推断位长** — 未指定位长时，自动根据类型推断（`byte` = 8, `ushort` = 16, `int` = 32 ...）
 - **嵌套类型** — 支持嵌套复合类型的递归序列化
@@ -38,15 +38,17 @@ public class Packet
     public byte Checksum { get; set; }
 }
 
-// 序列化
+// MSB 模式（高位优先，大端序）
 var packet = new Packet { Header = 0xAB, Payload = 0x1234, Checksum = 0xCD };
 byte[] bytes = BitSerializerMSB.Serialize(packet);
-// bytes = { 0xAB, 0x12, 0x34, 0xCD }
-
-// 反序列化
 var result = BitSerializerMSB.Deserialize<Packet>(bytes);
-// result.Header == 0xAB, result.Payload == 0x1234, result.Checksum == 0xCD
+
+// LSB 模式（低位优先，小端序）
+byte[] lsbBytes = BitSerializerLSB.Serialize(packet);
+var lsbResult = BitSerializerLSB.Deserialize<Packet>(lsbBytes);
 ```
+
+> **MSB vs LSB**：两者的 API 完全一致，区别仅在于字节内的位序方向。MSB 适用于网络协议（大端序），LSB 适用于硬件寄存器、部分嵌入式协议（小端序）。
 
 ### 自动推断位长
 
@@ -262,6 +264,27 @@ public class MixedData
 - 枚举类型（任意底层整数类型）
 - 嵌套的 BitField 类
 - `List<T>`（T 为上述支持的类型）
+
+## API 参考
+
+| 类 | 说明 |
+|---|---|
+| `BitSerializerMSB` | MSB 模式序列化器（高位优先，大端字节序） |
+| `BitSerializerLSB` | LSB 模式序列化器（低位优先，小端字节序） |
+
+两者提供完全相同的 API：
+
+```csharp
+// 序列化
+byte[] bytes = BitSerializerMSB.Serialize(obj);       // 返回 byte[]
+BitSerializerMSB.Serialize(obj, spanBuffer);           // 写入 Span<byte>
+
+// 反序列化
+T result = BitSerializerMSB.Deserialize<T>(bytes);     // 从 byte[]
+T result = BitSerializerMSB.Deserialize<T>(span);      // 从 ReadOnlySpan<byte>
+```
+
+将 `MSB` 替换为 `LSB` 即可切换为低位优先模式。
 
 ## 许可证
 
