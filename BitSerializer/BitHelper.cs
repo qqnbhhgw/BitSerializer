@@ -2,7 +2,7 @@ using System.Runtime.CompilerServices;
 
 namespace BitSerializer;
 
-public static class BitHelperLSB
+internal static class BitHelperLSB
 {
     public static T ValueLength<T>(ReadOnlySpan<byte> bytes, int startIndex, int length)
     {
@@ -17,8 +17,8 @@ public static class BitHelperLSB
         int startIndex,
         int endIndex,
         [CallerArgumentExpression("startIndex")]
-        string? startIndexCallerName = null,
-        [CallerArgumentExpression("endIndex")] string? endIndexCallerName = null)
+        string startIndexCallerName = null,
+        [CallerArgumentExpression("endIndex")] string endIndexCallerName = null)
     {
         var bitCount = endIndex - startIndex;
         var maxBits = Unsafe.SizeOf<T>() * 8;
