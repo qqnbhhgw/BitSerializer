@@ -1,7 +1,7 @@
 ﻿using Shouldly;
 using BitSerializer;
 
-namespace BitSerializer.Tests;
+namespace BitSerializerTests;
 
 public class BitSerializerMSBTests
 {

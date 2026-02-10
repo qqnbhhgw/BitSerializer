@@ -1,7 +1,7 @@
-using Shouldly;
 using BitSerializer;
+using Shouldly;
 
-namespace BitSerializer.Tests;
+namespace BitSerializerTests;
 
 public class BitSerializerLSBTests
 {

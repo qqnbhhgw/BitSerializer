@@ -6,7 +6,8 @@
       "Bash(dotnet test:*)",
       "Bash(ren:*)",
       "Bash(dotnet pack:*)",
-      "Bash(dotnet nuget push:*)"
+      "Bash(dotnet nuget push:*)",
+      "Bash(dir:*)"
     ]
   }
 }

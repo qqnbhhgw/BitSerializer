@@ -222,6 +222,27 @@ public class BitSerializerBase(Type bitHelperType)
                 {
                     fieldInfo.ListElementMetadata = CreateTypeMetadata(elementType);
                 }
+
+                // Calculate bitLength for fixed-count lists so subsequent fields get correct BitStartIndex
+                if (bitLength == 0 && fixedCount.HasValue)
+                {
+                    int elementBitLength;
+                    if (fieldInfo.ListElementMetadata != null)
+                    {
+                        elementBitLength = fieldInfo.ListElementMetadata.TotalBitLength;
+                    }
+                    else if (IsNumericOrEnumType(elementType))
+                    {
+                        elementBitLength = GetBitLengthForType(elementType);
+                    }
+                    else
+                    {
+                        elementBitLength = 0;
+                    }
+
+                    bitLength = fixedCount.Value * elementBitLength;
+                    fieldInfo.BitLength = bitLength;
+                }
             }
 
             fieldInfos.Add(fieldInfo);
