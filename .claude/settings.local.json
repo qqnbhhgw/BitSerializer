@@ -4,7 +4,9 @@
       "Bash(dir /b \"D:\\\\CARS\\\\BitSerialize\")",
       "Bash(dotnet build:*)",
       "Bash(dotnet test:*)",
-      "Bash(ren:*)"
+      "Bash(ren:*)",
+      "Bash(dotnet pack:*)",
+      "Bash(dotnet nuget push:*)"
     ]
   }
 }
