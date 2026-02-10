@@ -5,10 +5,8 @@ using System.Reflection;
 
 namespace BitSerializer;
 
-public class BitSerializerBase
+public class BitSerializerBase(Type bitHelperType)
 {
-    private readonly Type _bitHelperType;
-
     private readonly ConcurrentDictionary<Type, Delegate>     DeserializerCache = new();
     private readonly ConcurrentDictionary<Type, Delegate>     SerializerCache = new();
     private readonly ConcurrentDictionary<Type, TypeMetadata> TypeMetadataCache = new();
@@ -25,10 +23,9 @@ public class BitSerializerBase
     // Cache for list element serializers
     private readonly ConcurrentDictionary<Type, Delegate> ListElementSerializerCache = new();
 
-    public BitSerializerBase(Type bitHelperType)
-    {
-        _bitHelperType = bitHelperType;
-    }
+    // Cache for non-generic deserializers/serializers
+    private readonly ConcurrentDictionary<Type, Func<byte[], object>> NonGenericDeserializerCache = new();
+    private readonly ConcurrentDictionary<Type, Action<object, byte[]>> NonGenericSerializerCache = new();
 
     public T Deserialize<T>(ReadOnlySpan<byte> bytes) where T : new()
     {
@@ -41,6 +38,30 @@ public class BitSerializerBase
     {
         var metadata = GetOrCreateTypeMetadata(typeof(T));
         var deserializer = GetOrCreateDeserializer<T>(metadata);
+        return deserializer(bytes);
+    }
+
+    public object Deserialize(ReadOnlySpan<byte> bytes, Type type)
+    {
+        return Deserialize(bytes.ToArray(), type);
+    }
+
+    public object Deserialize(byte[] bytes, Type type)
+    {
+        var metadata = GetOrCreateTypeMetadata(type);
+        var deserializer = NonGenericDeserializerCache.GetOrAdd(type, _ =>
+        {
+            var method = typeof(BitSerializerBase)
+                .GetMethod(nameof(GetOrCreateDeserializer), BindingFlags.NonPublic | BindingFlags.Instance)!
+                .MakeGenericMethod(type);
+            var typedDeserializer = method.Invoke(this, [metadata])!;
+
+            var bytesParam = Expression.Parameter(typeof(byte[]), "bytes");
+            var invokeExpr = Expression.Convert(
+                Expression.Invoke(Expression.Constant(typedDeserializer), bytesParam),
+                typeof(object));
+            return Expression.Lambda<Func<byte[], object>>(invokeExpr, bytesParam).Compile();
+        });
         return deserializer(bytes);
     }
 
@@ -391,7 +412,7 @@ public class BitSerializerBase
         var setBitIndex = Expression.Assign(bitIndexVar, Expression.Constant(field.BitStartIndex));
 
         // Call BitHelper.ValueLength<T>(bytes, bitIndex, bitLength)
-        var valueLengthMethod = _bitHelperType
+        var valueLengthMethod = bitHelperType
             .GetMethod("ValueLength")!
             .MakeGenericMethod(field.MemberType);
 
@@ -647,7 +668,7 @@ public class BitSerializerBase
             else
             {
                 // Primitive type - use BitHelper.ValueLength<T>
-                var valueLengthMethod = _bitHelperType
+                var valueLengthMethod = bitHelperType
                     .GetMethod("ValueLength")!
                     .MakeGenericMethod(field.MemberType);
 
@@ -810,7 +831,7 @@ public class BitSerializerBase
         if (IsNumericOrEnumType(typeof(T)))
         {
             // For primitive types: BitHelper.ValueLength<T>(bytes, currentBitIndex, elementBitLength)
-            var valueLengthMethod = _bitHelperType
+            var valueLengthMethod = bitHelperType
                 .GetMethod("ValueLength")!
                 .MakeGenericMethod(typeof(T));
 
@@ -1055,7 +1076,7 @@ public class BitSerializerBase
         return bytes;
     }
 
-    private static int CalculateTotalBits<T>(T obj, TypeMetadata metadata)
+    private static int CalculateTotalBits(object obj, TypeMetadata metadata)
     {
         var totalBits = 0;
 
@@ -1133,6 +1154,53 @@ public class BitSerializerBase
         tempBytes.AsSpan().CopyTo(bytes);
     }
 
+    public byte[] Serialize(object obj, Type type)
+    {
+        var metadata = GetOrCreateTypeMetadata(type);
+        var serializer = GetOrCreateNonGenericSerializer(type, metadata);
+
+        var totalBits = CalculateTotalBits(obj, metadata);
+        var byteCount = (totalBits + 7) / 8;
+        var bytes = new byte[byteCount];
+
+        serializer(obj, bytes);
+        return bytes;
+    }
+
+    public void Serialize(object obj, Type type, Span<byte> bytes)
+    {
+        var metadata = GetOrCreateTypeMetadata(type);
+
+        var byteCount = (metadata.TotalBitLength + 7) / 8;
+        if (bytes.Length < byteCount)
+            throw new ArgumentException($"Span is too small. Required: {byteCount}, Provided: {bytes.Length}");
+
+        var tempBytes = new byte[byteCount];
+        var serializer = GetOrCreateNonGenericSerializer(type, metadata);
+        serializer(obj, tempBytes);
+
+        tempBytes.AsSpan().CopyTo(bytes);
+    }
+
+    private Action<object, byte[]> GetOrCreateNonGenericSerializer(Type type, TypeMetadata metadata)
+    {
+        return NonGenericSerializerCache.GetOrAdd(type, _ =>
+        {
+            var method = typeof(BitSerializerBase)
+                .GetMethod(nameof(GetOrCreateSerializer), BindingFlags.NonPublic | BindingFlags.Instance)!
+                .MakeGenericMethod(type);
+            var typedSerializer = method.Invoke(this, [metadata])!;
+
+            var objParam = Expression.Parameter(typeof(object), "obj");
+            var bytesParam = Expression.Parameter(typeof(byte[]), "bytes");
+            var invokeExpr = Expression.Invoke(
+                Expression.Constant(typedSerializer),
+                Expression.Convert(objParam, type),
+                bytesParam);
+            return Expression.Lambda<Action<object, byte[]>>(invokeExpr, objParam, bytesParam).Compile();
+        });
+    }
+
     private Action<T, byte[]> GetOrCreateSerializer<T>(TypeMetadata metadata)
     {
         return (Action<T, byte[]>)SerializerCache.GetOrAdd(typeof(T), _ => CreateSerializer<T>(metadata));
@@ -1195,7 +1263,7 @@ public class BitSerializerBase
         var setBitIndex = Expression.Assign(bitIndexVar, Expression.Constant(field.BitStartIndex));
 
         // Call BitHelper.SetValueLength<T>(bytes, bitIndex, bitLength, value)
-        var setValueLengthMethod = _bitHelperType
+        var setValueLengthMethod = bitHelperType
             .GetMethod("SetValueLength")!
             .MakeGenericMethod(field.MemberType);
 
@@ -1422,7 +1490,7 @@ public class BitSerializerBase
             else
             {
                 // Primitive type - use BitHelper.SetValueLength<T>
-                var setValueLengthMethod = _bitHelperType
+                var setValueLengthMethod = bitHelperType
                     .GetMethod("SetValueLength")!
                     .MakeGenericMethod(field.MemberType);
 
@@ -1499,7 +1567,7 @@ public class BitSerializerBase
         if (IsNumericOrEnumType(typeof(T)))
         {
             // For primitive types: BitHelper.SetValueLength<T>(bytes, currentBitIndex, elementBitLength, element)
-            var setValueLengthMethod = _bitHelperType
+            var setValueLengthMethod = bitHelperType
                 .GetMethod("SetValueLength")!
                 .MakeGenericMethod(typeof(T));
 

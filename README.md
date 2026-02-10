@@ -275,16 +275,26 @@ public class MixedData
 两者提供完全相同的 API：
 
 ```csharp
-// 序列化
+// 泛型序列化
 byte[] bytes = BitSerializerMSB.Serialize(obj);       // 返回 byte[]
 BitSerializerMSB.Serialize(obj, spanBuffer);           // 写入 Span<byte>
 
-// 反序列化
+// 泛型反序列化
 T result = BitSerializerMSB.Deserialize<T>(bytes);     // 从 byte[]
 T result = BitSerializerMSB.Deserialize<T>(span);      // 从 ReadOnlySpan<byte>
+
+// 非泛型序列化（通过 Type 参数指定类型）
+byte[] bytes = BitSerializerMSB.Serialize(obj, typeof(Packet));       // 返回 byte[]
+BitSerializerMSB.Serialize(obj, typeof(Packet), spanBuffer);          // 写入 Span<byte>
+
+// 非泛型反序列化（通过 Type 参数指定类型，返回 object）
+object result = BitSerializerMSB.Deserialize(bytes, typeof(Packet));  // 从 byte[]
+object result = BitSerializerMSB.Deserialize(span, typeof(Packet));   // 从 ReadOnlySpan<byte>
 ```
 
 将 `MSB` 替换为 `LSB` 即可切换为低位优先模式。
+
+> **非泛型 API** 适用于编译期无法确定类型的场景（如通过配置或反射动态确定类型），返回 `object`，需自行转换为目标类型。
 
 ## 许可证
 
