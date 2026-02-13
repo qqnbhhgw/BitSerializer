@@ -2,12 +2,12 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Jobs;
 using BinarySerialization;
-using Microsoft.IO;
 using BitSerializer;
 
-namespace BitSerializer.BenchmarkTests;
+namespace BenchmarkTests;
 
-public class SerializeBenchmarkData
+[BitSerialize]
+public partial class SerializeBenchmarkData
 {
     [FieldOrder]
     [FieldBitLength(4)]
@@ -50,14 +50,10 @@ public class SerializeBenchmarkData
     public long LongValue2 { get; set; }
 }
 
-public class BenchmarkDataSerializer
+public static class BenchmarkDataSerializer
 {
-    public Func<SerializeBenchmarkData, byte[]> SerializeFunc => Serialize;
-
-    public byte[] Serialize(SerializeBenchmarkData data)
+    public static void Serialize(SerializeBenchmarkData data, Span<byte> buffer)
     {
-        Span<byte> buffer = stackalloc byte[16];
-
         buffer[0] = (byte)(data.ByteValue1 << 4 | data.ByteValue2);
         buffer[1] = (byte)(data.UShortValue1 >> 8);
         buffer[2] = (byte)(data.UShortValue2 >> 8);
@@ -67,8 +63,6 @@ public class BenchmarkDataSerializer
 
         BinaryPrimitives.WriteUInt32BigEndian(buffer[7..], (uint)(data.LongValue1 >> 32));
         BinaryPrimitives.WriteUInt32BigEndian(buffer[11..], (uint)(data.LongValue2 >> 32));
-
-        return buffer.ToArray();
     }
 }
 
@@ -94,33 +88,17 @@ public class SerializeBenchmark
         LongValue2 = 0x000000009ABCDEF0,
     };
 
-    private readonly BenchmarkDataSerializer _manualSerializer = new();
+    private readonly byte[] _serializedData = new byte[120 / 8];
 
-    private readonly RecyclableMemoryStreamManager _recyclableMemoryStreamManager = new();
+    [Benchmark]
+    public void BitSerializer()
+    {
+        BitSerializerMSB.Serialize(_data, _serializedData);
+    }
 
     [Benchmark(Baseline = true)]
-    public byte[] BinarySerializer()
+    public void ManualSerializer()
     {
-        var recyclableStream = _recyclableMemoryStreamManager.GetStream();
-        _binarySerializer.Serialize(recyclableStream, _data);
-        return recyclableStream.ToArray();
-    }
-
-    [Benchmark]
-    public byte[] BitSerializer()
-    {
-        return BitSerializerMSB.Serialize(_data);
-    }
-
-    [Benchmark]
-    public byte[] ManualSerializer()
-    {
-        return _manualSerializer.Serialize(_data);
-    }
-
-    [Benchmark]
-    public byte[] ManualSerializerDelegate()
-    {
-        return _manualSerializer.SerializeFunc(_data);
+        BenchmarkDataSerializer.Serialize(_data, _serializedData);
     }
 }

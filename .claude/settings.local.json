@@ -7,7 +7,14 @@
       "Bash(ren:*)",
       "Bash(dotnet pack:*)",
       "Bash(dotnet nuget push:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(dotnet sln:*)",
+      "Bash(findstr:*)",
+      "Bash(del \"D:\\\\zjlHub\\\\BitSerializer\\\\BitSerializerTests\\\\DiagnosticTest.cs\")",
+      "Bash(Remove-Item \"D:\\\\zjlHub\\\\BitSerializer\\\\BitSerializerTests\\\\DiagnosticTest.cs\" -Force)",
+      "Bash(cmd /c del \"D:\\\\zjlHub\\\\BitSerializer\\\\BitSerializerTests\\\\DiagnosticTest.cs\")",
+      "Bash(cmd /c \"del /f D:\\\\zjlHub\\\\BitSerializer\\\\BitSerializerTests\\\\DiagnosticTest.cs\")",
+      "Bash(curl:*)"
     ]
   }
 }

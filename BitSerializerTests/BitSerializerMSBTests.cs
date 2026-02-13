@@ -1,16 +1,14 @@
-﻿using Shouldly;
+using Shouldly;
 using BitSerializer;
 
 namespace BitSerializerTests;
 
-public class BitSerializerMSBTests
+public partial class BitSerializerMSBTests
 {
     #region Test Models
 
-    /// <summary>
-    /// Simple test class with basic numeric types
-    /// </summary>
-    public class SimpleData
+    [BitSerialize]
+    public partial class SimpleData
     {
         [BitField(8)]
         public byte Header { get; set; }
@@ -22,10 +20,8 @@ public class BitSerializerMSBTests
         public byte Footer { get; set; }
     }
 
-    /// <summary>
-    /// Test class with auto-inferred bit lengths
-    /// </summary>
-    public class AutoBitLengthData
+    [BitSerialize]
+    public partial class AutoBitLengthData
     {
         [BitField]
         public byte ByteValue { get; set; }
@@ -37,10 +33,8 @@ public class BitSerializerMSBTests
         public int IntValue { get; set; }
     }
 
-    /// <summary>
-    /// Test class with custom bit lengths (not aligned to byte boundaries)
-    /// </summary>
-    public class CustomBitLengthData
+    [BitSerialize]
+    public partial class CustomBitLengthData
     {
         [BitField(4)]
         public byte NibbleHigh { get; set; }
@@ -55,9 +49,6 @@ public class BitSerializerMSBTests
         public byte FourBits { get; set; }
     }
 
-    /// <summary>
-    /// Test enum for enum serialization tests
-    /// </summary>
     public enum TestStatus : byte
     {
         Unknown = 0,
@@ -66,10 +57,8 @@ public class BitSerializerMSBTests
         Error = 3
     }
 
-    /// <summary>
-    /// Test class with enum type
-    /// </summary>
-    public class EnumData
+    [BitSerialize]
+    public partial class EnumData
     {
         [BitField(8)]
         public TestStatus Status { get; set; }
@@ -78,10 +67,8 @@ public class BitSerializerMSBTests
         public ushort Code { get; set; }
     }
 
-    /// <summary>
-    /// Nested inner class
-    /// </summary>
-    public class InnerData
+    [BitSerialize]
+    public partial class InnerData
     {
         [BitField(8)]
         public byte X { get; set; }
@@ -90,10 +77,8 @@ public class BitSerializerMSBTests
         public byte Y { get; set; }
     }
 
-    /// <summary>
-    /// Test class with nested type
-    /// </summary>
-    public class NestedData
+    [BitSerialize]
+    public partial class NestedData
     {
         [BitField(8)]
         public byte Header { get; set; }
@@ -105,10 +90,8 @@ public class BitSerializerMSBTests
         public byte Footer { get; set; }
     }
 
-    /// <summary>
-    /// Test class with List container
-    /// </summary>
-    public class ListData
+    [BitSerialize]
+    public partial class ListData
     {
         [BitField(4)]
         public byte Count { get; set; }
@@ -121,10 +104,8 @@ public class BitSerializerMSBTests
         public List<byte> Items { get; set; } = new();
     }
 
-    /// <summary>
-    /// Test class with List of nested types
-    /// </summary>
-    public class ListNestedData
+    [BitSerialize]
+    public partial class ListNestedData
     {
         [BitField(8)]
         public byte Count { get; set; }
@@ -134,10 +115,8 @@ public class BitSerializerMSBTests
         public List<InnerData> Items { get; set; } = new();
     }
 
-    /// <summary>
-    /// Test class with ignored field
-    /// </summary>
-    public class DataWithIgnored
+    [BitSerialize]
+    public partial class DataWithIgnored
     {
         [BitField(8)]
         public byte Value { get; set; }
@@ -153,10 +132,8 @@ public class BitSerializerMSBTests
 
     #region Basic Deserialization Tests
 
-    /// <summary>
-    /// Simple test class with basic numeric types
-    /// </summary>
-    public class SimpleData2
+    [BitSerialize]
+    public partial class SimpleData2
     {
         [BitField(4)]
         public byte Header { get; set; }
@@ -173,10 +150,8 @@ public class BitSerializerMSBTests
     {
         byte[] bytes = { 0xAB, 0x12};
 
-        // Act
         var result = BitSerializerMSB.Deserialize<SimpleData2>(bytes);
 
-        // Assert
         result.Header.ShouldBe((byte)0xA);
         result.Value.ShouldBe((ushort)0x58);
         result.Footer.ShouldBe((byte)0x12);
@@ -185,13 +160,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_SimpleData_ShouldDeserializeCorrectly()
     {
-        // Arrange: Header=0xAB, Value=0x1234, Footer=0xCD
         byte[] bytes = { 0xAB, 0x12, 0x34, 0xCD };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<SimpleData>(bytes);
 
-        // Assert
         result.Header.ShouldBe((byte)0xAB);
         result.Value.ShouldBe((ushort)0x1234);
         result.Footer.ShouldBe((byte)0xCD);
@@ -200,13 +172,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_AutoBitLengthData_ShouldInferBitLengthFromType()
     {
-        // Arrange: byte=0x12, ushort=0x3456, int=0x789ABCDE
         byte[] bytes = { 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<AutoBitLengthData>(bytes);
 
-        // Assert
         result.ByteValue.ShouldBe((byte)0x12);
         result.UShortValue.ShouldBe((ushort)0x3456);
         result.IntValue.ShouldBe(0x789ABCDE);
@@ -215,16 +184,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_CustomBitLengthData_ShouldHandleNonByteAlignedBits()
     {
-        // Arrange: 4 bits + 4 bits + 12 bits + 4 bits = 24 bits = 3 bytes
-        // Binary: 1010 0101 | 0110 0111 | 1000 xxxx
-        // NibbleHigh = 0xA (1010), NibbleLow = 0x5 (0101)
-        // TwelveBits = 0x678 (0110 0111 1000), FourBits = remaining
         byte[] bytes = { 0xA5, 0x67, 0x80 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<CustomBitLengthData>(bytes);
 
-        // Assert
         result.NibbleHigh.ShouldBe((byte)0xA);
         result.NibbleLow.ShouldBe((byte)0x5);
         result.TwelveBits.ShouldBe((ushort)0x678);
@@ -237,13 +200,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_EnumData_ShouldDeserializeEnumCorrectly()
     {
-        // Arrange: Status=Active(1), Code=0x1234
         byte[] bytes = { 0x01, 0x12, 0x34 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<EnumData>(bytes);
 
-        // Assert
         result.Status.ShouldBe(TestStatus.Active);
         result.Code.ShouldBe((ushort)0x1234);
     }
@@ -251,7 +211,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_EnumData_AllEnumValues_ShouldWork()
     {
-        // Test all enum values
         foreach (TestStatus status in Enum.GetValues<TestStatus>())
         {
             byte[] bytes = { (byte)status, 0x00, 0x00 };
@@ -267,13 +226,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_NestedData_ShouldDeserializeNestedTypeCorrectly()
     {
-        // Arrange: Header=0xAA, Inner.X=0x11, Inner.Y=0x22, Footer=0xBB
         byte[] bytes = { 0xAA, 0x11, 0x22, 0xBB };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<NestedData>(bytes);
 
-        // Assert
         result.Header.ShouldBe((byte)0xAA);
         result.Inner.ShouldNotBeNull();
         result.Inner.X.ShouldBe((byte)0x11);
@@ -288,13 +244,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_ListData_ShouldDeserializeListCorrectly()
     {
-        // Arrange: Count=3, Items=[0x11, 0x22, 0x33]
         byte[] bytes = [0x30, 0x11, 0x22, 0x33];
 
-        // Act
         var result = BitSerializerMSB.Deserialize<ListData>(bytes);
 
-        // Assert
         result.Count.ShouldBe((byte)3);
         result.Items.Count.ShouldBe(3);
         result.Items[0].ShouldBe((byte)0x11);
@@ -305,13 +258,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_ListData_EmptyList_ShouldWork()
     {
-        // Arrange: Count=0
         byte[] bytes = { 0x00 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<ListData>(bytes);
 
-        // Assert
         result.Count.ShouldBe((byte)0);
         result.Items.ShouldBeEmpty();
     }
@@ -319,13 +269,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_ListNestedData_ShouldDeserializeListOfNestedTypesCorrectly()
     {
-        // Arrange: Count=2, Items=[{X=0x11, Y=0x22}, {X=0x33, Y=0x44}]
         byte[] bytes = { 0x02, 0x11, 0x22, 0x33, 0x44 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<ListNestedData>(bytes);
 
-        // Assert
         result.Count.ShouldBe((byte)2);
         result.Items.Count.ShouldBe(2);
         result.Items[0].X.ShouldBe((byte)0x11);
@@ -341,16 +288,13 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_DataWithIgnored_ShouldIgnoreMarkedFields()
     {
-        // Arrange: Value=0xAA, AnotherValue=0xBB (Description is ignored)
         byte[] bytes = { 0xAA, 0xBB };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<DataWithIgnored>(bytes);
 
-        // Assert
         result.Value.ShouldBe((byte)0xAA);
         result.AnotherValue.ShouldBe((byte)0xBB);
-        result.Description.ShouldBeEmpty(); // Default value, not deserialized
+        result.Description.ShouldBeEmpty();
     }
 
     #endregion
@@ -360,15 +304,12 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_CalledMultipleTimes_ShouldUseCachedDeserializer()
     {
-        // Arrange
         byte[] bytes1 = { 0x01, 0x00, 0x01, 0x02 };
         byte[] bytes2 = { 0x02, 0x00, 0x02, 0x03 };
 
-        // Act - Call multiple times to ensure caching works
         var result1 = BitSerializerMSB.Deserialize<SimpleData>(bytes1);
         var result2 = BitSerializerMSB.Deserialize<SimpleData>(bytes2);
 
-        // Assert
         result1.Header.ShouldBe((byte)0x01);
         result2.Header.ShouldBe((byte)0x02);
     }
@@ -380,14 +321,11 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_WithReadOnlySpan_ShouldWork()
     {
-        // Arrange
         byte[] bytes = { 0xAB, 0x12, 0x34, 0xCD };
         ReadOnlySpan<byte> span = bytes;
 
-        // Act
         var result = BitSerializerMSB.Deserialize<SimpleData>(span);
 
-        // Assert
         result.Header.ShouldBe((byte)0xAB);
         result.Value.ShouldBe((ushort)0x1234);
         result.Footer.ShouldBe((byte)0xCD);
@@ -395,111 +333,31 @@ public class BitSerializerMSBTests
 
     #endregion
 
-    #region Validation Tests
-
-    /// <summary>
-    /// Class without any attributes - should throw
-    /// </summary>
-    public class InvalidNoAttributes
-    {
-        public byte Value { get; set; }
-    }
-
-    /// <summary>
-    /// Class with unsupported type without BitIgnore - should throw
-    /// </summary>
-    public class InvalidUnsupportedType
-    {
-        [BitField(8)]
-        public byte Value { get; set; }
-
-        [BitField]
-        public string Text { get; set; } = string.Empty;
-    }
-
-    /// <summary>
-    /// Class with List but no BitFieldRelated - should throw
-    /// </summary>
-    public class InvalidListNoRelated
-    {
-        [BitField(8)]
-        public byte Count { get; set; }
-
-        [BitField]
-        public List<byte> Items { get; set; } = new();
-    }
-
-    [Fact]
-    public void Deserialize_TypeWithoutAttributes_ShouldThrowException()
-    {
-        // Arrange
-        byte[] bytes = { 0x01 };
-
-        // Act & Assert
-        var action = () => BitSerializerMSB.Deserialize<InvalidNoAttributes>(bytes);
-        var exception = Should.Throw<InvalidOperationException>(action);
-        exception.Message.ShouldContain("must have either BitFieldAttribute or BitIgnoreAttribute");
-    }
-
-    [Fact]
-    public void Deserialize_TypeWithUnsupportedType_ShouldThrowException()
-    {
-        // Arrange
-        byte[] bytes = { 0x01 };
-
-        // Act & Assert
-        var action = () => BitSerializerMSB.Deserialize<InvalidUnsupportedType>(bytes);
-        var exception = Should.Throw<InvalidOperationException>(action);
-        exception.Message.ShouldContain("unsupported type");
-    }
-
-    [Fact]
-    public void Deserialize_ListWithoutRelatedAttribute_ShouldThrowException()
-    {
-        // Arrange
-        byte[] bytes = { 0x01 };
-
-        // Act & Assert
-        var action = () => BitSerializerMSB.Deserialize<InvalidListNoRelated>(bytes);
-        var exception = Should.Throw<InvalidOperationException>(action);
-        exception.Message.ShouldContain("must have BitFieldRelatedAttribute");
-    }
-
-    #endregion
-
     #region Polymorphic Type Models
 
-    /// <summary>
-    /// Base class for polymorphic deserialization tests
-    /// </summary>
-    public class BaseMessage
+    [BitSerialize]
+    public partial class BaseMessage
     {
         [BitField(8)]
         public byte CommonField { get; set; }
     }
 
-    /// <summary>
-    /// Derived type A with additional byte field
-    /// </summary>
-    public class MessageTypeA : BaseMessage
+    [BitSerialize]
+    public partial class MessageTypeA : BaseMessage
     {
         [BitField(8)]
         public byte FieldA { get; set; }
     }
 
-    /// <summary>
-    /// Derived type B with additional ushort field
-    /// </summary>
-    public class MessageTypeB : BaseMessage
+    [BitSerialize]
+    public partial class MessageTypeB : BaseMessage
     {
         [BitField(16)]
         public ushort FieldB { get; set; }
     }
 
-    /// <summary>
-    /// Derived type C with multiple fields
-    /// </summary>
-    public class MessageTypeC : BaseMessage
+    [BitSerialize]
+    public partial class MessageTypeC : BaseMessage
     {
         [BitField(8)]
         public byte FieldC1 { get; set; }
@@ -508,15 +366,13 @@ public class BitSerializerMSBTests
         public byte FieldC2 { get; set; }
     }
 
-    /// <summary>
-    /// Container with polymorphic message field
-    /// </summary>
-    public class PolymorphicContainer
+    [BitSerialize]
+    public partial class PolymorphicContainer
     {
         [BitField(8)]
         public byte MessageType { get; set; }
 
-        [BitField(24)] // Max size of all polymorphic types (CommonField:8 + max(FieldA:8, FieldB:16, FieldC1+C2:16) = 24)
+        [BitField(24)]
         [BitFieldRelated(nameof(MessageType))]
         [BitPoly(1, typeof(MessageTypeA))]
         [BitPoly(2, typeof(MessageTypeB))]
@@ -524,31 +380,16 @@ public class BitSerializerMSBTests
         public BaseMessage Message { get; set; } = null!;
     }
 
-    /// <summary>
-    /// Container with auto-calculated bit length for polymorphic field
-    /// </summary>
-    public class PolymorphicContainerAutoLength
-    {
-        [BitField(8)]
-        public byte MessageType { get; set; }
-
-        [BitField] // Auto-calculate from max of all polymorphic types
-        [BitFieldRelated(nameof(MessageType))]
-        [BitPoly(1, typeof(MessageTypeA))]
-        [BitPoly(2, typeof(MessageTypeB))]
-        public BaseMessage Message { get; set; } = null!;
-    }
-
-    /// <summary>
-    /// Invalid polymorphic container without BitFieldRelated
-    /// </summary>
-    public class InvalidPolymorphicNoRelated
+    [BitSerialize]
+    public partial class PolymorphicContainerAutoLength
     {
         [BitField(8)]
         public byte MessageType { get; set; }
 
         [BitField]
+        [BitFieldRelated(nameof(MessageType))]
         [BitPoly(1, typeof(MessageTypeA))]
+        [BitPoly(2, typeof(MessageTypeB))]
         public BaseMessage Message { get; set; } = null!;
     }
 
@@ -559,14 +400,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_PolymorphicTypeA_ShouldDeserializeCorrectly()
     {
-        // Arrange: MessageType=1 (TypeA), CommonField=0xAA, FieldA=0xBB
-        // Padding to 24 bits for Message field
         byte[] bytes = { 0x01, 0xAA, 0xBB, 0x00 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<PolymorphicContainer>(bytes);
 
-        // Assert
         result.MessageType.ShouldBe((byte)1);
         result.Message.ShouldNotBeNull();
         result.Message.ShouldBeOfType<MessageTypeA>();
@@ -577,13 +414,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_PolymorphicTypeB_ShouldDeserializeCorrectly()
     {
-        // Arrange: MessageType=2 (TypeB), CommonField=0xCC, FieldB=0x1234
         byte[] bytes = { 0x02, 0xCC, 0x12, 0x34 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<PolymorphicContainer>(bytes);
 
-        // Assert
         result.MessageType.ShouldBe((byte)2);
         result.Message.ShouldNotBeNull();
         result.Message.ShouldBeOfType<MessageTypeB>();
@@ -594,13 +428,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_PolymorphicTypeC_ShouldDeserializeCorrectly()
     {
-        // Arrange: MessageType=3 (TypeC), CommonField=0xDD, FieldC1=0xEE, FieldC2=0xFF
         byte[] bytes = { 0x03, 0xDD, 0xEE, 0xFF };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<PolymorphicContainer>(bytes);
 
-        // Assert
         result.MessageType.ShouldBe((byte)3);
         result.Message.ShouldNotBeNull();
         result.Message.ShouldBeOfType<MessageTypeC>();
@@ -612,14 +443,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_PolymorphicAutoLength_ShouldCalculateBitLengthFromMaxType()
     {
-        // Arrange: MessageType=2 (TypeB has max length: 8+16=24 bits)
-        // CommonField=0x11, FieldB=0x2233
         byte[] bytes = { 0x02, 0x11, 0x22, 0x33 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<PolymorphicContainerAutoLength>(bytes);
 
-        // Assert
         result.MessageType.ShouldBe((byte)2);
         result.Message.ShouldBeOfType<MessageTypeB>();
         result.Message.CommonField.ShouldBe((byte)0x11);
@@ -629,14 +456,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_PolymorphicAutoLength_TypeA_ShouldWork()
     {
-        // Arrange: MessageType=1 (TypeA: 8+8=16 bits, but field is 24 bits from max)
-        // CommonField=0x44, FieldA=0x55, padding
         byte[] bytes = { 0x01, 0x44, 0x55, 0x00 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<PolymorphicContainerAutoLength>(bytes);
 
-        // Assert
         result.MessageType.ShouldBe((byte)1);
         result.Message.ShouldBeOfType<MessageTypeA>();
         result.Message.CommonField.ShouldBe((byte)0x44);
@@ -646,10 +469,8 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_PolymorphicWithUnknownType_ShouldThrowException()
     {
-        // Arrange: MessageType=99 (unknown type)
-        byte[] bytes = { 0x63, 0x00, 0x00, 0x00 }; // 0x63 = 99
+        byte[] bytes = { 0x63, 0x00, 0x00, 0x00 };
 
-        // Act & Assert
         var action = () => BitSerializerMSB.Deserialize<PolymorphicContainer>(bytes);
         var exception = Should.Throw<InvalidOperationException>(action);
         exception.Message.ShouldContain("No polymorphic type mapping found");
@@ -657,29 +478,14 @@ public class BitSerializerMSBTests
     }
 
     [Fact]
-    public void Deserialize_PolymorphicWithoutRelatedAttribute_ShouldThrowException()
-    {
-        // Arrange
-        byte[] bytes = { 0x01, 0x00, 0x00 };
-
-        // Act & Assert
-        var action = () => BitSerializerMSB.Deserialize<InvalidPolymorphicNoRelated>(bytes);
-        var exception = Should.Throw<InvalidOperationException>(action);
-        exception.Message.ShouldContain("must have BitFieldRelatedAttribute");
-    }
-
-    [Fact]
     public void Deserialize_PolymorphicCalledMultipleTimes_ShouldUseCachedMetadata()
     {
-        // Arrange - different message types
         byte[] bytesTypeA = { 0x01, 0xAA, 0xBB, 0x00 };
         byte[] bytesTypeB = { 0x02, 0xCC, 0x12, 0x34 };
 
-        // Act - Call multiple times to ensure caching works
         var result1 = BitSerializerMSB.Deserialize<PolymorphicContainer>(bytesTypeA);
         var result2 = BitSerializerMSB.Deserialize<PolymorphicContainer>(bytesTypeB);
 
-        // Assert
         result1.Message.ShouldBeOfType<MessageTypeA>();
         result2.Message.ShouldBeOfType<MessageTypeB>();
     }
@@ -691,7 +497,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void Serialize_SimpleData_ShouldSerializeCorrectly()
     {
-        // Arrange
         var data = new SimpleData
         {
             Header = 0xAB,
@@ -699,10 +504,8 @@ public class BitSerializerMSBTests
             Footer = 0xCD
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(data);
 
-        // Assert
         bytes.Length.ShouldBe(4);
         bytes[0].ShouldBe((byte)0xAB);
         bytes[1].ShouldBe((byte)0x12);
@@ -713,7 +516,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_SimpleData_ShouldRoundTrip()
     {
-        // Arrange
         var original = new SimpleData
         {
             Header = 0xAB,
@@ -721,11 +523,9 @@ public class BitSerializerMSBTests
             Footer = 0xCD
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<SimpleData>(bytes);
 
-        // Assert
         deserialized.Header.ShouldBe(original.Header);
         deserialized.Value.ShouldBe(original.Value);
         deserialized.Footer.ShouldBe(original.Footer);
@@ -734,7 +534,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void Serialize_CustomBitLengthData_ShouldHandleNonByteAlignedBits()
     {
-        // Arrange
         var data = new CustomBitLengthData
         {
             NibbleHigh = 0xA,
@@ -743,10 +542,8 @@ public class BitSerializerMSBTests
             FourBits = 0x0
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(data);
 
-        // Assert
         bytes.Length.ShouldBe(3);
         bytes[0].ShouldBe((byte)0xA5);
         bytes[1].ShouldBe((byte)0x67);
@@ -756,7 +553,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_CustomBitLengthData_ShouldRoundTrip()
     {
-        // Arrange
         var original = new CustomBitLengthData
         {
             NibbleHigh = 0xA,
@@ -765,11 +561,9 @@ public class BitSerializerMSBTests
             FourBits = 0x0
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<CustomBitLengthData>(bytes);
 
-        // Assert
         deserialized.NibbleHigh.ShouldBe(original.NibbleHigh);
         deserialized.NibbleLow.ShouldBe(original.NibbleLow);
         deserialized.TwelveBits.ShouldBe(original.TwelveBits);
@@ -778,18 +572,15 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_EnumData_ShouldRoundTrip()
     {
-        // Arrange
         var original = new EnumData
         {
             Status = TestStatus.Active,
             Code = 0x1234
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<EnumData>(bytes);
 
-        // Assert
         deserialized.Status.ShouldBe(original.Status);
         deserialized.Code.ShouldBe(original.Code);
     }
@@ -797,7 +588,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_NestedData_ShouldRoundTrip()
     {
-        // Arrange
         var original = new NestedData
         {
             Header = 0xAA,
@@ -805,11 +595,9 @@ public class BitSerializerMSBTests
             Footer = 0xBB
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<NestedData>(bytes);
 
-        // Assert
         deserialized.Header.ShouldBe(original.Header);
         deserialized.Inner.X.ShouldBe(original.Inner.X);
         deserialized.Inner.Y.ShouldBe(original.Inner.Y);
@@ -819,18 +607,15 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_ListData_ShouldRoundTrip()
     {
-        // Arrange
         var original = new ListData
         {
             Count = 3,
             Items = new List<byte> { 0x11, 0x22, 0x33 }
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<ListData>(bytes);
 
-        // Assert
         deserialized.Count.ShouldBe(original.Count);
         deserialized.Items.Count.ShouldBe(original.Items.Count);
         for (int i = 0; i < original.Items.Count; i++)
@@ -842,7 +627,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_ListData_EmptyList_ShouldRoundTrip()
     {
-        // Arrange
         var original = new ListData
         {
             Count = 2,
@@ -854,11 +638,9 @@ public class BitSerializerMSBTests
             ]
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<ListData>(bytes);
 
-        // Assert
         deserialized.Count.ShouldBe((byte)original.Items.Count);
         deserialized.Reserved.ShouldBe(original.Reserved);
         deserialized.Items.ShouldBe(original.Items);
@@ -867,7 +649,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_ListNestedData_ShouldRoundTrip()
     {
-        // Arrange
         var original = new ListNestedData
         {
             Count = 2,
@@ -878,11 +659,9 @@ public class BitSerializerMSBTests
             }
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<ListNestedData>(bytes);
 
-        // Assert
         deserialized.Count.ShouldBe(original.Count);
         deserialized.Items.Count.ShouldBe(original.Items.Count);
         for (int i = 0; i < original.Items.Count; i++)
@@ -895,18 +674,15 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_PolymorphicTypeA_ShouldRoundTrip()
     {
-        // Arrange
         var original = new PolymorphicContainer
         {
             MessageType = 1,
             Message = new MessageTypeA { CommonField = 0xAA, FieldA = 0xBB }
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<PolymorphicContainer>(bytes);
 
-        // Assert
         deserialized.MessageType.ShouldBe(original.MessageType);
         deserialized.Message.ShouldBeOfType<MessageTypeA>();
         deserialized.Message.CommonField.ShouldBe(original.Message.CommonField);
@@ -916,18 +692,15 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_PolymorphicTypeB_ShouldRoundTrip()
     {
-        // Arrange
         var original = new PolymorphicContainer
         {
             MessageType = 2,
             Message = new MessageTypeB { CommonField = 0xCC, FieldB = 0x1234 }
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<PolymorphicContainer>(bytes);
 
-        // Assert
         deserialized.MessageType.ShouldBe(original.MessageType);
         deserialized.Message.ShouldBeOfType<MessageTypeB>();
         deserialized.Message.CommonField.ShouldBe(original.Message.CommonField);
@@ -937,18 +710,15 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_PolymorphicTypeC_ShouldRoundTrip()
     {
-        // Arrange
         var original = new PolymorphicContainer
         {
             MessageType = 3,
             Message = new MessageTypeC { CommonField = 0xDD, FieldC1 = 0xEE, FieldC2 = 0xFF }
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<PolymorphicContainer>(bytes);
 
-        // Assert
         deserialized.MessageType.ShouldBe(original.MessageType);
         deserialized.Message.ShouldBeOfType<MessageTypeC>();
         deserialized.Message.CommonField.ShouldBe(original.Message.CommonField);
@@ -961,7 +731,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_AutoBitLengthData_ShouldRoundTrip()
     {
-        // Arrange
         var original = new AutoBitLengthData
         {
             ByteValue = 0x12,
@@ -969,11 +738,9 @@ public class BitSerializerMSBTests
             IntValue = 0x789ABCDE
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<AutoBitLengthData>(bytes);
 
-        // Assert
         deserialized.ByteValue.ShouldBe(original.ByteValue);
         deserialized.UShortValue.ShouldBe(original.UShortValue);
         deserialized.IntValue.ShouldBe(original.IntValue);
@@ -982,7 +749,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_DataWithIgnored_ShouldIgnoreMarkedFields()
     {
-        // Arrange
         var original = new DataWithIgnored
         {
             Value = 0xAA,
@@ -990,20 +756,17 @@ public class BitSerializerMSBTests
             AnotherValue = 0xBB
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<DataWithIgnored>(bytes);
 
-        // Assert
         deserialized.Value.ShouldBe(original.Value);
         deserialized.AnotherValue.ShouldBe(original.AnotherValue);
-        deserialized.Description.ShouldBeEmpty(); // Ignored field should be default value
+        deserialized.Description.ShouldBeEmpty();
     }
 
     [Fact]
     public void Serialize_WithSpanOverload_ShouldWork()
     {
-        // Arrange
         var data = new SimpleData
         {
             Header = 0xAB,
@@ -1013,10 +776,8 @@ public class BitSerializerMSBTests
         var bytes = new byte[4];
         Span<byte> span = bytes;
 
-        // Act
         BitSerializerMSB.Serialize(data, span);
 
-        // Assert
         bytes[0].ShouldBe((byte)0xAB);
         bytes[1].ShouldBe((byte)0x12);
         bytes[2].ShouldBe((byte)0x34);
@@ -1030,21 +791,18 @@ public class BitSerializerMSBTests
     [Fact]
     public void Serialize_SimpleData2_NonByteAligned_ShouldSerializeCorrectly()
     {
-        // Arrange
         var data = new SimpleData2
         {
-            Header = 0xA,      // 4 bits: 1010
-            Value = 0x58,       // 7 bits: 1011000
-            Footer = 0x12       // 5 bits: 10010
+            Header = 0xA,
+            Value = 0x58,
+            Footer = 0x12
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(data);
 
-        // Assert - 4+7+5=16 bits = 2 bytes
         bytes.Length.ShouldBe(2);
-        bytes[0].ShouldBe((byte)0xAB); // 1010 1011
-        bytes[1].ShouldBe((byte)0x12); // 000 10010
+        bytes[0].ShouldBe((byte)0xAB);
+        bytes[1].ShouldBe((byte)0x12);
     }
 
     [Fact]
@@ -1077,7 +835,7 @@ public class BitSerializerMSBTests
         var bytes = BitSerializerMSB.Serialize(data);
 
         bytes.Length.ShouldBe(3);
-        bytes[0].ShouldBe((byte)0x03); // Error = 3
+        bytes[0].ShouldBe((byte)0x03);
         bytes[1].ShouldBe((byte)0xAB);
         bytes[2].ShouldBe((byte)0xCD);
     }
@@ -1113,7 +871,7 @@ public class BitSerializerMSBTests
 
         var bytes = BitSerializerMSB.Serialize(data);
 
-        bytes[0].ShouldBe((byte)0x30); // Count=3 (4 bits) + Reserved=0 (4 bits)
+        bytes[0].ShouldBe((byte)0x30);
         bytes[1].ShouldBe((byte)0x11);
         bytes[2].ShouldBe((byte)0x22);
         bytes[3].ShouldBe((byte)0x33);
@@ -1132,7 +890,7 @@ public class BitSerializerMSBTests
         var bytes = BitSerializerMSB.Serialize(data);
 
         bytes.Length.ShouldBe(1);
-        bytes[0].ShouldBe((byte)0x0F); // Count=0 (4 bits) + Reserved=0xF (4 bits)
+        bytes[0].ShouldBe((byte)0x0F);
     }
 
     [Fact]
@@ -1168,9 +926,9 @@ public class BitSerializerMSBTests
 
         var bytes = BitSerializerMSB.Serialize(data);
 
-        bytes[0].ShouldBe((byte)0x01); // MessageType
-        bytes[1].ShouldBe((byte)0xAA); // CommonField
-        bytes[2].ShouldBe((byte)0xBB); // FieldA
+        bytes[0].ShouldBe((byte)0x01);
+        bytes[1].ShouldBe((byte)0xAA);
+        bytes[2].ShouldBe((byte)0xBB);
     }
 
     [Fact]
@@ -1184,35 +942,18 @@ public class BitSerializerMSBTests
 
         var bytes = BitSerializerMSB.Serialize(data);
 
-        bytes[0].ShouldBe((byte)0x02); // MessageType
-        bytes[1].ShouldBe((byte)0xCC); // CommonField
-        bytes[2].ShouldBe((byte)0x12); // FieldB high
-        bytes[3].ShouldBe((byte)0x34); // FieldB low
-    }
-
-    [Fact]
-    public void Serialize_WithSpanTooSmall_ShouldThrowException()
-    {
-        var data = new SimpleData
-        {
-            Header = 0xAB,
-            Value = 0x1234,
-            Footer = 0xCD
-        };
-        var bytes = new byte[2]; // Too small, need 4 bytes
-
-        Should.Throw<ArgumentException>(() =>
-        {
-            Span<byte> span = bytes;
-            BitSerializerMSB.Serialize(data, span);
-        });
+        bytes[0].ShouldBe((byte)0x02);
+        bytes[1].ShouldBe((byte)0xCC);
+        bytes[2].ShouldBe((byte)0x12);
+        bytes[3].ShouldBe((byte)0x34);
     }
 
     #endregion
 
     #region Signed and Larger Numeric Type Tests
 
-    public class SignedByteData
+    [BitSerialize]
+    public partial class SignedByteData
     {
         [BitField]
         public sbyte Value1 { get; set; }
@@ -1221,7 +962,8 @@ public class BitSerializerMSBTests
         public sbyte Value2 { get; set; }
     }
 
-    public class ShortData
+    [BitSerialize]
+    public partial class ShortData
     {
         [BitField]
         public short SignedValue { get; set; }
@@ -1230,7 +972,8 @@ public class BitSerializerMSBTests
         public ushort UnsignedValue { get; set; }
     }
 
-    public class IntData
+    [BitSerialize]
+    public partial class IntData
     {
         [BitField]
         public int SignedValue { get; set; }
@@ -1239,7 +982,8 @@ public class BitSerializerMSBTests
         public uint UnsignedValue { get; set; }
     }
 
-    public class LongData
+    [BitSerialize]
+    public partial class LongData
     {
         [BitField]
         public long SignedValue { get; set; }
@@ -1255,16 +999,18 @@ public class BitSerializerMSBTests
         Stopped = 0xFFFF
     }
 
-    public class EnumCustomBitLengthData
+    [BitSerialize]
+    public partial class EnumCustomBitLengthData
     {
         [BitField(4)]
-        public TestStatus Status { get; set; } // 4-bit enum
+        public TestStatus Status { get; set; }
 
         [BitField(4)]
         public byte Padding { get; set; }
     }
 
-    public class EnumUShortData
+    [BitSerialize]
+    public partial class EnumUShortData
     {
         [BitField]
         public StatusUShort Status { get; set; }
@@ -1294,7 +1040,7 @@ public class BitSerializerMSBTests
     {
         var original = new SignedByteData
         {
-            Value1 = -128, // sbyte.MinValue
+            Value1 = -128,
             Value2 = -1
         };
 
@@ -1374,12 +1120,12 @@ public class BitSerializerMSBTests
     {
         var original = new EnumCustomBitLengthData
         {
-            Status = TestStatus.Error, // value 3, fits in 4 bits
+            Status = TestStatus.Error,
             Padding = 0xF
         };
 
         var bytes = BitSerializerMSB.Serialize(original);
-        bytes.Length.ShouldBe(1); // 4+4 = 8 bits = 1 byte
+        bytes.Length.ShouldBe(1);
         var deserialized = BitSerializerMSB.Deserialize<EnumCustomBitLengthData>(bytes);
 
         deserialized.Status.ShouldBe(original.Status);
@@ -1406,10 +1152,6 @@ public class BitSerializerMSBTests
 
     #region ValueConverter Models
 
-    /// <summary>
-    /// Converter that adds an offset of 10 during deserialization and subtracts 10 during serialization.
-    /// E.g., raw byte 0x05 -> deserialized value 15; property value 15 -> serialized byte 0x05
-    /// </summary>
     public class OffsetConverter : IBitFieldValueConverter
     {
         public static object OnDeserializeConvert(object formDataValue)
@@ -1423,9 +1165,6 @@ public class BitSerializerMSBTests
         }
     }
 
-    /// <summary>
-    /// Converter that inverts bits during deserialization/serialization (XOR 0xFF).
-    /// </summary>
     public class InvertConverter : IBitFieldValueConverter
     {
         public static object OnDeserializeConvert(object formDataValue)
@@ -1439,9 +1178,6 @@ public class BitSerializerMSBTests
         }
     }
 
-    /// <summary>
-    /// Converter for ushort that doubles on deserialize and halves on serialize.
-    /// </summary>
     public class DoubleConverter : IBitFieldValueConverter
     {
         public static object OnDeserializeConvert(object formDataValue)
@@ -1455,10 +1191,8 @@ public class BitSerializerMSBTests
         }
     }
 
-    /// <summary>
-    /// Simple data with a value converter on a primitive field.
-    /// </summary>
-    public class DataWithConverter
+    [BitSerialize]
+    public partial class DataWithConverter
     {
         [BitField(8)]
         public byte Header { get; set; }
@@ -1471,10 +1205,8 @@ public class BitSerializerMSBTests
         public byte Footer { get; set; }
     }
 
-    /// <summary>
-    /// Data with multiple converted fields.
-    /// </summary>
-    public class DataWithMultipleConverters
+    [BitSerialize]
+    public partial class DataWithMultipleConverters
     {
         [BitField(8)]
         [BitFieldRelated(null, typeof(OffsetConverter))]
@@ -1488,10 +1220,8 @@ public class BitSerializerMSBTests
         public byte NormalField { get; set; }
     }
 
-    /// <summary>
-    /// Data with ushort converter.
-    /// </summary>
-    public class DataWithUShortConverter
+    [BitSerialize]
+    public partial class DataWithUShortConverter
     {
         [BitField(8)]
         public byte Header { get; set; }
@@ -1501,10 +1231,8 @@ public class BitSerializerMSBTests
         public ushort DoubledValue { get; set; }
     }
 
-    /// <summary>
-    /// Nested inner type with a converter on one of its fields.
-    /// </summary>
-    public class InnerDataWithConverter
+    [BitSerialize]
+    public partial class InnerDataWithConverter
     {
         [BitField(8)]
         [BitFieldRelated(null, typeof(OffsetConverter))]
@@ -1514,10 +1242,8 @@ public class BitSerializerMSBTests
         public byte Y { get; set; }
     }
 
-    /// <summary>
-    /// Container with a nested type that has converter fields.
-    /// </summary>
-    public class NestedDataWithConverter
+    [BitSerialize]
+    public partial class NestedDataWithConverter
     {
         [BitField(8)]
         public byte Header { get; set; }
@@ -1529,23 +1255,6 @@ public class BitSerializerMSBTests
         public byte Footer { get; set; }
     }
 
-    /// <summary>
-    /// A type that does NOT implement IBitFieldValueConverter - used for validation test.
-    /// </summary>
-    public class NotAConverter
-    {
-    }
-
-    /// <summary>
-    /// Invalid: uses a non-converter type as ValueConverterType.
-    /// </summary>
-    public class InvalidConverterTypeData
-    {
-        [BitField(8)]
-        [BitFieldRelated(null, typeof(NotAConverter))]
-        public byte Value { get; set; }
-    }
-
     #endregion
 
     #region ValueConverter Deserialization Tests
@@ -1553,59 +1262,47 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_WithOffsetConverter_ShouldApplyConversion()
     {
-        // Arrange: Header=0xAA, raw ConvertedValue=0x05 (should become 15 after +10), Footer=0xBB
         byte[] bytes = { 0xAA, 0x05, 0xBB };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<DataWithConverter>(bytes);
 
-        // Assert
         result.Header.ShouldBe((byte)0xAA);
-        result.ConvertedValue.ShouldBe((byte)15); // 5 + 10
+        result.ConvertedValue.ShouldBe((byte)15);
         result.Footer.ShouldBe((byte)0xBB);
     }
 
     [Fact]
     public void Deserialize_WithMultipleConverters_ShouldApplyEachCorrectly()
     {
-        // Arrange: OffsetField raw=0x0A (+10 -> 20), InvertedField raw=0xF0 (^0xFF -> 0x0F), NormalField=0x33
         byte[] bytes = { 0x0A, 0xF0, 0x33 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<DataWithMultipleConverters>(bytes);
 
-        // Assert
-        result.OffsetField.ShouldBe((byte)20);     // 10 + 10
-        result.InvertedField.ShouldBe((byte)0x0F);  // 0xF0 ^ 0xFF
-        result.NormalField.ShouldBe((byte)0x33);     // no conversion
+        result.OffsetField.ShouldBe((byte)20);
+        result.InvertedField.ShouldBe((byte)0x0F);
+        result.NormalField.ShouldBe((byte)0x33);
     }
 
     [Fact]
     public void Deserialize_WithUShortConverter_ShouldApplyConversion()
     {
-        // Arrange: Header=0x01, raw DoubledValue=0x0064 (100, should become 200 after *2)
         byte[] bytes = { 0x01, 0x00, 0x64 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<DataWithUShortConverter>(bytes);
 
-        // Assert
         result.Header.ShouldBe((byte)0x01);
-        result.DoubledValue.ShouldBe((ushort)200); // 100 * 2
+        result.DoubledValue.ShouldBe((ushort)200);
     }
 
     [Fact]
     public void Deserialize_NestedTypeWithConverter_ShouldApplyConversion()
     {
-        // Arrange: Header=0xAA, Inner.X raw=0x05 (+10 -> 15), Inner.Y=0x22, Footer=0xBB
         byte[] bytes = { 0xAA, 0x05, 0x22, 0xBB };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<NestedDataWithConverter>(bytes);
 
-        // Assert
         result.Header.ShouldBe((byte)0xAA);
-        result.Inner.X.ShouldBe((byte)15);  // 5 + 10
+        result.Inner.X.ShouldBe((byte)15);
         result.Inner.Y.ShouldBe((byte)0x22);
         result.Footer.ShouldBe((byte)0xBB);
     }
@@ -1617,7 +1314,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void Serialize_WithOffsetConverter_ShouldApplyConversion()
     {
-        // Arrange: ConvertedValue=15, should serialize as 5 (15-10)
         var data = new DataWithConverter
         {
             Header = 0xAA,
@@ -1625,52 +1321,44 @@ public class BitSerializerMSBTests
             Footer = 0xBB
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(data);
 
-        // Assert
         bytes[0].ShouldBe((byte)0xAA);
-        bytes[1].ShouldBe((byte)0x05); // 15 - 10
+        bytes[1].ShouldBe((byte)0x05);
         bytes[2].ShouldBe((byte)0xBB);
     }
 
     [Fact]
     public void Serialize_WithMultipleConverters_ShouldApplyEachCorrectly()
     {
-        // Arrange
         var data = new DataWithMultipleConverters
         {
-            OffsetField = 20,     // should serialize as 10 (20-10)
-            InvertedField = 0x0F, // should serialize as 0xF0 (0x0F ^ 0xFF)
+            OffsetField = 20,
+            InvertedField = 0x0F,
             NormalField = 0x33
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(data);
 
-        // Assert
-        bytes[0].ShouldBe((byte)0x0A); // 20 - 10
-        bytes[1].ShouldBe((byte)0xF0); // 0x0F ^ 0xFF
+        bytes[0].ShouldBe((byte)0x0A);
+        bytes[1].ShouldBe((byte)0xF0);
         bytes[2].ShouldBe((byte)0x33);
     }
 
     [Fact]
     public void Serialize_NestedTypeWithConverter_ShouldApplyConversion()
     {
-        // Arrange
         var data = new NestedDataWithConverter
         {
             Header = 0xAA,
-            Inner = new InnerDataWithConverter { X = 15, Y = 0x22 }, // X should serialize as 5
+            Inner = new InnerDataWithConverter { X = 15, Y = 0x22 },
             Footer = 0xBB
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(data);
 
-        // Assert
         bytes[0].ShouldBe((byte)0xAA);
-        bytes[1].ShouldBe((byte)0x05); // 15 - 10
+        bytes[1].ShouldBe((byte)0x05);
         bytes[2].ShouldBe((byte)0x22);
         bytes[3].ShouldBe((byte)0xBB);
     }
@@ -1682,7 +1370,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_WithConverter_ShouldRoundTrip()
     {
-        // Arrange
         var original = new DataWithConverter
         {
             Header = 0xAA,
@@ -1690,11 +1377,9 @@ public class BitSerializerMSBTests
             Footer = 0xBB
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<DataWithConverter>(bytes);
 
-        // Assert
         deserialized.Header.ShouldBe(original.Header);
         deserialized.ConvertedValue.ShouldBe(original.ConvertedValue);
         deserialized.Footer.ShouldBe(original.Footer);
@@ -1703,7 +1388,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_WithMultipleConverters_ShouldRoundTrip()
     {
-        // Arrange
         var original = new DataWithMultipleConverters
         {
             OffsetField = 30,
@@ -1711,11 +1395,9 @@ public class BitSerializerMSBTests
             NormalField = 0x77
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<DataWithMultipleConverters>(bytes);
 
-        // Assert
         deserialized.OffsetField.ShouldBe(original.OffsetField);
         deserialized.InvertedField.ShouldBe(original.InvertedField);
         deserialized.NormalField.ShouldBe(original.NormalField);
@@ -1724,7 +1406,6 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_NestedWithConverter_ShouldRoundTrip()
     {
-        // Arrange
         var original = new NestedDataWithConverter
         {
             Header = 0x11,
@@ -1732,11 +1413,9 @@ public class BitSerializerMSBTests
             Footer = 0x22
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<NestedDataWithConverter>(bytes);
 
-        // Assert
         deserialized.Header.ShouldBe(original.Header);
         deserialized.Inner.X.ShouldBe(original.Inner.X);
         deserialized.Inner.Y.ShouldBe(original.Inner.Y);
@@ -1746,46 +1425,25 @@ public class BitSerializerMSBTests
     [Fact]
     public void SerializeDeserialize_WithUShortConverter_ShouldRoundTrip()
     {
-        // Arrange
         var original = new DataWithUShortConverter
         {
             Header = 0x01,
             DoubledValue = 500
         };
 
-        // Act
         var bytes = BitSerializerMSB.Serialize(original);
         var deserialized = BitSerializerMSB.Deserialize<DataWithUShortConverter>(bytes);
 
-        // Assert
         deserialized.Header.ShouldBe(original.Header);
         deserialized.DoubledValue.ShouldBe(original.DoubledValue);
     }
 
     #endregion
 
-    #region ValueConverter Validation Tests
-
-    [Fact]
-    public void Deserialize_WithInvalidConverterType_ShouldThrowException()
-    {
-        // Arrange
-        byte[] bytes = { 0x01 };
-
-        // Act & Assert
-        var action = () => BitSerializerMSB.Deserialize<InvalidConverterTypeData>(bytes);
-        var exception = Should.Throw<InvalidOperationException>(action);
-        exception.Message.ShouldContain("must implement IBitFieldValueConverter");
-    }
-
-    #endregion
-
     #region BitFiledCountAttribute Models
 
-    /// <summary>
-    /// Test class with fixed count list (no related count field needed)
-    /// </summary>
-    public class FixedCountListData
+    [BitSerialize]
+    public partial class FixedCountListData
     {
         [BitField(8)]
         public byte Header { get; set; }
@@ -1795,10 +1453,8 @@ public class BitSerializerMSBTests
         public List<byte> Items { get; set; } = new();
     }
 
-    /// <summary>
-    /// Test class with fixed count list of nested types
-    /// </summary>
-    public class FixedCountNestedListData
+    [BitSerialize]
+    public partial class FixedCountNestedListData
     {
         [BitField(8)]
         public byte Header { get; set; }
@@ -1808,11 +1464,8 @@ public class BitSerializerMSBTests
         public List<InnerData> Items { get; set; } = new();
     }
 
-    /// <summary>
-    /// Test class where BitFiledCountAttribute coexists with BitFieldRelatedAttribute.
-    /// BitFiledCountAttribute should take priority.
-    /// </summary>
-    public class FixedCountPriorityData
+    [BitSerialize]
+    public partial class FixedCountPriorityData
     {
         [BitField(8)]
         public byte Count { get; set; }
@@ -1823,10 +1476,8 @@ public class BitSerializerMSBTests
         public List<byte> Items { get; set; } = new();
     }
 
-    /// <summary>
-    /// Test class with 4-bit element fixed count list
-    /// </summary>
-    public class FixedCountCustomBitData
+    [BitSerialize]
+    public partial class FixedCountCustomBitData
     {
         [BitField(4)]
         public byte Prefix { get; set; }
@@ -1843,13 +1494,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_FixedCountList_ShouldDeserializeCorrectly()
     {
-        // Arrange: Header=0xAA, Items=[0x11, 0x22, 0x33] (fixed count=3)
         byte[] bytes = { 0xAA, 0x11, 0x22, 0x33 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<FixedCountListData>(bytes);
 
-        // Assert
         result.Header.ShouldBe((byte)0xAA);
         result.Items.Count.ShouldBe(3);
         result.Items[0].ShouldBe((byte)0x11);
@@ -1860,13 +1508,10 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_FixedCountNestedList_ShouldDeserializeCorrectly()
     {
-        // Arrange: Header=0x01, Items=[{X=0x11,Y=0x22}, {X=0x33,Y=0x44}] (fixed count=2)
         byte[] bytes = { 0x01, 0x11, 0x22, 0x33, 0x44 };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<FixedCountNestedListData>(bytes);
 
-        // Assert
         result.Header.ShouldBe((byte)0x01);
         result.Items.Count.ShouldBe(2);
         result.Items[0].X.ShouldBe((byte)0x11);
@@ -1878,15 +1523,12 @@ public class BitSerializerMSBTests
     [Fact]
     public void Deserialize_FixedCountPriority_ShouldUseFixedCountOverRelated()
     {
-        // Arrange: Count=5 (should be ignored), Items=[0xAA, 0xBB] (fixed count=2 takes priority)
         byte[] bytes = { 0x05, 0xAA, 0xBB };
 
-        // Act
         var result = BitSerializerMSB.Deserialize<FixedCountPriorityData>(bytes);
 
-        // Assert
         result.Count.ShouldBe((byte)5);
-        result.Items.Count.ShouldBe(2); // Fixed count=2, not Count field value=5
+        result.Items.Count.ShouldBe(2);
         result.Items[0].ShouldBe((byte)0xAA);
         result.Items[1].ShouldBe((byte)0xBB);
     }
@@ -1998,6 +1640,182 @@ public class BitSerializerMSBTests
         deserialized.Nibbles[0].ShouldBe(original.Nibbles[0]);
         deserialized.Nibbles[1].ShouldBe(original.Nibbles[1]);
         deserialized.Nibbles[2].ShouldBe(original.Nibbles[2]);
+    }
+
+    #endregion
+
+    #region Array Support Models
+
+    [BitSerialize]
+    public partial class ArrayData
+    {
+        [BitField(4)]
+        public byte Count { get; set; }
+
+        [BitField(4)]
+        public byte Reserved { get; set; }
+
+        [BitField]
+        [BitFieldRelated(nameof(Count))]
+        public byte[] Items { get; set; } = [];
+    }
+
+    [BitSerialize]
+    public partial class FixedCountArrayData
+    {
+        [BitField(8)]
+        public byte Header { get; set; }
+
+        [BitField]
+        [BitFiledCount(3)]
+        public byte[] Items { get; set; } = [];
+    }
+
+    [BitSerialize]
+    public partial class NestedArrayData
+    {
+        [BitField(8)]
+        public byte Count { get; set; }
+
+        [BitField]
+        [BitFieldRelated(nameof(Count))]
+        public InnerData[] Items { get; set; } = [];
+    }
+
+    [BitSerialize]
+    public partial class FixedCountCustomBitArrayData
+    {
+        [BitField(4)]
+        public byte Prefix { get; set; }
+
+        [BitField(4)]
+        [BitFiledCount(3)]
+        public byte[] Nibbles { get; set; } = [];
+    }
+
+    #endregion
+
+    #region Array Tests
+
+    [Fact]
+    public void SerializeDeserialize_ArrayData_ShouldRoundTrip()
+    {
+        var original = new ArrayData
+        {
+            Count = 3,
+            Reserved = 0,
+            Items = [0x11, 0x22, 0x33]
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<ArrayData>(bytes);
+
+        deserialized.Count.ShouldBe(original.Count);
+        deserialized.Items.Length.ShouldBe(3);
+        deserialized.Items[0].ShouldBe((byte)0x11);
+        deserialized.Items[1].ShouldBe((byte)0x22);
+        deserialized.Items[2].ShouldBe((byte)0x33);
+    }
+
+    [Fact]
+    public void Serialize_ArrayData_ShouldProduceSameBytesAsList()
+    {
+        var listData = new ListData
+        {
+            Count = 3,
+            Reserved = 0,
+            Items = [0x11, 0x22, 0x33]
+        };
+        var arrayData = new ArrayData
+        {
+            Count = 3,
+            Reserved = 0,
+            Items = [0x11, 0x22, 0x33]
+        };
+
+        var listBytes = BitSerializerMSB.Serialize(listData);
+        var arrayBytes = BitSerializerMSB.Serialize(arrayData);
+
+        arrayBytes.ShouldBe(listBytes);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_FixedCountArrayData_ShouldRoundTrip()
+    {
+        var original = new FixedCountArrayData
+        {
+            Header = 0xAA,
+            Items = [0x11, 0x22, 0x33]
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<FixedCountArrayData>(bytes);
+
+        deserialized.Header.ShouldBe(original.Header);
+        deserialized.Items.Length.ShouldBe(3);
+        deserialized.Items[0].ShouldBe(original.Items[0]);
+        deserialized.Items[1].ShouldBe(original.Items[1]);
+        deserialized.Items[2].ShouldBe(original.Items[2]);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_NestedArrayData_ShouldRoundTrip()
+    {
+        var original = new NestedArrayData
+        {
+            Count = 2,
+            Items =
+            [
+                new InnerData { X = 0x11, Y = 0x22 },
+                new InnerData { X = 0x33, Y = 0x44 }
+            ]
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<NestedArrayData>(bytes);
+
+        deserialized.Count.ShouldBe(original.Count);
+        deserialized.Items.Length.ShouldBe(2);
+        deserialized.Items[0].X.ShouldBe(original.Items[0].X);
+        deserialized.Items[0].Y.ShouldBe(original.Items[0].Y);
+        deserialized.Items[1].X.ShouldBe(original.Items[1].X);
+        deserialized.Items[1].Y.ShouldBe(original.Items[1].Y);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_FixedCountCustomBitArrayData_ShouldRoundTrip()
+    {
+        var original = new FixedCountCustomBitArrayData
+        {
+            Prefix = 0x0A,
+            Nibbles = [0x01, 0x02, 0x03]
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<FixedCountCustomBitArrayData>(bytes);
+
+        deserialized.Prefix.ShouldBe(original.Prefix);
+        deserialized.Nibbles.Length.ShouldBe(3);
+        deserialized.Nibbles[0].ShouldBe(original.Nibbles[0]);
+        deserialized.Nibbles[1].ShouldBe(original.Nibbles[1]);
+        deserialized.Nibbles[2].ShouldBe(original.Nibbles[2]);
+    }
+
+    [Fact]
+    public void Deserialize_ArrayData_EmptyArray_ShouldWork()
+    {
+        var original = new ArrayData
+        {
+            Count = 0,
+            Reserved = 0xF,
+            Items = []
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<ArrayData>(bytes);
+
+        deserialized.Count.ShouldBe((byte)0);
+        deserialized.Items.Length.ShouldBe(0);
     }
 
     #endregion

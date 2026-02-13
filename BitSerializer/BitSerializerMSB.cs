@@ -1,48 +1,61 @@
 #nullable enable
 
+using System.Runtime.CompilerServices;
+
 namespace BitSerializer;
 
 public static class BitSerializerMSB
 {
-    private static readonly BitSerializerBase Instance = new(typeof(BitHelperMSB));
-
-    public static T Deserialize<T>(ReadOnlySpan<byte> bytes) where T : new()
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static T Deserialize<T>(ReadOnlySpan<byte> bytes) where T : IBitSerializable, new()
     {
-        return Instance.Deserialize<T>(bytes);
+        var result = new T();
+        result.DeserializeMSB(bytes, 0);
+        return result;
     }
 
-    public static T Deserialize<T>(byte[] bytes) where T : new()
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static T Deserialize<T>(byte[] bytes) where T : IBitSerializable, new()
     {
-        return Instance.Deserialize<T>(bytes);
+        return Deserialize<T>((ReadOnlySpan<byte>)bytes);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static object Deserialize(ReadOnlySpan<byte> bytes, Type type)
     {
-        return Instance.Deserialize(bytes, type);
+        return BitSerializerRegistry.DeserializeMSB(bytes, type);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static object Deserialize(byte[] bytes, Type type)
     {
-        return Instance.Deserialize(bytes, type);
+        return Deserialize((ReadOnlySpan<byte>)bytes, type);
     }
 
-    public static byte[] Serialize<T>(T obj)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static byte[] Serialize<T>(T obj) where T : IBitSerializable
     {
-        return Instance.Serialize(obj);
+        int totalBits = obj.GetTotalBitLength();
+        var bytes = new byte[(totalBits + 7) / 8];
+        obj.SerializeMSB(bytes, 0);
+        return bytes;
     }
 
-    public static void Serialize<T>(T obj, Span<byte> bytes)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Serialize<T>(T obj, Span<byte> bytes) where T : IBitSerializable
     {
-        Instance.Serialize(obj, bytes);
+        obj.SerializeMSB(bytes, 0);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static byte[] Serialize(object obj, Type type)
     {
-        return Instance.Serialize(obj, type);
+        return BitSerializerRegistry.SerializeMSB(obj, type);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Serialize(object obj, Type type, Span<byte> bytes)
     {
-        Instance.Serialize(obj, type, bytes);
+        BitSerializerRegistry.SerializeMSB(obj, type, bytes);
     }
 }

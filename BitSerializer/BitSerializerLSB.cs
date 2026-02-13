@@ -4,45 +4,48 @@ namespace BitSerializer;
 
 public static class BitSerializerLSB
 {
-    private static readonly BitSerializerBase Instance = new(typeof(BitHelperLSB));
-
-    public static T Deserialize<T>(ReadOnlySpan<byte> bytes) where T : new()
+    public static T Deserialize<T>(ReadOnlySpan<byte> bytes) where T : IBitSerializable, new()
     {
-        return Instance.Deserialize<T>(bytes);
+        var result = new T();
+        result.DeserializeLSB(bytes, 0);
+        return result;
     }
 
-    public static T Deserialize<T>(byte[] bytes) where T : new()
+    public static T Deserialize<T>(byte[] bytes) where T : IBitSerializable, new()
     {
-        return Instance.Deserialize<T>(bytes);
+        return Deserialize<T>((ReadOnlySpan<byte>)bytes);
     }
 
     public static object Deserialize(ReadOnlySpan<byte> bytes, Type type)
     {
-        return Instance.Deserialize(bytes, type);
+        return BitSerializerRegistry.DeserializeLSB(bytes, type);
     }
 
     public static object Deserialize(byte[] bytes, Type type)
     {
-        return Instance.Deserialize(bytes, type);
+        return Deserialize((ReadOnlySpan<byte>)bytes, type);
     }
 
-    public static byte[] Serialize<T>(T obj)
+    public static byte[] Serialize<T>(T obj) where T : IBitSerializable
     {
-        return Instance.Serialize(obj);
+        int totalBits = obj.GetTotalBitLength();
+        var bytes = new byte[(totalBits + 7) / 8];
+        obj.SerializeLSB(bytes, 0);
+        return bytes;
     }
 
-    public static void Serialize<T>(T obj, Span<byte> bytes)
+    public static void Serialize<T>(T obj, Span<byte> bytes) where T : IBitSerializable
     {
-        Instance.Serialize(obj, bytes);
+        obj.SerializeLSB(bytes, 0);
     }
 
     public static byte[] Serialize(object obj, Type type)
     {
-        return Instance.Serialize(obj, type);
+        return BitSerializerRegistry.SerializeLSB(obj, type);
     }
 
     public static void Serialize(object obj, Type type, Span<byte> bytes)
     {
-        Instance.Serialize(obj, type, bytes);
+        BitSerializerRegistry.SerializeLSB(obj, type, bytes);
     }
 }

@@ -18,6 +18,9 @@
 
     <ItemGroup>
       <ProjectReference Include="..\BitSerializer\BitSerializer.csproj" />
+      <ProjectReference Include="..\BitSerializer.Generator\BitSerializer.Generator.csproj"
+                        OutputItemType="Analyzer"
+                        ReferenceOutputAssembly="false" />
     </ItemGroup>
 
 </Project>

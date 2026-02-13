@@ -1,13 +1,14 @@
-﻿using BitSerializer;
+using BitSerializer;
 using Shouldly;
 
 namespace BitSerializerTests;
 
-public class TestData
+[BitSerialize]
+public partial class TestData
 {
     [BitField] [BitFiledCount(12)] public List<byte> NoMean { get; set; }
 
-    [BitField] public ulong SysRunId { get; set; } // 系统周期数
+    [BitField] public ulong SysRunId { get; set; }
 }
 
 public class BitSerializeTests

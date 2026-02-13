@@ -1,9 +1,11 @@
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 
 namespace BitSerializer;
 
-internal static class BitHelperLSB
+public static class BitHelperLSB
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T ValueLength<T>(ReadOnlySpan<byte> bytes, int startIndex, int length)
     {
         var maxBits = Unsafe.SizeOf<T>() * 8;
@@ -13,23 +15,15 @@ internal static class BitHelperLSB
         return ValueRange<T>(bytes, startIndex, startIndex + length);
     }
 
-    public static T ValueRange<T>(ReadOnlySpan<byte> bytes,
-        int startIndex,
-        int endIndex,
-        [CallerArgumentExpression("startIndex")]
-        string startIndexCallerName = null,
-        [CallerArgumentExpression("endIndex")] string endIndexCallerName = null)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static T ValueRange<T>(ReadOnlySpan<byte> bytes, int startIndex, int endIndex)
     {
-        var bitCount = endIndex - startIndex;
-        var maxBits = Unsafe.SizeOf<T>() * 8;
-        if (bitCount <= 0 || bitCount > maxBits)
-            throw new ArgumentException($"{endIndexCallerName} - {startIndexCallerName}的差值必须在1-{maxBits}之间");
-
         // 先提取为 ulong，然后转换为目标类型
         var result = ExtractBitsToULongLSB(bytes, startIndex, endIndex);
         return UnsafeConvertHelper.ConvertTo<T>(result);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void SetValueLength<T>(Span<byte> bytes, int startIndex, int length, T value)
     {
         var maxBits = Unsafe.SizeOf<T>() * 8;
@@ -39,13 +33,9 @@ internal static class BitHelperLSB
         SetValueRange(bytes, startIndex, startIndex + length, value);
     }
 
-    public static void SetValueRange<T>(Span<byte> bytes, int startIndex, int endIndex, T value)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void SetValueRange<T>(Span<byte> bytes, int startIndex, int endIndex, T value)
     {
-        var bitCount = endIndex - startIndex;
-        var maxBits = Unsafe.SizeOf<T>() * 8;
-        if (bitCount <= 0 || bitCount > maxBits)
-            throw new ArgumentException($"位长度必须在1-{maxBits}之间");
-
         // 转换值为 ulong
         var ulongValue = UnsafeConvertHelper.ConvertFrom(value);
 
@@ -55,26 +45,30 @@ internal static class BitHelperLSB
 
     private static ulong ExtractBitsToULongLSB(ReadOnlySpan<byte> bytes, int startIndex, int endIndex)
     {
-        ulong result = 0;
-        var startByte = startIndex / 8;
-        var startBit = startIndex % 8;
-        var endByte = (endIndex - 1) / 8;
+        int bitCount = endIndex - startIndex;
+        int startByte = startIndex >> 3;
+        int startBit = startIndex & 7;
 
-        // 优化：按字节处理
-        for (var byteIdx = startByte; byteIdx <= endByte && byteIdx < bytes.Length; byteIdx++)
+        // 快速路径：单次 8 字节读取 + 移位 + 掩码
+        if (startByte + 8 <= bytes.Length && startBit + bitCount <= 64)
         {
-            var currentByte = bytes[byteIdx];
-            var firstBit = byteIdx == startByte ? startBit : 0;
-            var lastBit = byteIdx == endByte ? (endIndex - 1) % 8 : 7;
+            ulong raw = BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(startByte));
+            ulong mask = bitCount == 64 ? ulong.MaxValue : (1UL << bitCount) - 1;
+            return (raw >> startBit) & mask;
+        }
 
-            for (var bit = firstBit; bit <= lastBit; bit++)
-            {
-                if (((currentByte >> bit) & 1) == 1)
-                {
-                    var resultBit = byteIdx * 8 + bit - startIndex;
-                    result |= 1UL << resultBit;
-                }
-            }
+        // 通用路径：按字节掩码提取
+        ulong result = 0;
+        int endByte = (endIndex - 1) >> 3;
+        int resultShift = 0;
+        for (int byteIdx = startByte; byteIdx <= endByte && byteIdx < bytes.Length; byteIdx++)
+        {
+            int lo = byteIdx == startByte ? startBit : 0;
+            int hi = byteIdx == endByte ? (endIndex - 1) & 7 : 7;
+            int bits = hi - lo + 1;
+            ulong extracted = (ulong)((bytes[byteIdx] >> lo) & ((1 << bits) - 1));
+            result |= extracted << resultShift;
+            resultShift += bits;
         }
 
         return result;
@@ -82,41 +76,39 @@ internal static class BitHelperLSB
 
     private static void WriteBitsFromULongLSB(Span<byte> bytes, int startIndex, int endIndex, ulong value)
     {
-        var startByte = startIndex / 8;
-        var startBit = startIndex % 8;
-        var endByte = (endIndex - 1) / 8;
+        int bitCount = endIndex - startIndex;
+        int startByte = startIndex >> 3;
+        int startBit = startIndex & 7;
 
-        // LSB模式：字节内位序从低到高 (bit 0 是第一位，bit 7 是最后一位)
-        for (var byteIdx = startByte; byteIdx <= endByte && byteIdx < bytes.Length; byteIdx++)
+        // 快速路径：单次 8 字节读-改-写
+        if (startByte + 8 <= bytes.Length && startBit + bitCount <= 64)
         {
-            var firstBit = byteIdx == startByte ? startBit : 0;
-            var lastBit = byteIdx == endByte ? (endIndex - 1) % 8 : 7;
+            ulong mask = (bitCount == 64 ? ulong.MaxValue : (1UL << bitCount) - 1) << startBit;
+            ulong raw = BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(startByte));
+            raw = (raw & ~mask) | ((value << startBit) & mask);
+            BinaryPrimitives.WriteUInt64LittleEndian(bytes.Slice(startByte), raw);
+            return;
+        }
 
-            for (var bit = firstBit; bit <= lastBit; bit++)
-            {
-                // 计算在值中的位置
-                var resultBit = byteIdx * 8 + bit - startIndex;
-
-                // 获取值的对应位
-                var bitValue = (value >> resultBit) & 1;
-
-                if (bitValue == 1)
-                {
-                    // 设置位为1
-                    bytes[byteIdx] |= (byte)(1 << bit);
-                }
-                else
-                {
-                    // 设置位为0
-                    bytes[byteIdx] &= (byte)~(1 << bit);
-                }
-            }
+        // 通用路径：按字节掩码写入
+        int endByte = (endIndex - 1) >> 3;
+        int valueShift = 0;
+        for (int byteIdx = startByte; byteIdx <= endByte && byteIdx < bytes.Length; byteIdx++)
+        {
+            int lo = byteIdx == startByte ? startBit : 0;
+            int hi = byteIdx == endByte ? (endIndex - 1) & 7 : 7;
+            int bits = hi - lo + 1;
+            int mask = ((1 << bits) - 1) << lo;
+            byte valueBits = (byte)(((value >> valueShift) & ((1UL << bits) - 1)) << lo);
+            bytes[byteIdx] = (byte)((bytes[byteIdx] & ~mask) | valueBits);
+            valueShift += bits;
         }
     }
 }
 
 public class BitHelperMSB
 {
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T ValueLength<T>(ReadOnlySpan<byte> bytes, int startIndex, int length)
     {
         var maxBits = Unsafe.SizeOf<T>() * 8;
@@ -126,23 +118,14 @@ public class BitHelperMSB
         return ValueRange<T>(bytes, startIndex, startIndex + length);
     }
 
-    public static T ValueRange<T>(ReadOnlySpan<byte> bytes,
-        int startIndex,
-        int endIndex,
-        [CallerArgumentExpression("startIndex")]
-        string startIndexCallerName = null,
-        [CallerArgumentExpression("endIndex")] string endIndexCallerName = null)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static T ValueRange<T>(ReadOnlySpan<byte> bytes, int startIndex, int endIndex)
     {
-        var bitCount = endIndex - startIndex;
-        var maxBits = Unsafe.SizeOf<T>() * 8;
-        if (bitCount <= 0 || bitCount > maxBits)
-            throw new ArgumentException($"{endIndexCallerName} - {startIndexCallerName}的差值必须在1-{maxBits}之间");
-
         // 先提取为 ulong，然后转换为目标类型
-        var result = ExtractBitsToULongMSB(bytes, startIndex, endIndex);
-        return UnsafeConvertHelper.ConvertTo<T>(result);
+        return UnsafeConvertHelper.ConvertTo<T>(ExtractBitsToULongMSB(bytes, startIndex, endIndex));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void SetValueLength<T>(Span<byte> bytes, int startIndex, int length, T value)
     {
         var maxBits = Unsafe.SizeOf<T>() * 8;
@@ -152,6 +135,7 @@ public class BitHelperMSB
         SetValueRange(bytes, startIndex, startIndex + length, value);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void SetValueRange<T>(Span<byte> bytes, int startIndex, int endIndex, T value)
     {
         var bitCount = endIndex - startIndex;
@@ -168,30 +152,33 @@ public class BitHelperMSB
 
     private static ulong ExtractBitsToULongMSB(ReadOnlySpan<byte> bytes, int startIndex, int endIndex)
     {
-        ulong result = 0;
-        var bitCount = endIndex - startIndex;
-        var startByte = startIndex / 8;
-        var startBit = startIndex % 8;
-        var endByte = (endIndex - 1) / 8;
+        int bitCount = endIndex - startIndex;
+        int startByte = startIndex >> 3;
+        int startBit = startIndex & 7;
 
-        // MSB模式：字节内位序从高到低 (bit 7 是第一位，bit 0 是最后一位)
-        for (var byteIdx = startByte; byteIdx <= endByte && byteIdx < bytes.Length; byteIdx++)
+        // 快速路径：单次 8 字节读取
+        if (startByte + 8 <= bytes.Length && startBit + bitCount <= 64)
         {
-            var currentByte = bytes[byteIdx];
-            var firstBit = byteIdx == startByte ? startBit : 0;
-            var lastBit = byteIdx == endByte ? (endIndex - 1) % 8 : 7;
+            ulong raw = BinaryPrimitives.ReadUInt64BigEndian(bytes.Slice(startByte));
+            int shift = 64 - startBit - bitCount;
+            ulong mask = bitCount == 64 ? ulong.MaxValue : (1UL << bitCount) - 1;
+            return (raw >> shift) & mask;
+        }
 
-            for (var bit = firstBit; bit <= lastBit; bit++)
-            {
-                // MSB模式：bit 0 对应字节的 bit 7，bit 7 对应字节的 bit 0
-                if (((currentByte >> (7 - bit)) & 1) == 1)
-                {
-                    // 计算在结果中的位置（从高位开始）
-                    var bitPosition = byteIdx * 8 + bit - startIndex;
-                    // 结果中的位位置：最高位在左边
-                    result |= 1UL << (bitCount - 1 - bitPosition);
-                }
-            }
+        // 通用路径：按字节掩码提取
+        ulong result = 0;
+        int endByte = (endIndex - 1) >> 3;
+        int fieldPos = 0;
+        for (int byteIdx = startByte; byteIdx <= endByte && byteIdx < bytes.Length; byteIdx++)
+        {
+            int lo = byteIdx == startByte ? startBit : 0;
+            int hi = byteIdx == endByte ? (endIndex - 1) & 7 : 7;
+            int bits = hi - lo + 1;
+            // MSB: 字节内 bit lo 对应 byte bit (7-lo)，提取 [7-hi..7-lo]
+            ulong extracted = (ulong)((bytes[byteIdx] >> (7 - hi)) & ((1 << bits) - 1));
+            int shift2 = bitCount - fieldPos - bits;
+            result |= extracted << shift2;
+            fieldPos += bits;
         }
 
         return result;
@@ -199,250 +186,62 @@ public class BitHelperMSB
 
     private static void WriteBitsFromULongMSB(Span<byte> bytes, int startIndex, int endIndex, ulong value)
     {
-        var bitCount = endIndex - startIndex;
-        var startByte = startIndex / 8;
-        var startBit = startIndex % 8;
-        var endByte = (endIndex - 1) / 8;
+        int bitCount = endIndex - startIndex;
+        int startByte = startIndex >> 3;
+        int startBit = startIndex & 7;
 
-        // MSB模式：字节内位序从高到低 (bit 7 是第一位，bit 0 是最后一位)
-        for (var byteIdx = startByte; byteIdx <= endByte && byteIdx < bytes.Length; byteIdx++)
+        // 快速路径：单次 8 字节读-改-写
+        if (startByte + 8 <= bytes.Length && startBit + bitCount <= 64)
         {
-            var firstBit = byteIdx == startByte ? startBit : 0;
-            var lastBit = byteIdx == endByte ? (endIndex - 1) % 8 : 7;
+            int shift = 64 - startBit - bitCount;
+            ulong mask = (bitCount == 64 ? ulong.MaxValue : (1UL << bitCount) - 1) << shift;
+            ulong raw = BinaryPrimitives.ReadUInt64BigEndian(bytes.Slice(startByte));
+            raw = (raw & ~mask) | ((value << shift) & mask);
+            BinaryPrimitives.WriteUInt64BigEndian(bytes.Slice(startByte), raw);
+            return;
+        }
 
-            for (var bit = firstBit; bit <= lastBit; bit++)
-            {
-                // 计算在值中的位置（从高位开始）
-                var bitPosition = byteIdx * 8 + bit - startIndex;
-                var valueBitPosition = bitCount - 1 - bitPosition;
-
-                // 获取值的对应位
-                var bitValue = (value >> valueBitPosition) & 1;
-
-                // MSB模式：bit 0 对应字节的 bit 7，bit 7 对应字节的 bit 0
-                var byteBitPosition = 7 - bit;
-
-                if (bitValue == 1)
-                {
-                    // 设置位为1
-                    bytes[byteIdx] |= (byte)(1 << byteBitPosition);
-                }
-                else
-                {
-                    // 设置位为0
-                    bytes[byteIdx] &= (byte)~(1 << byteBitPosition);
-                }
-            }
+        // 通用路径：按字节掩码写入
+        int endByte = (endIndex - 1) >> 3;
+        int fieldPos = 0;
+        for (int byteIdx = startByte; byteIdx <= endByte && byteIdx < bytes.Length; byteIdx++)
+        {
+            int lo = byteIdx == startByte ? startBit : 0;
+            int hi = byteIdx == endByte ? (endIndex - 1) & 7 : 7;
+            int bits = hi - lo + 1;
+            // 从 value 中提取对应位（MSB 序）
+            int valueShift = bitCount - fieldPos - bits;
+            byte valueBits = (byte)((value >> valueShift) & ((1UL << bits) - 1));
+            // 写入字节的 [7-hi..7-lo] 位置
+            int byteShift = 7 - hi;
+            int mask = ((1 << bits) - 1) << byteShift;
+            bytes[byteIdx] = (byte)((bytes[byteIdx] & ~mask) | (valueBits << byteShift));
+            fieldPos += bits;
         }
     }
 }
 
-internal static class UnsafeConvertHelper
+public static class UnsafeConvertHelper
 {
+    /// <summary>
+    /// 将 ulong 转换为目标类型 T。
+    /// 利用 LE 内存布局，ulong 的低字节直接对应小类型的值，无需逐类型分支。
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static T ConvertTo<T>(ulong value)
     {
-        // 处理枚举类型 - 根据底层类型转换，避免装箱
-        if (typeof(T).IsEnum)
-        {
-            var underlyingType = Enum.GetUnderlyingType(typeof(T));
-            if (underlyingType == typeof(byte))
-            {
-                var v = (byte)value;
-                return Unsafe.As<byte, T>(ref v);
-            }
-
-            if (underlyingType == typeof(sbyte))
-            {
-                var v = (sbyte)value;
-                return Unsafe.As<sbyte, T>(ref v);
-            }
-
-            if (underlyingType == typeof(short))
-            {
-                var v = (short)value;
-                return Unsafe.As<short, T>(ref v);
-            }
-
-            if (underlyingType == typeof(ushort))
-            {
-                var v = (ushort)value;
-                return Unsafe.As<ushort, T>(ref v);
-            }
-
-            if (underlyingType == typeof(int))
-            {
-                var v = (int)value;
-                return Unsafe.As<int, T>(ref v);
-            }
-
-            if (underlyingType == typeof(uint))
-            {
-                var v = (uint)value;
-                return Unsafe.As<uint, T>(ref v);
-            }
-
-            if (underlyingType == typeof(long))
-            {
-                var v = (long)value;
-                return Unsafe.As<long, T>(ref v);
-            }
-
-            if (underlyingType == typeof(ulong))
-            {
-                return Unsafe.As<ulong, T>(ref value);
-            }
-        }
-
-        // 处理数值类型 - 使用 Unsafe.As 避免装箱
-        if (typeof(T) == typeof(byte))
-        {
-            var v = (byte)value;
-            return Unsafe.As<byte, T>(ref v);
-        }
-
-        if (typeof(T) == typeof(sbyte))
-        {
-            var v = (sbyte)value;
-            return Unsafe.As<sbyte, T>(ref v);
-        }
-
-        if (typeof(T) == typeof(short))
-        {
-            var v = (short)value;
-            return Unsafe.As<short, T>(ref v);
-        }
-
-        if (typeof(T) == typeof(ushort))
-        {
-            var v = (ushort)value;
-            return Unsafe.As<ushort, T>(ref v);
-        }
-
-        if (typeof(T) == typeof(int))
-        {
-            var v = (int)value;
-            return Unsafe.As<int, T>(ref v);
-        }
-
-        if (typeof(T) == typeof(uint))
-        {
-            var v = (uint)value;
-            return Unsafe.As<uint, T>(ref v);
-        }
-
-        if (typeof(T) == typeof(long))
-        {
-            var v = (long)value;
-            return Unsafe.As<long, T>(ref v);
-        }
-
-        if (typeof(T) == typeof(ulong))
-        {
-            return Unsafe.As<ulong, T>(ref value);
-        }
-
-        throw new NotSupportedException($"不支持的类型: {typeof(T)}");
+        return Unsafe.As<ulong, T>(ref value);
     }
 
+    /// <summary>
+    /// 将类型 T 的值转换为 ulong。
+    /// 先清零再写入，确保高位字节为 0（零扩展）。
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ulong ConvertFrom<T>(T value)
     {
-        // 处理枚举类型
-        if (typeof(T).IsEnum)
-        {
-            var underlyingType = Enum.GetUnderlyingType(typeof(T));
-            if (underlyingType == typeof(byte))
-            {
-                var v = Unsafe.As<T, byte>(ref value);
-                return v;
-            }
-
-            if (underlyingType == typeof(sbyte))
-            {
-                var v = Unsafe.As<T, sbyte>(ref value);
-                return (ulong)v;
-            }
-
-            if (underlyingType == typeof(short))
-            {
-                var v = Unsafe.As<T, short>(ref value);
-                return (ulong)v;
-            }
-
-            if (underlyingType == typeof(ushort))
-            {
-                var v = Unsafe.As<T, ushort>(ref value);
-                return v;
-            }
-
-            if (underlyingType == typeof(int))
-            {
-                var v = Unsafe.As<T, int>(ref value);
-                return (ulong)v;
-            }
-
-            if (underlyingType == typeof(uint))
-            {
-                var v = Unsafe.As<T, uint>(ref value);
-                return v;
-            }
-
-            if (underlyingType == typeof(long))
-            {
-                var v = Unsafe.As<T, long>(ref value);
-                return (ulong)v;
-            }
-
-            if (underlyingType == typeof(ulong))
-            {
-                return Unsafe.As<T, ulong>(ref value);
-            }
-        }
-
-        // 处理数值类型
-        if (typeof(T) == typeof(byte))
-        {
-            return Unsafe.As<T, byte>(ref value);
-        }
-
-        if (typeof(T) == typeof(sbyte))
-        {
-            var v = Unsafe.As<T, sbyte>(ref value);
-            return (ulong)v;
-        }
-
-        if (typeof(T) == typeof(short))
-        {
-            var v = Unsafe.As<T, short>(ref value);
-            return (ulong)v;
-        }
-
-        if (typeof(T) == typeof(ushort))
-        {
-            return Unsafe.As<T, ushort>(ref value);
-        }
-
-        if (typeof(T) == typeof(int))
-        {
-            var v = Unsafe.As<T, int>(ref value);
-            return (ulong)v;
-        }
-
-        if (typeof(T) == typeof(uint))
-        {
-            return Unsafe.As<T, uint>(ref value);
-        }
-
-        if (typeof(T) == typeof(long))
-        {
-            var v = Unsafe.As<T, long>(ref value);
-            return (ulong)v;
-        }
-
-        if (typeof(T) == typeof(ulong))
-        {
-            return Unsafe.As<T, ulong>(ref value);
-        }
-
-        throw new NotSupportedException($"不支持的类型: {typeof(T)}");
+        ulong result = 0;
+        Unsafe.As<ulong, T>(ref result) = value;
+        return result;
     }
 }

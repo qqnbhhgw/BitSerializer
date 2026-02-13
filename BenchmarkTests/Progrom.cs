@@ -1,6 +1,6 @@
 ﻿using BenchmarkDotNet.Running;
 
-namespace BitSerializer.BenchmarkTests;
+namespace BenchmarkTests;
 
 public static class Program
 {
