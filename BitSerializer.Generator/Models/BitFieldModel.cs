@@ -29,6 +29,7 @@ internal class BitFieldModel
     public int? FixedCount { get; set; }
     public string? RelatedMemberName { get; set; }
     public bool IsNestedType { get; set; }
+    public bool IsTypeParameter { get; set; }
     public bool IsPolymorphic { get; set; }
     public List<PolyMapping>? PolyMappings { get; set; }
     public string? ValueConverterTypeFullName { get; set; }

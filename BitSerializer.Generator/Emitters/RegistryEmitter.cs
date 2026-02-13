@@ -26,7 +26,9 @@ internal static class RegistryEmitter
         sb.AppendLine("    {");
         foreach (var model in validModels)
         {
-            sb.AppendLine($"        global::BitSerializer.BitSerializerRegistry.Register<{model!.FullyQualifiedName}>();");
+            // Skip open generic types - they can't be registered directly
+            if (model!.IsOpenGeneric) continue;
+            sb.AppendLine($"        global::BitSerializer.BitSerializerRegistry.Register<{model.FullyQualifiedName}>();");
         }
         sb.AppendLine("    }");
         sb.AppendLine("}");

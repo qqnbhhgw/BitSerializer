@@ -9,11 +9,14 @@
 - **Attribute 驱动** — 通过特性标注即可声明序列化结构，无需手写编解码逻辑
 - **自动推断位长** — 未指定位长时，自动根据类型推断（`byte` = 8, `ushort` = 16, `int` = 32 ...）
 - **嵌套类型** — 支持嵌套复合类型的递归序列化
+- **继承链支持** — 支持多层继承，包括通过未标记 `[BitSerialize]` 的中间抽象类型（如泛型基类）正确序列化
+- **泛型类型参数** — 支持泛型类型参数字段的序列化，通过 `IBitSerializable` 接口在运行时分发
 - **集合支持** — 支持 `List<T>` 的序列化，元素数量可动态关联或固定指定
 - **多态类型** — 通过类型判别字段自动分发到具体子类
 - **值转换器** — 支持自定义序列化/反序列化时的值变换
 - **record 类型支持** — 支持 `record class` 和 `record struct`
 - **Source Generator** — 编译期自动生成序列化代码，零反射开销
+- **编译期诊断** — 自动检测嵌套类型是否缺少 `[BitSerialize]` 标记，编译时报错
 - **一包即用** — 只需引用 `Jlzeng.BitSerializer`，Source Generator 自动生效
 
 ## 环境要求
@@ -128,10 +131,11 @@ public class StatusPacket
 
 ### 嵌套类型
 
-支持复合类型的递归序列化：
+支持复合类型的递归序列化。嵌套类型也需要标记 `[BitSerialize]` 和 `partial`：
 
 ```csharp
-public class Point
+[BitSerialize]
+public partial class Point
 {
     [BitField(8)]
     public byte X { get; set; }
@@ -140,7 +144,8 @@ public class Point
     public byte Y { get; set; }
 }
 
-public class Frame
+[BitSerialize]
+public partial class Frame
 {
     [BitField(8)]
     public byte Id { get; set; }
@@ -150,6 +155,48 @@ public class Frame
 
     [BitField(8)]
     public byte Flags { get; set; }
+}
+```
+
+### 继承链
+
+支持多层继承的序列化。中间基类即使未标记 `[BitSerialize]`（如抽象泛型基类），其字段也会被正确包含：
+
+```csharp
+[BitSerialize]
+public partial record BasePacket
+{
+    [BitField(8)]
+    public byte Header { get; set; }
+
+    [BitField(16)]
+    public ushort CommonField { get; set; }
+}
+
+// 中间抽象泛型基类，无需标记 [BitSerialize]
+public abstract record GenericPacket<TPayload> : BasePacket
+    where TPayload : PayloadBase
+{
+    [BitField]
+    public TPayload Payload { get; set; }
+}
+
+// 具体子类标记 [BitSerialize]，自动继承整个链上的字段
+[BitSerialize]
+public partial record ConcretePacket : GenericPacket<MyPayload> { }
+```
+
+生成的代码会自动调用 `base.SerializeLSB()` 处理基类字段，并序列化中间类型的字段。
+
+### 泛型类型参数
+
+泛型类型参数字段通过 `IBitSerializable` 接口在运行时动态分发，位长度在运行时计算：
+
+```csharp
+public abstract record Container<T> : BaseType where T : PayloadBase
+{
+    [BitField]
+    public T Data { get; set; }  // 运行时通过接口调用序列化
 }
 ```
 
@@ -261,10 +308,38 @@ public class MixedData
 }
 ```
 
+## 编译期诊断
+
+Source Generator 会在编译期检查常见错误并报告诊断信息：
+
+| 诊断码 | 说明 |
+|--------|------|
+| `BITS001` | 标记 `[BitSerialize]` 的类型必须是 `partial` |
+| `BITS006` | 嵌套的序列化字段类型必须标记 `[BitSerialize]` |
+
+例如，以下代码会触发 `BITS006` 编译错误：
+
+```csharp
+// 错误：Point 未标记 [BitSerialize]
+public record Point
+{
+    [BitField(8)] public byte X { get; set; }
+}
+
+[BitSerialize]
+public partial record Frame
+{
+    [BitField] public Point Position { get; set; }  // BITS006: 'Point' 必须标记 [BitSerialize]
+}
+```
+
+修复方式：为 `Point` 添加 `[BitSerialize]` 和 `partial`。
+
 ## Attribute 参考
 
 | 特性 | 说明 |
 |------|------|
+| `[BitSerialize]` | 标记类型参与位序列化（类型必须同时声明为 `partial`） |
 | `[BitField(n)]` | 声明字段参与序列化，`n` 为位长度（可选，不指定则自动推断） |
 | `[BitFieldRelated(name)]` | 关联另一个字段（用于 List 计数或多态判别） |
 | `[BitFieldRelated(name, converterType)]` | 关联字段并指定值转换器 |

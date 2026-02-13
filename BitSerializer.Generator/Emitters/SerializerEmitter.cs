@@ -22,6 +22,7 @@ internal static class SerializerEmitter
 
         bool hasDynamic = false;
         string? dynamicVarName = null;
+        var typeParamBitsExprs = new System.Collections.Generic.List<string>();
 
         foreach (var field in model.Fields)
         {
@@ -37,6 +38,12 @@ internal static class SerializerEmitter
             {
                 EmitPolymorphicSerialize(sb, field, helper, memberAccess, bitOrder);
             }
+            else if (field.IsTypeParameter)
+            {
+                // Type parameter field: use interface dispatch
+                sb.AppendLine($"        ((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, bitOffset + {field.BitStartIndex});");
+                typeParamBitsExprs.Add($"((global::BitSerializer.IBitSerializable)this.{field.MemberName}).GetTotalBitLength()");
+            }
             else if (field.IsNestedType)
             {
                 sb.AppendLine($"        {memberAccess}.{methodName}(bytes, bitOffset + {field.BitStartIndex});");
@@ -47,13 +54,17 @@ internal static class SerializerEmitter
             }
         }
 
+        var typeParamSuffix = typeParamBitsExprs.Count > 0
+            ? " + " + string.Join(" + ", typeParamBitsExprs)
+            : "";
+
         if (hasDynamic)
         {
-            sb.AppendLine($"        return {dynamicVarName} - bitOffset;");
+            sb.AppendLine($"        return {dynamicVarName} - bitOffset{typeParamSuffix};");
         }
         else
         {
-            sb.AppendLine($"        return {model.TotalBitLength};");
+            sb.AppendLine($"        return {model.TotalBitLength}{typeParamSuffix};");
         }
 
         sb.AppendLine("    }");

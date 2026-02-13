@@ -69,15 +69,24 @@ internal static class TypeAnalyzer
             containingType = containingType.ContainingType;
         }
 
-        // Check if base type also has [BitSerialize]
+        // Check if any ancestor type has [BitSerialize] and collect intermediate fields
         bool hasBitSerializableBase = false;
         int baseBitLength = 0;
-        if (symbol.BaseType != null && symbol.BaseType.SpecialType != SpecialType.System_Object)
+        var intermediateFields = new List<ISymbol>();
         {
-            hasBitSerializableBase = HasAttribute(symbol.BaseType, "BitSerializer.BitSerializeAttribute");
-            if (hasBitSerializableBase)
+            var current = symbol.BaseType;
+            while (current != null && current.SpecialType != SpecialType.System_Object)
             {
-                baseBitLength = CalculateNestedBitLength(symbol.BaseType);
+                if (HasAttribute(current, "BitSerializer.BitSerializeAttribute"))
+                {
+                    // Found a [BitSerialize] ancestor - it generates its own code
+                    hasBitSerializableBase = true;
+                    baseBitLength = CalculateNestedBitLength(current);
+                    break;
+                }
+                // This intermediate base doesn't have [BitSerialize], collect its fields
+                intermediateFields.InsertRange(0, GetSerializableMembers(current));
+                current = current.BaseType;
             }
         }
 
@@ -90,13 +99,16 @@ internal static class TypeAnalyzer
             FullyQualifiedName = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             IsClass = symbol.TypeKind == TypeKind.Class,
             IsRecord = symbol.IsRecord,
+            IsOpenGeneric = symbol.TypeParameters.Length > 0,
             ContainingTypes = containingTypes,
             HasBitSerializableBaseType = hasBitSerializableBase,
             BaseBitLength = baseBitLength
         };
 
-        // Collect members in declaration order
-        var members = GetSerializableMembers(symbol);
+        // Collect members: intermediate base fields first, then own declared members
+        var members = new List<ISymbol>();
+        members.AddRange(intermediateFields);
+        members.AddRange(GetSerializableMembers(symbol));
         int currentBitIndex = baseBitLength;
 
         foreach (var member in members)
@@ -203,6 +215,17 @@ internal static class TypeAnalyzer
                     field.ListElementBitLength = nestedBits;
                     field.BitLength = 0;
                 }
+                else
+                {
+                    // List element is a non-numeric type without [BitSerialize]
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.NestedTypeMustBeBitSerializable,
+                            member.Locations.FirstOrDefault(),
+                            elementType!.Name, symbol.Name)
+                    };
+                }
 
                 if (field.FixedCount.HasValue)
                 {
@@ -278,10 +301,28 @@ internal static class TypeAnalyzer
                 field.BitLength = explicitBitLength ?? nestedBits;
                 currentBitIndex += field.BitLength;
             }
+            else if (memberType is ITypeParameterSymbol typeParam &&
+                     typeParam.ConstraintTypes.Any(c => HasAttribute(c, "BitSerializer.BitSerializeAttribute")))
+            {
+                // Type parameter with [BitSerialize] constraint (e.g., TExComLogSt : ExComLogStBase)
+                // Bit length is unknown at compile time, use interface dispatch at runtime
+                field.IsNestedType = true;
+                field.IsTypeParameter = true;
+                field.MemberTypeName = memberType.Name;
+                field.MemberTypeFullName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                field.BitLength = 0; // Unknown at compile time
+                model.HasDynamicLength = true;
+            }
             else
             {
-                // Unsupported type, skip (diagnostic will handle)
-                continue;
+                // Non-numeric, non-list type without [BitSerialize]
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.NestedTypeMustBeBitSerializable,
+                        member.Locations.FirstOrDefault(),
+                        memberType.Name, symbol.Name)
+                };
             }
 
             model.Fields.Add(field);
@@ -369,8 +410,17 @@ internal static class TypeAnalyzer
 
     private static int CalculateNestedBitLength(ITypeSymbol type)
     {
-        var members = GetSerializableMembers((INamedTypeSymbol)type);
+        var namedType = (INamedTypeSymbol)type;
         int total = 0;
+
+        // Walk up the base type chain to include all ancestor bits
+        if (namedType.BaseType != null &&
+            namedType.BaseType.SpecialType != SpecialType.System_Object)
+        {
+            total += CalculateNestedBitLength(namedType.BaseType);
+        }
+
+        var members = GetSerializableMembers(namedType);
         foreach (var member in members)
         {
             var memberType = GetMemberType(member);
@@ -431,8 +481,44 @@ internal static class TypeAnalyzer
 
     private static bool HasAttribute(ISymbol symbol, string fullName)
     {
-        return symbol.GetAttributes().Any(a =>
-            a.AttributeClass?.ToDisplayString() == fullName);
+        if (symbol.GetAttributes().Any(a =>
+            a.AttributeClass?.ToDisplayString() == fullName))
+            return true;
+
+        // For constructed generic types in the same compilation, GetAttributes()
+        // may return empty. Fall back to checking the syntax tree.
+        var targetSymbol = symbol;
+        if (symbol is INamedTypeSymbol namedType &&
+            !SymbolEqualityComparer.Default.Equals(namedType, namedType.OriginalDefinition))
+        {
+            targetSymbol = namedType.OriginalDefinition;
+        }
+
+        // Extract the short attribute name from fully qualified name (e.g., "BitSerialize" from "BitSerializer.BitSerializeAttribute")
+        var shortName = fullName;
+        var lastDot = fullName.LastIndexOf('.');
+        if (lastDot >= 0) shortName = fullName.Substring(lastDot + 1);
+        var shortNameNoSuffix = shortName.EndsWith("Attribute")
+            ? shortName.Substring(0, shortName.Length - "Attribute".Length)
+            : shortName;
+
+        foreach (var syntaxRef in targetSymbol.DeclaringSyntaxReferences)
+        {
+            if (syntaxRef.GetSyntax() is TypeDeclarationSyntax typeDecl)
+            {
+                foreach (var attrList in typeDecl.AttributeLists)
+                {
+                    foreach (var attr in attrList.Attributes)
+                    {
+                        var name = attr.Name.ToString();
+                        if (name == shortName || name == shortNameNoSuffix)
+                            return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     private static AttributeData? GetAttribute(ISymbol symbol, string fullName)

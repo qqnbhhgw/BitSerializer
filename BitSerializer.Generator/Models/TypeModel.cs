@@ -38,6 +38,10 @@ internal class TypeModel : IEquatable<TypeModel>
     /// </summary>
     public List<ContainingTypeInfo> ContainingTypes { get; set; } = new();
     /// <summary>
+    /// True if this is an open generic type (has unresolved type parameters).
+    /// </summary>
+    public bool IsOpenGeneric { get; set; }
+    /// <summary>
     /// True if the base type also has [BitSerialize] (needs 'new' keyword on methods).
     /// </summary>
     public bool HasBitSerializableBaseType { get; set; }
@@ -74,6 +78,7 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.MemberTypeFullName == y.MemberTypeFullName
             && x.IsList == y.IsList
             && x.IsNestedType == y.IsNestedType
+            && x.IsTypeParameter == y.IsTypeParameter
             && x.IsPolymorphic == y.IsPolymorphic
             && x.FixedCount == y.FixedCount
             && x.RelatedMemberName == y.RelatedMemberName
