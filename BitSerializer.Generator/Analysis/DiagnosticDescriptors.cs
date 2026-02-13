@@ -23,7 +23,7 @@ internal static class DiagnosticDescriptors
     public static readonly DiagnosticDescriptor ListMissingCountInfo = new(
         "BITS003",
         "List missing count info",
-        "List member '{0}' requires [BitFieldRelated] or [BitFiledCount]",
+        "List member '{0}' requires [BitFieldRelated] or [BitFieldCount]",
         "BitSerializer",
         DiagnosticSeverity.Error,
         true);

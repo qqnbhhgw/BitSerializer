@@ -150,8 +150,8 @@ internal static class TypeAnalyzer
             field.RelatedMemberName = relatedMemberName;
             field.ValueConverterTypeFullName = valueConverterFullName;
 
-            // Check for BitFiledCount
-            var countAttr = GetAttribute(member, "BitSerializer.BitFiledCountAttribute");
+            // Check for BitFieldCount
+            var countAttr = GetAttribute(member, "BitSerializer.BitFieldCountAttribute");
             if (countAttr != null && countAttr.ConstructorArguments.Length > 0)
             {
                 field.FixedCount = (int)countAttr.ConstructorArguments[0].Value!;
@@ -382,7 +382,7 @@ internal static class TypeAnalyzer
 
             if (IsListType(memberType, out var elemType, out _))
             {
-                var countAttr = GetAttribute(member, "BitSerializer.BitFiledCountAttribute");
+                var countAttr = GetAttribute(member, "BitSerializer.BitFieldCountAttribute");
                 if (countAttr != null)
                 {
                     int count = (int)countAttr.ConstructorArguments[0].Value!;

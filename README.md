@@ -141,7 +141,7 @@ public class Frame
 
 ### 集合（List）
 
-通过 `BitFieldRelated` 关联计数字段，或通过 `BitFiledCount` 指定固定数量：
+通过 `BitFieldRelated` 关联计数字段，或通过 `BitFieldCount` 指定固定数量：
 
 ```csharp
 // 动态数量：关联计数字段
@@ -162,7 +162,7 @@ public class DynamicList
 public class FixedList
 {
     [BitField]
-    [BitFiledCount(3)]                      // 固定 3 个元素
+    [BitFieldCount(3)]                      // 固定 3 个元素
     public List<byte> Items { get; set; } = new();
 }
 ```
@@ -254,7 +254,7 @@ public class MixedData
 | `[BitField(n)]` | 声明字段参与序列化，`n` 为位长度（可选，不指定则自动推断） |
 | `[BitFieldRelated(name)]` | 关联另一个字段（用于 List 计数或多态判别） |
 | `[BitFieldRelated(name, converterType)]` | 关联字段并指定值转换器 |
-| `[BitFiledCount(n)]` | 指定 List 的固定元素数量 |
+| `[BitFieldCount(n)]` | 指定 List 的固定元素数量 |
 | `[BitPoly(id, type)]` | 多态映射：当判别值为 `id` 时反序列化为 `type` |
 | `[BitIgnore]` | 忽略该字段，不参与序列化/反序列化 |
 

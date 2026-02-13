@@ -1440,7 +1440,7 @@ public partial class BitSerializerMSBTests
 
     #endregion
 
-    #region BitFiledCountAttribute Models
+    #region BitFieldCountAttribute Models
 
     [BitSerialize]
     public partial class FixedCountListData
@@ -1449,7 +1449,7 @@ public partial class BitSerializerMSBTests
         public byte Header { get; set; }
 
         [BitField]
-        [BitFiledCount(3)]
+        [BitFieldCount(3)]
         public List<byte> Items { get; set; } = new();
     }
 
@@ -1460,7 +1460,7 @@ public partial class BitSerializerMSBTests
         public byte Header { get; set; }
 
         [BitField]
-        [BitFiledCount(2)]
+        [BitFieldCount(2)]
         public List<InnerData> Items { get; set; } = new();
     }
 
@@ -1471,7 +1471,7 @@ public partial class BitSerializerMSBTests
         public byte Count { get; set; }
 
         [BitField]
-        [BitFiledCount(2)]
+        [BitFieldCount(2)]
         [BitFieldRelated(nameof(Count))]
         public List<byte> Items { get; set; } = new();
     }
@@ -1483,13 +1483,13 @@ public partial class BitSerializerMSBTests
         public byte Prefix { get; set; }
 
         [BitField(4)]
-        [BitFiledCount(3)]
+        [BitFieldCount(3)]
         public List<byte> Nibbles { get; set; } = new();
     }
 
     #endregion
 
-    #region BitFiledCountAttribute Deserialization Tests
+    #region BitFieldCountAttribute Deserialization Tests
 
     [Fact]
     public void Deserialize_FixedCountList_ShouldDeserializeCorrectly()
@@ -1535,7 +1535,7 @@ public partial class BitSerializerMSBTests
 
     #endregion
 
-    #region BitFiledCountAttribute Serialization Tests
+    #region BitFieldCountAttribute Serialization Tests
 
     [Fact]
     public void Serialize_FixedCountList_ShouldSerializeCorrectly()
@@ -1578,7 +1578,7 @@ public partial class BitSerializerMSBTests
 
     #endregion
 
-    #region BitFiledCountAttribute RoundTrip Tests
+    #region BitFieldCountAttribute RoundTrip Tests
 
     [Fact]
     public void SerializeDeserialize_FixedCountList_ShouldRoundTrip()
@@ -1667,7 +1667,7 @@ public partial class BitSerializerMSBTests
         public byte Header { get; set; }
 
         [BitField]
-        [BitFiledCount(3)]
+        [BitFieldCount(3)]
         public byte[] Items { get; set; } = [];
     }
 
@@ -1689,7 +1689,7 @@ public partial class BitSerializerMSBTests
         public byte Prefix { get; set; }
 
         [BitField(4)]
-        [BitFiledCount(3)]
+        [BitFieldCount(3)]
         public byte[] Nibbles { get; set; } = [];
     }
 

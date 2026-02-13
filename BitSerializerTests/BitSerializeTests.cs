@@ -6,7 +6,7 @@ namespace BitSerializerTests;
 [BitSerialize]
 public partial class TestData
 {
-    [BitField] [BitFiledCount(12)] public List<byte> NoMean { get; set; }
+    [BitField] [BitFieldCount(12)] public List<byte> NoMean { get; set; }
 
     [BitField] public ulong SysRunId { get; set; }
 }
