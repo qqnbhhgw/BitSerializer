@@ -14,7 +14,12 @@
       "Bash(Remove-Item \"D:\\\\zjlHub\\\\BitSerializer\\\\BitSerializerTests\\\\DiagnosticTest.cs\" -Force)",
       "Bash(cmd /c del \"D:\\\\zjlHub\\\\BitSerializer\\\\BitSerializerTests\\\\DiagnosticTest.cs\")",
       "Bash(cmd /c \"del /f D:\\\\zjlHub\\\\BitSerializer\\\\BitSerializerTests\\\\DiagnosticTest.cs\")",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(dotnet tool run:*)",
+      "Bash(python:*)",
+      "Bash(dotnet nuget list source:*)",
+      "Bash(dotnet nuget delete:*)",
+      "Bash(dotnet package search:*)"
     ]
   }
 }

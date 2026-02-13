@@ -1819,4 +1819,295 @@ public partial class BitSerializerMSBTests
     }
 
     #endregion
+
+    #region Record Type Models
+
+    [BitSerialize]
+    public partial record RecordClassData
+    {
+        [BitField(8)]
+        public byte Header { get; set; }
+
+        [BitField(16)]
+        public ushort Value { get; set; }
+
+        [BitField(8)]
+        public byte Footer { get; set; }
+    }
+
+    [BitSerialize]
+    public partial record struct RecordStructData
+    {
+        [BitField(8)]
+        public byte Header { get; set; }
+
+        [BitField(16)]
+        public ushort Value { get; set; }
+
+        [BitField(8)]
+        public byte Footer { get; set; }
+    }
+
+    [BitSerialize]
+    public partial record class RecordWithCustomBitLength
+    {
+        [BitField(4)]
+        public byte NibbleHigh { get; set; }
+
+        [BitField(4)]
+        public byte NibbleLow { get; set; }
+
+        [BitField(12)]
+        public ushort TwelveBits { get; set; }
+    }
+
+    [BitSerialize]
+    public partial record class RecordWithEnum
+    {
+        [BitField(8)]
+        public TestStatus Status { get; set; }
+
+        [BitField(16)]
+        public ushort Code { get; set; }
+    }
+
+    [BitSerialize]
+    public partial record class RecordInnerData
+    {
+        [BitField(8)]
+        public byte X { get; set; }
+
+        [BitField(8)]
+        public byte Y { get; set; }
+    }
+
+    [BitSerialize]
+    public partial record class RecordWithNested
+    {
+        [BitField(8)]
+        public byte Header { get; set; }
+
+        [BitField]
+        public RecordInnerData Inner { get; set; } = new();
+
+        [BitField(8)]
+        public byte Footer { get; set; }
+    }
+
+    [BitSerialize]
+    public partial record class RecordWithList
+    {
+        [BitField(8)]
+        public byte Count { get; set; }
+
+        [BitField]
+        [BitFieldRelated(nameof(Count))]
+        public List<byte> Items { get; set; } = new();
+    }
+
+    [BitSerialize]
+    public partial record class RecordWithIgnored
+    {
+        [BitField(8)]
+        public byte Value { get; set; }
+
+        [BitIgnore]
+        public string Description { get; set; } = string.Empty;
+
+        [BitField(8)]
+        public byte AnotherValue { get; set; }
+    }
+
+    #endregion
+
+    #region Record Class Tests
+
+    [Fact]
+    public void SerializeDeserialize_RecordClass_ShouldRoundTrip()
+    {
+        var original = new RecordClassData
+        {
+            Header = 0xAB,
+            Value = 0x1234,
+            Footer = 0xCD
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<RecordClassData>(bytes);
+
+        deserialized.Header.ShouldBe(original.Header);
+        deserialized.Value.ShouldBe(original.Value);
+        deserialized.Footer.ShouldBe(original.Footer);
+    }
+
+    [Fact]
+    public void Serialize_RecordClass_ShouldProduceSameBytesAsClass()
+    {
+        var classData = new SimpleData
+        {
+            Header = 0xAB,
+            Value = 0x1234,
+            Footer = 0xCD
+        };
+        var recordData = new RecordClassData
+        {
+            Header = 0xAB,
+            Value = 0x1234,
+            Footer = 0xCD
+        };
+
+        var classBytes = BitSerializerMSB.Serialize(classData);
+        var recordBytes = BitSerializerMSB.Serialize(recordData);
+
+        recordBytes.ShouldBe(classBytes);
+    }
+
+    [Fact]
+    public void Deserialize_RecordClass_ShouldDeserializeCorrectly()
+    {
+        byte[] bytes = { 0xAB, 0x12, 0x34, 0xCD };
+
+        var result = BitSerializerMSB.Deserialize<RecordClassData>(bytes);
+
+        result.Header.ShouldBe((byte)0xAB);
+        result.Value.ShouldBe((ushort)0x1234);
+        result.Footer.ShouldBe((byte)0xCD);
+    }
+
+    #endregion
+
+    #region Record Struct Tests
+
+    [Fact]
+    public void SerializeDeserialize_RecordStruct_ShouldRoundTrip()
+    {
+        var original = new RecordStructData
+        {
+            Header = 0xAB,
+            Value = 0x1234,
+            Footer = 0xCD
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<RecordStructData>(bytes);
+
+        deserialized.Header.ShouldBe(original.Header);
+        deserialized.Value.ShouldBe(original.Value);
+        deserialized.Footer.ShouldBe(original.Footer);
+    }
+
+    [Fact]
+    public void Serialize_RecordStruct_ShouldProduceSameBytesAsClass()
+    {
+        var classData = new SimpleData
+        {
+            Header = 0xAB,
+            Value = 0x1234,
+            Footer = 0xCD
+        };
+        var recordData = new RecordStructData
+        {
+            Header = 0xAB,
+            Value = 0x1234,
+            Footer = 0xCD
+        };
+
+        var classBytes = BitSerializerMSB.Serialize(classData);
+        var recordBytes = BitSerializerMSB.Serialize(recordData);
+
+        recordBytes.ShouldBe(classBytes);
+    }
+
+    #endregion
+
+    #region Record with Features Tests
+
+    [Fact]
+    public void SerializeDeserialize_RecordWithCustomBitLength_ShouldRoundTrip()
+    {
+        var original = new RecordWithCustomBitLength
+        {
+            NibbleHigh = 0xA,
+            NibbleLow = 0x5,
+            TwelveBits = 0x678
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<RecordWithCustomBitLength>(bytes);
+
+        deserialized.NibbleHigh.ShouldBe(original.NibbleHigh);
+        deserialized.NibbleLow.ShouldBe(original.NibbleLow);
+        deserialized.TwelveBits.ShouldBe(original.TwelveBits);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_RecordWithEnum_ShouldRoundTrip()
+    {
+        var original = new RecordWithEnum
+        {
+            Status = TestStatus.Active,
+            Code = 0x1234
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<RecordWithEnum>(bytes);
+
+        deserialized.Status.ShouldBe(original.Status);
+        deserialized.Code.ShouldBe(original.Code);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_RecordWithNested_ShouldRoundTrip()
+    {
+        var original = new RecordWithNested
+        {
+            Header = 0xAA,
+            Inner = new RecordInnerData { X = 0x11, Y = 0x22 },
+            Footer = 0xBB
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<RecordWithNested>(bytes);
+
+        deserialized.Header.ShouldBe(original.Header);
+        deserialized.Inner.X.ShouldBe(original.Inner.X);
+        deserialized.Inner.Y.ShouldBe(original.Inner.Y);
+        deserialized.Footer.ShouldBe(original.Footer);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_RecordWithList_ShouldRoundTrip()
+    {
+        var original = new RecordWithList
+        {
+            Count = 3,
+            Items = new List<byte> { 0x11, 0x22, 0x33 }
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<RecordWithList>(bytes);
+
+        deserialized.Count.ShouldBe(original.Count);
+        deserialized.Items.ShouldBe(original.Items);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_RecordWithIgnored_ShouldRoundTrip()
+    {
+        var original = new RecordWithIgnored
+        {
+            Value = 0xAA,
+            Description = "This should be ignored",
+            AnotherValue = 0xBB
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var deserialized = BitSerializerMSB.Deserialize<RecordWithIgnored>(bytes);
+
+        deserialized.Value.ShouldBe(original.Value);
+        deserialized.AnotherValue.ShouldBe(original.AnotherValue);
+        deserialized.Description.ShouldBeEmpty();
+    }
+
+    #endregion
 }

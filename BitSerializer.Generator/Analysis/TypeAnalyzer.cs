@@ -63,7 +63,8 @@ internal static class TypeAnalyzer
             containingTypes.Insert(0, new ContainingTypeInfo
             {
                 Name = containingType.Name,
-                IsClass = containingType.TypeKind == TypeKind.Class
+                IsClass = containingType.TypeKind == TypeKind.Class,
+                IsRecord = containingType.IsRecord
             });
             containingType = containingType.ContainingType;
         }
@@ -88,6 +89,7 @@ internal static class TypeAnalyzer
             TypeName = symbol.Name,
             FullyQualifiedName = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             IsClass = symbol.TypeKind == TypeKind.Class,
+            IsRecord = symbol.IsRecord,
             ContainingTypes = containingTypes,
             HasBitSerializableBaseType = hasBitSerializableBase,
             BaseBitLength = baseBitLength

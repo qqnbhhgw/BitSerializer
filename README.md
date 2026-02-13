@@ -12,7 +12,9 @@
 - **集合支持** — 支持 `List<T>` 的序列化，元素数量可动态关联或固定指定
 - **多态类型** — 通过类型判别字段自动分发到具体子类
 - **值转换器** — 支持自定义序列化/反序列化时的值变换
-- **高性能** — Expression Tree 编译 + 缓存，避免反射开销
+- **record 类型支持** — 支持 `record class` 和 `record struct`
+- **Source Generator** — 编译期自动生成序列化代码，零反射开销
+- **一包即用** — 只需引用 `Jlzeng.BitSerializer`，Source Generator 自动生效
 
 ## 环境要求
 
@@ -25,8 +27,9 @@
 ```csharp
 using BitSerializer;
 
-// 定义数据结构
-public class Packet
+// 定义数据结构（需标记 [BitSerialize] 和 partial）
+[BitSerialize]
+public partial class Packet
 {
     [BitField(8)]
     public byte Header { get; set; }
@@ -36,6 +39,17 @@ public class Packet
 
     [BitField(8)]
     public byte Checksum { get; set; }
+}
+
+// 也支持 record 类型
+[BitSerialize]
+public partial record RecordPacket
+{
+    [BitField(8)]
+    public byte Header { get; set; }
+
+    [BitField(16)]
+    public ushort Payload { get; set; }
 }
 
 // MSB 模式（高位优先，大端序）
@@ -262,8 +276,8 @@ public class MixedData
 
 - 整数类型：`byte`, `sbyte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`
 - 枚举类型（任意底层整数类型）
-- 嵌套的 BitField 类
-- `List<T>`（T 为上述支持的类型）
+- 嵌套的 BitField 类型（class / struct / record）
+- `List<T>` / `T[]`（T 为上述支持的类型）
 
 ## API 参考
 

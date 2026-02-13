@@ -7,7 +7,7 @@
 		<PackageId>Jlzeng.BitSerializer</PackageId>
 		<GeneratePackageOnBuild>False</GeneratePackageOnBuild>
 		<Title>BitSerializer</Title>
-		<Version>0.3.2</Version>
+		<Version>0.4.0</Version>
 		<Authors>zeng jl</Authors>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<RepositoryUrl>https://github.com/qqnbhhgw/BitSerializer</RepositoryUrl>
@@ -21,11 +21,23 @@
 	    <PackagePath>\</PackagePath>
 	  </None>
 	</ItemGroup>
-	
+
 	<ItemGroup>
 	  <ProjectReference Include="..\BitSerializer.Generator\BitSerializer.Generator.csproj"
 	                    OutputItemType="Analyzer"
 	                    ReferenceOutputAssembly="false" />
+	</ItemGroup>
+
+	<!-- Pack generator DLL into analyzers folder so consumers get it automatically -->
+	<ItemGroup>
+	  <None Include="..\BitSerializer.Generator\bin\$(Configuration)\netstandard2.0\BitSerializer.Generator.dll"
+	        Pack="true"
+	        PackagePath="analyzers/dotnet/cs"
+	        Visible="false" />
+	  <None Include="buildTransitive\Jlzeng.BitSerializer.props"
+	        Pack="true"
+	        PackagePath="buildTransitive"
+	        Visible="false" />
 	</ItemGroup>
 
 </Project>

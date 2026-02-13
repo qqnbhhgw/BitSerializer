@@ -8,11 +8,12 @@ internal class ContainingTypeInfo : IEquatable<ContainingTypeInfo>
 {
     public string Name { get; set; } = "";
     public bool IsClass { get; set; }
+    public bool IsRecord { get; set; }
 
     public bool Equals(ContainingTypeInfo? other)
     {
         if (other is null) return false;
-        return Name == other.Name && IsClass == other.IsClass;
+        return Name == other.Name && IsClass == other.IsClass && IsRecord == other.IsRecord;
     }
 
     public override bool Equals(object? obj) => Equals(obj as ContainingTypeInfo);
@@ -25,6 +26,7 @@ internal class TypeModel : IEquatable<TypeModel>
     public string TypeName { get; set; } = "";
     public string FullyQualifiedName { get; set; } = "";
     public bool IsClass { get; set; }
+    public bool IsRecord { get; set; }
     public List<BitFieldModel> Fields { get; set; } = new();
     public int TotalBitLength { get; set; }
     public bool HasDynamicLength { get; set; }

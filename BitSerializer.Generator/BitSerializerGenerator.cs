@@ -17,7 +17,7 @@ public class BitSerializerGenerator : IIncrementalGenerator
         var allResults = context.SyntaxProvider
             .ForAttributeWithMetadataName(
                 "BitSerializer.BitSerializeAttribute",
-                predicate: (node, _) => node is ClassDeclarationSyntax or StructDeclarationSyntax,
+                predicate: (node, _) => node is ClassDeclarationSyntax or StructDeclarationSyntax or RecordDeclarationSyntax,
                 transform: (ctx, ct) => TypeAnalyzer.Analyze(ctx, ct));
 
         // Report diagnostics for non-partial types
@@ -63,12 +63,12 @@ public class BitSerializerGenerator : IIncrementalGenerator
         int nestingDepth = model.ContainingTypes.Count;
         foreach (var container in model.ContainingTypes)
         {
-            var containerKeyword = container.IsClass ? "class" : "struct";
+            var containerKeyword = GetTypeKeyword(container.IsClass, container.IsRecord);
             sb.AppendLine($"partial {containerKeyword} {container.Name}");
             sb.AppendLine("{");
         }
 
-        var typeKeyword = model.IsClass ? "class" : "struct";
+        var typeKeyword = GetTypeKeyword(model.IsClass, model.IsRecord);
         var indent = new string(' ', nestingDepth * 4);
         sb.AppendLine($"{indent}partial {typeKeyword} {model.TypeName} : global::BitSerializer.IBitSerializable");
         sb.AppendLine($"{indent}{{");
@@ -113,6 +113,13 @@ public class BitSerializerGenerator : IIncrementalGenerator
         }
 
         return sb.ToString();
+    }
+
+    private static string GetTypeKeyword(bool isClass, bool isRecord)
+    {
+        if (isRecord)
+            return isClass ? "record class" : "record struct";
+        return isClass ? "class" : "struct";
     }
 
     private static void EmitDynamicBitLength(StringBuilder sb, TypeModel model)
