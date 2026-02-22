@@ -67,4 +67,12 @@ internal static class DiagnosticDescriptors
         "BitSerializer",
         DiagnosticSeverity.Error,
         true);
+
+    public static readonly DiagnosticDescriptor MissingBitFieldWithHelperAttribute = new(
+        "BITS009",
+        "Missing [BitField] on member with serialization helper attribute",
+        "Member '{0}' has serialization helper attribute but is missing [BitField]",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
 }

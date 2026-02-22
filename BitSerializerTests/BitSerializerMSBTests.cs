@@ -1543,7 +1543,7 @@ public partial class BitSerializerMSBTests
         var data = new FixedCountListData
         {
             Header = 0xAA,
-            Items = new List<byte> { 0x11, 0x22, 0x33 }
+            Items = [0x11, 0x22, 0x33]
         };
 
         var bytes = BitSerializerMSB.Serialize(data);
@@ -1560,11 +1560,11 @@ public partial class BitSerializerMSBTests
         var data = new FixedCountNestedListData
         {
             Header = 0x01,
-            Items = new List<InnerData>
-            {
+            Items =
+            [
                 new InnerData { X = 0x11, Y = 0x22 },
                 new InnerData { X = 0x33, Y = 0x44 }
-            }
+            ]
         };
 
         var bytes = BitSerializerMSB.Serialize(data);

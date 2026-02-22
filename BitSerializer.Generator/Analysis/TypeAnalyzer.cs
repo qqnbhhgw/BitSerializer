@@ -461,8 +461,37 @@ internal static class TypeAnalyzer
             }
             else if (HasAttribute(memberType, "BitSerializer.BitSerializeAttribute"))
             {
-                int nested = CalculateNestedBitLength(memberType);
-                total += explicitBitLength ?? nested;
+                // Check if this is a polymorphic field - use max of poly types
+                var polyAttrs = GetAttributes(member, "BitSerializer.BitPolyAttribute");
+                if (polyAttrs.Count > 0)
+                {
+                    if (explicitBitLength.HasValue)
+                    {
+                        total += explicitBitLength.Value;
+                    }
+                    else
+                    {
+                        int maxBits = 0;
+                        foreach (var polyAttr in polyAttrs)
+                        {
+                            if (polyAttr.ConstructorArguments.Length >= 2)
+                            {
+                                var concreteType = polyAttr.ConstructorArguments[1].Value as INamedTypeSymbol;
+                                if (concreteType != null)
+                                {
+                                    int bits = CalculateNestedBitLength(concreteType);
+                                    if (bits > maxBits) maxBits = bits;
+                                }
+                            }
+                        }
+                        total += maxBits;
+                    }
+                }
+                else
+                {
+                    int nested = CalculateNestedBitLength(memberType);
+                    total += explicitBitLength ?? nested;
+                }
             }
         }
         return total;
