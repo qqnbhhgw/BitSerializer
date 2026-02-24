@@ -231,7 +231,6 @@ internal static class TypeAnalyzer
                 {
                     int totalListBits = field.FixedCount.Value * field.ListElementBitLength;
                     currentBitIndex += totalListBits;
-                    model.HasDynamicLength = false;
                 }
                 else
                 {
@@ -256,6 +255,7 @@ internal static class TypeAnalyzer
                 else
                 {
                     int maxBits = 0;
+                    bool hasDynamicPoly = false;
                     foreach (var mapping in field.PolyMappings!)
                     {
                         var polyTypeSymbol = FindTypeByFullName(symbol.ContainingAssembly, mapping.ConcreteTypeFullName);
@@ -263,10 +263,17 @@ internal static class TypeAnalyzer
                         {
                             int bits = CalculateNestedBitLength(polyTypeSymbol);
                             if (bits > maxBits) maxBits = bits;
+                            if (!hasDynamicPoly && HasDynamicLengthRecursive(polyTypeSymbol))
+                                hasDynamicPoly = true;
                         }
                     }
                     field.BitLength = maxBits;
                     field.PolymorphicBitLength = maxBits;
+                    if (hasDynamicPoly)
+                    {
+                        field.IsPotentiallyDynamic = true;
+                        model.HasDynamicLength = true;
+                    }
                 }
 
                 currentBitIndex += field.BitLength;
@@ -576,6 +583,58 @@ internal static class TypeAnalyzer
             SpecialType.System_UInt64 => "ulong",
             _ => type.Name
         };
+    }
+
+    private static bool HasDynamicLengthRecursive(ITypeSymbol type)
+    {
+        if (type is not INamedTypeSymbol namedType) return false;
+
+        // Check base type
+        if (namedType.BaseType != null && namedType.BaseType.SpecialType != SpecialType.System_Object)
+        {
+            if (HasDynamicLengthRecursive(namedType.BaseType)) return true;
+        }
+
+        var members = GetSerializableMembers(namedType);
+        foreach (var member in members)
+        {
+            var memberType = GetMemberType(member);
+            if (memberType == null) continue;
+            if (HasAttribute(member, "BitSerializer.BitIgnoreAttribute")) continue;
+            var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");
+            if (bitFieldAttr == null) continue;
+
+            if (memberType is ITypeParameterSymbol) return true;
+
+            if (IsListType(memberType, out _, out _))
+            {
+                var countAttr = GetAttribute(member, "BitSerializer.BitFieldCountAttribute");
+                if (countAttr == null) return true; // dynamic list
+                continue;
+            }
+
+            var polyAttrs = GetAttributes(member, "BitSerializer.BitPolyAttribute");
+            if (polyAttrs.Count > 0)
+            {
+                foreach (var polyAttr in polyAttrs)
+                {
+                    if (polyAttr.ConstructorArguments.Length >= 2)
+                    {
+                        var concreteType = polyAttr.ConstructorArguments[1].Value as INamedTypeSymbol;
+                        if (concreteType != null && HasDynamicLengthRecursive(concreteType))
+                            return true;
+                    }
+                }
+                continue;
+            }
+
+            if (HasAttribute(memberType, "BitSerializer.BitSerializeAttribute"))
+            {
+                if (HasDynamicLengthRecursive(memberType)) return true;
+            }
+        }
+
+        return false;
     }
 
     private static INamedTypeSymbol? FindTypeByFullName(IAssemblySymbol assembly, string fullName)

@@ -204,6 +204,19 @@ public partial class CTCS203 : CTCS
     [BitField]
     [BitFieldRelated(nameof(MaSwitchCount))]
     public List<BaliseSwitch> MaSwitches { get; set; }
+
+    /// <summary>
+    /// 信号机编号
+    /// </summary>
+    [BitField]
+    public byte MaSignalCount { get; set; }
+
+    /// <summary>
+    /// 信号机编号 + 信号机状态
+    /// </summary>
+    [BitField]
+    [BitFieldRelated(nameof(MaSignalCount))]
+    public List<uint> MaSignalIds { get; set; }
 }
 
 /// <summary>
@@ -367,7 +380,11 @@ public class BitSerializerComplexDataTests
                 }
             },
 
-            MaSwitches = [],
+            MaSwitchCount = 1,
+            MaSwitches = [new BaliseSwitch { Id = 1, SwitchState = BaliseSwitchState.Normal }],
+
+            MaSignalCount = 1,
+            MaSignalIds = [0x12345678,]
         };
 
         var hlhtEtcs44 = new HlhtETCS44
@@ -388,7 +405,6 @@ public class BitSerializerComplexDataTests
         var bytes = BitSerializerMSB.Serialize(hlhtBalise830);
         var another = BitSerializerMSB.Deserialize<HlhtBalise830>(bytes);
 
-        another.ShouldNotBeNull();
         another.ShouldBeEquivalentTo(hlhtBalise830);
     }
 }

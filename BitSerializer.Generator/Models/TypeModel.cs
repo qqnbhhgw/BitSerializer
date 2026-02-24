@@ -82,7 +82,8 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.IsPolymorphic == y.IsPolymorphic
             && x.FixedCount == y.FixedCount
             && x.RelatedMemberName == y.RelatedMemberName
-            && x.ValueConverterTypeFullName == y.ValueConverterTypeFullName;
+            && x.ValueConverterTypeFullName == y.ValueConverterTypeFullName
+            && x.IsPotentiallyDynamic == y.IsPotentiallyDynamic;
     }
 
     public int GetHashCode(BitFieldModel obj) => obj.MemberName.GetHashCode();
