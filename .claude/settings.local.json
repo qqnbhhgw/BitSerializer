@@ -19,7 +19,8 @@
       "Bash(python:*)",
       "Bash(dotnet nuget list source:*)",
       "Bash(dotnet nuget delete:*)",
-      "Bash(dotnet package search:*)"
+      "Bash(dotnet package search:*)",
+      "Bash(python3:*)"
     ]
   }
 }
