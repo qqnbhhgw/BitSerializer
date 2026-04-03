@@ -20,83 +20,85 @@ internal static class SerializerEmitter
             sb.AppendLine($"        base.{methodName}(bytes, bitOffset);");
         }
 
-        bool hasDynamic = false;
-        string? dynamicVarName = null;
-        var typeParamBitsExprs = new System.Collections.Generic.List<string>();
-
-        bool afterDynamic = false;
-        string lastDynamicVar = "";
-        int lastDynamicStaticStart = 0;
+        string? runtimeOffsetVar = null;
+        int runtimeStaticEnd = 0;
 
         foreach (var field in model.Fields)
         {
             var memberAccess = $"this.{field.MemberName}";
+            var usesRuntimeBitLength = UsesRuntimeBitLength(field);
 
             // Compute offset expression
             string offsetExpr;
-            if (!afterDynamic)
+            if (runtimeOffsetVar is null)
             {
                 offsetExpr = $"bitOffset + {field.BitStartIndex}";
             }
             else
             {
-                int diff = field.BitStartIndex - lastDynamicStaticStart;
-                offsetExpr = diff == 0 ? lastDynamicVar : $"{lastDynamicVar} + {diff}";
+                int diff = field.BitStartIndex - runtimeStaticEnd;
+                offsetExpr = diff == 0 ? runtimeOffsetVar : $"{runtimeOffsetVar} + {diff}";
             }
+
+            string? fieldEndVar = null;
 
             if (field.IsList)
             {
-                hasDynamic = true;
-                dynamicVarName = $"_bitIndex_{field.MemberName}";
-                EmitListSerialize(sb, field, helper, memberAccess, dynamicVarName, offsetExpr);
-
-                if (!field.FixedCount.HasValue || afterDynamic)
-                {
-                    afterDynamic = true;
-                    lastDynamicVar = dynamicVarName;
-                    lastDynamicStaticStart = field.FixedCount.HasValue
-                        ? field.BitStartIndex + field.FixedCount.Value * field.ListElementBitLength
-                        : field.BitStartIndex;
-                }
+                fieldEndVar = $"_bitIndex_{field.MemberName}";
+                EmitListSerialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
             }
             else if (field.IsPolymorphic)
             {
-                EmitPolymorphicSerialize(sb, field, helper, memberAccess, bitOrder, offsetExpr);
+                if (usesRuntimeBitLength)
+                {
+                    fieldEndVar = $"_bitIndex_{field.MemberName}";
+                    EmitPolymorphicSerialize(sb, field, helper, memberAccess, bitOrder, offsetExpr, fieldEndVar);
+                }
+                else
+                {
+                    EmitPolymorphicSerialize(sb, field, helper, memberAccess, bitOrder, offsetExpr);
+                }
             }
             else if (field.IsTypeParameter)
             {
-                // Type parameter field: use interface dispatch
-                sb.AppendLine($"        ((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr});");
-                typeParamBitsExprs.Add($"((global::BitSerializer.IBitSerializable)this.{field.MemberName}).GetTotalBitLength()");
+                fieldEndVar = $"_bitIndex_{field.MemberName}";
+                sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + ((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr});");
             }
             else if (field.IsNestedType)
             {
-                sb.AppendLine($"        {memberAccess}.{methodName}(bytes, {offsetExpr});");
+                if (usesRuntimeBitLength)
+                {
+                    fieldEndVar = $"_bitIndex_{field.MemberName}";
+                    sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {memberAccess}.{methodName}(bytes, {offsetExpr});");
+                }
+                else
+                {
+                    sb.AppendLine($"        {memberAccess}.{methodName}(bytes, {offsetExpr});");
+                }
             }
             else if (field.IsNumericOrEnum)
             {
                 EmitPrimitiveSerialize(sb, field, helper, memberAccess, offsetExpr);
             }
+
+            if (usesRuntimeBitLength)
+            {
+                runtimeOffsetVar = fieldEndVar!;
+                runtimeStaticEnd = GetStaticFieldEnd(field);
+            }
         }
 
-        var typeParamSuffix = typeParamBitsExprs.Count > 0
-            ? " + " + string.Join(" + ", typeParamBitsExprs)
-            : "";
-
-        if (hasDynamic)
+        if (runtimeOffsetVar is not null)
         {
-            string returnExpr = dynamicVarName!;
-            if (afterDynamic)
-            {
-                int trailingBits = model.TotalBitLength - lastDynamicStaticStart;
-                if (trailingBits > 0)
-                    returnExpr = $"{dynamicVarName} + {trailingBits}";
-            }
-            sb.AppendLine($"        return {returnExpr} - bitOffset{typeParamSuffix};");
+            string returnExpr = runtimeOffsetVar;
+            int trailingBits = model.TotalBitLength - runtimeStaticEnd;
+            if (trailingBits > 0)
+                returnExpr = $"{runtimeOffsetVar} + {trailingBits}";
+            sb.AppendLine($"        return {returnExpr} - bitOffset;");
         }
         else
         {
-            sb.AppendLine($"        return {model.TotalBitLength}{typeParamSuffix};");
+            sb.AppendLine($"        return {model.TotalBitLength};");
         }
 
         sb.AppendLine("    }");
@@ -159,9 +161,14 @@ internal static class SerializerEmitter
         }
     }
 
-    private static void EmitPolymorphicSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitOrder, string offsetExpr)
+    private static void EmitPolymorphicSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitOrder, string offsetExpr, string? bitIndexVar = null)
     {
         var methodName = $"Serialize{bitOrder}";
+        if (bitIndexVar != null)
+        {
+            sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
+        }
+
         bool first = true;
         foreach (var mapping in field.PolyMappings!)
         {
@@ -169,7 +176,14 @@ internal static class SerializerEmitter
             first = false;
             sb.AppendLine($"        {keyword} ({memberAccess} is {mapping.ConcreteTypeFullName} _poly_{mapping.TypeId})");
             sb.AppendLine("        {");
-            sb.AppendLine($"            _poly_{mapping.TypeId}.{methodName}(bytes, {offsetExpr});");
+            if (bitIndexVar != null)
+            {
+                sb.AppendLine($"            {bitIndexVar} += _poly_{mapping.TypeId}.{methodName}(bytes, {offsetExpr});");
+            }
+            else
+            {
+                sb.AppendLine($"            _poly_{mapping.TypeId}.{methodName}(bytes, {offsetExpr});");
+            }
             sb.AppendLine("        }");
         }
         sb.AppendLine("        else");
@@ -181,5 +195,22 @@ internal static class SerializerEmitter
     private static string GetSerializeMethodFromHelper(string helper)
     {
         return helper.Contains("LSB") ? "SerializeLSB" : "SerializeMSB";
+    }
+
+    private static bool UsesRuntimeBitLength(BitFieldModel field)
+    {
+        return field.IsTypeParameter
+               || field.IsPotentiallyDynamic
+               || (field.IsList && !field.FixedCount.HasValue);
+    }
+
+    private static int GetStaticFieldEnd(BitFieldModel field)
+    {
+        if (field.IsList)
+        {
+            return field.BitStartIndex + (field.FixedCount ?? 0) * field.ListElementBitLength;
+        }
+
+        return field.BitStartIndex + field.BitLength;
     }
 }

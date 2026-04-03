@@ -306,6 +306,11 @@ internal static class TypeAnalyzer
 
                 int nestedBits = CalculateNestedBitLength(memberType);
                 field.BitLength = explicitBitLength ?? nestedBits;
+                if (!explicitBitLength.HasValue && HasDynamicLengthRecursive(memberType))
+                {
+                    field.IsPotentiallyDynamic = true;
+                    model.HasDynamicLength = true;
+                }
                 currentBitIndex += field.BitLength;
             }
             else if (memberType is ITypeParameterSymbol typeParam &&
