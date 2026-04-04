@@ -100,4 +100,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor TypeParameterMissingNewConstraint = new(
+        "BITS013",
+        "Type parameter missing new() constraint",
+        "Type parameter '{0}' used in '{1}' of '{2}' requires a new() or struct constraint for deserialization",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

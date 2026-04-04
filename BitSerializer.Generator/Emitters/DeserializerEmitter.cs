@@ -190,7 +190,9 @@ internal static class DeserializerEmitter
                     sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({field.FixedCount.Value});");
                 sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
                 sb.AppendLine("        {");
-                sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = new {elemTypeFullName}();");
+                sb.AppendLine(field.ListElementIsTypeParameter
+                    ? $"            global::BitSerializer.IBitSerializable _elem = ({elemTypeFullName})global::System.Activator.CreateInstance(typeof({elemTypeFullName}))!;"
+                    : $"            global::BitSerializer.IBitSerializable _elem = new {elemTypeFullName}();");
                 sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {offsetExpr} + _i * {elemBits});");
                 if (field.IsArray)
                     sb.AppendLine($"            {memberAccess}[_i] = ({elemTypeFullName})_elem;");
@@ -223,7 +225,9 @@ internal static class DeserializerEmitter
                 sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
                 sb.AppendLine($"        for (int _i = 0; _i < {countExpr}; _i++)");
                 sb.AppendLine("        {");
-                sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = new {elemTypeFullName}();");
+                sb.AppendLine(field.ListElementIsTypeParameter
+                    ? $"            global::BitSerializer.IBitSerializable _elem = ({elemTypeFullName})global::System.Activator.CreateInstance(typeof({elemTypeFullName}))!;"
+                    : $"            global::BitSerializer.IBitSerializable _elem = new {elemTypeFullName}();");
                 sb.AppendLine($"            {bitIndexVar} += _elem.{deserializeMethod}(bytes, {bitIndexVar});");
                 if (field.IsArray)
                     sb.AppendLine($"            {memberAccess}[_i] = ({elemTypeFullName})_elem;");

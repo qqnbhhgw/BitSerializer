@@ -302,8 +302,21 @@ internal static class TypeAnalyzer
                 }
                 else if (ImplementsBitSerializable(elementType!))
                 {
+                    if (elementType is ITypeParameterSymbol elemTypeParam
+                        && !elemTypeParam.HasConstructorConstraint
+                        && !elemTypeParam.HasValueTypeConstraint)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.TypeParameterMissingNewConstraint,
+                                member.Locations.FirstOrDefault(),
+                                elemTypeParam.Name, member.Name, symbol.Name)
+                        };
+                    }
                     field.ListElementIsNested = true;
                     field.ListElementIsManualBitSerializable = true;
+                    field.ListElementIsTypeParameter = elementType is ITypeParameterSymbol;
                     field.ListElementBitLength = explicitBitLength ?? 0;
                     field.BitLength = 0;
                 }
@@ -417,6 +430,16 @@ internal static class TypeAnalyzer
                       typeParam.ConstraintTypes.Any(c => ImplementsBitSerializable(c)) ||
                       ImplementsBitSerializable(memberType)))
             {
+                if (!typeParam.HasConstructorConstraint && !typeParam.HasValueTypeConstraint)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.TypeParameterMissingNewConstraint,
+                            member.Locations.FirstOrDefault(),
+                            typeParam.Name, member.Name, symbol.Name)
+                    };
+                }
                 // Type parameter with [BitSerialize] constraint (e.g., TExComLogSt : ExComLogStBase)
                 // Bit length is unknown at compile time, use interface dispatch at runtime
                 field.IsNestedType = true;

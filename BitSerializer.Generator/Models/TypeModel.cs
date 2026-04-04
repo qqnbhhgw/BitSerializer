@@ -110,6 +110,7 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.StringEncodingName == y.StringEncodingName
             && x.IsManualBitSerializable == y.IsManualBitSerializable
             && x.ListElementIsManualBitSerializable == y.ListElementIsManualBitSerializable
+            && x.ListElementIsTypeParameter == y.ListElementIsTypeParameter
             && x.ListElementHasDynamicLength == y.ListElementHasDynamicLength;
     }
 
