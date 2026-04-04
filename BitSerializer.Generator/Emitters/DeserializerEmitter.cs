@@ -87,10 +87,11 @@ internal static class DeserializerEmitter
             {
                 if (field.IsManualBitSerializable)
                 {
-                    // Use a local variable to avoid struct boxing:
-                    // calling interface method on a property/field of value type would box the copy
+                    // Use interface dispatch so explicit IBitSerializable implementations compile.
+                    // Declaring the local as the interface type boxes value types; after the
+                    // call mutates the boxed copy we cast back to unbox the updated value.
                     var localVar = $"_nested_{field.MemberName}";
-                    sb.AppendLine($"        var {localVar} = new {field.MemberTypeFullName}();");
+                    sb.AppendLine($"        global::BitSerializer.IBitSerializable {localVar} = new {field.MemberTypeFullName}();");
                     if (usesRuntimeBitLength)
                     {
                         fieldEndVar = $"_bitIndex_{field.MemberName}";
@@ -100,7 +101,7 @@ internal static class DeserializerEmitter
                     {
                         sb.AppendLine($"        {localVar}.{methodName}(bytes, {offsetExpr});");
                     }
-                    sb.AppendLine($"        {memberAccess} = {localVar};");
+                    sb.AppendLine($"        {memberAccess} = ({field.MemberTypeFullName}){localVar};");
                 }
                 else
                 {
@@ -189,12 +190,12 @@ internal static class DeserializerEmitter
                     sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({field.FixedCount.Value});");
                 sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
                 sb.AppendLine("        {");
-                sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+                sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = new {elemTypeFullName}();");
                 sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {offsetExpr} + _i * {elemBits});");
                 if (field.IsArray)
-                    sb.AppendLine($"            {memberAccess}[_i] = _elem;");
+                    sb.AppendLine($"            {memberAccess}[_i] = ({elemTypeFullName})_elem;");
                 else
-                    sb.AppendLine($"            {memberAccess}.Add(_elem);");
+                    sb.AppendLine($"            {memberAccess}.Add(({elemTypeFullName})_elem);");
                 sb.AppendLine("        }");
                 sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {field.FixedCount.Value * elemBits};");
             }
@@ -222,12 +223,12 @@ internal static class DeserializerEmitter
                 sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
                 sb.AppendLine($"        for (int _i = 0; _i < {countExpr}; _i++)");
                 sb.AppendLine("        {");
-                sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+                sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = new {elemTypeFullName}();");
                 sb.AppendLine($"            {bitIndexVar} += _elem.{deserializeMethod}(bytes, {bitIndexVar});");
                 if (field.IsArray)
-                    sb.AppendLine($"            {memberAccess}[_i] = _elem;");
+                    sb.AppendLine($"            {memberAccess}[_i] = ({elemTypeFullName})_elem;");
                 else
-                    sb.AppendLine($"            {memberAccess}.Add(_elem);");
+                    sb.AppendLine($"            {memberAccess}.Add(({elemTypeFullName})_elem);");
                 sb.AppendLine("        }");
             }
         }
@@ -241,26 +242,43 @@ internal static class DeserializerEmitter
             {
                 sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({field.FixedCount.Value});");
             }
-            sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
-            sb.AppendLine("        {");
-            if (field.ListElementIsNested)
+            if (field.ListElementHasDynamicLength)
             {
+                // Dynamic nested elements: use runtime offset tracking via return value
+                sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
+                sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
+                sb.AppendLine("        {");
                 sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
-                sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {offsetExpr} + _i * {elemBits});");
+                sb.AppendLine($"            {bitIndexVar} += _elem.{deserializeMethod}(bytes, {bitIndexVar});");
                 if (field.IsArray)
                     sb.AppendLine($"            {memberAccess}[_i] = _elem;");
                 else
                     sb.AppendLine($"            {memberAccess}.Add(_elem);");
+                sb.AppendLine("        }");
             }
             else
             {
-                if (field.IsArray)
-                    sb.AppendLine($"            {memberAccess}[_i] = {helper}.ValueLength<{elemTypeFullName}>(bytes, {offsetExpr} + _i * {elemBits}, {elemBits});");
+                sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
+                sb.AppendLine("        {");
+                if (field.ListElementIsNested)
+                {
+                    sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+                    sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {offsetExpr} + _i * {elemBits});");
+                    if (field.IsArray)
+                        sb.AppendLine($"            {memberAccess}[_i] = _elem;");
+                    else
+                        sb.AppendLine($"            {memberAccess}.Add(_elem);");
+                }
                 else
-                    sb.AppendLine($"            {memberAccess}.Add({helper}.ValueLength<{elemTypeFullName}>(bytes, {offsetExpr} + _i * {elemBits}, {elemBits}));");
+                {
+                    if (field.IsArray)
+                        sb.AppendLine($"            {memberAccess}[_i] = {helper}.ValueLength<{elemTypeFullName}>(bytes, {offsetExpr} + _i * {elemBits}, {elemBits});");
+                    else
+                        sb.AppendLine($"            {memberAccess}.Add({helper}.ValueLength<{elemTypeFullName}>(bytes, {offsetExpr} + _i * {elemBits}, {elemBits}));");
+                }
+                sb.AppendLine("        }");
+                sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {field.FixedCount.Value * elemBits};");
             }
-            sb.AppendLine("        }");
-            sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {field.FixedCount.Value * elemBits};");
         }
         else
         {
@@ -276,7 +294,16 @@ internal static class DeserializerEmitter
             sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
             sb.AppendLine($"        for (int _i = 0; _i < _listCount_{field.MemberName}; _i++)");
             sb.AppendLine("        {");
-            if (field.ListElementIsNested)
+            if (field.ListElementHasDynamicLength)
+            {
+                sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+                sb.AppendLine($"            {bitIndexVar} += _elem.{deserializeMethod}(bytes, {bitIndexVar});");
+                if (field.IsArray)
+                    sb.AppendLine($"            {memberAccess}[_i] = _elem;");
+                else
+                    sb.AppendLine($"            {memberAccess}.Add(_elem);");
+            }
+            else if (field.ListElementIsNested)
             {
                 sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
                 sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {bitIndexVar});");
@@ -284,6 +311,7 @@ internal static class DeserializerEmitter
                     sb.AppendLine($"            {memberAccess}[_i] = _elem;");
                 else
                     sb.AppendLine($"            {memberAccess}.Add(_elem);");
+                sb.AppendLine($"            {bitIndexVar} += {elemBits};");
             }
             else
             {
@@ -291,8 +319,8 @@ internal static class DeserializerEmitter
                     sb.AppendLine($"            {memberAccess}[_i] = {helper}.ValueLength<{elemTypeFullName}>(bytes, {bitIndexVar}, {elemBits});");
                 else
                     sb.AppendLine($"            {memberAccess}.Add({helper}.ValueLength<{elemTypeFullName}>(bytes, {bitIndexVar}, {elemBits}));");
+                sb.AppendLine($"            {bitIndexVar} += {elemBits};");
             }
-            sb.AppendLine($"            {bitIndexVar} += {elemBits};");
             sb.AppendLine("        }");
         }
     }
@@ -376,7 +404,8 @@ internal static class DeserializerEmitter
                || field.IsPotentiallyDynamic
                || field.IsTerminatedString
                || (field.IsList && !field.FixedCount.HasValue)
-               || (field.IsList && field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0);
+               || (field.IsList && field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0)
+               || (field.IsList && field.ListElementHasDynamicLength);
     }
 
     private static int GetStaticFieldEnd(BitFieldModel field)

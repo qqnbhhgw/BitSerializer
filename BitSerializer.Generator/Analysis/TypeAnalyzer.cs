@@ -156,6 +156,14 @@ internal static class TypeAnalyzer
                 }
 
                 int byteLen = (int)fixedStringAttr.ConstructorArguments[0].Value!;
+                string encodingName = "ASCII";
+                foreach (var named in fixedStringAttr.NamedArguments)
+                {
+                    if (named.Key == "ByteLength" && named.Value.Value is int namedByteLen)
+                        byteLen = namedByteLen;
+                    else if (named.Key == "Encoding" && named.Value.Value is int encVal)
+                        encodingName = encVal == 1 ? "UTF8" : "ASCII";
+                }
                 if (byteLen <= 0)
                 {
                     return new AnalyzeResult
@@ -165,12 +173,6 @@ internal static class TypeAnalyzer
                             member.Locations.FirstOrDefault(),
                             member.Name, symbol.Name, byteLen)
                     };
-                }
-                string encodingName = "ASCII";
-                foreach (var named in fixedStringAttr.NamedArguments)
-                {
-                    if (named.Key == "Encoding" && named.Value.Value is int encVal)
-                        encodingName = encVal == 1 ? "UTF8" : "ASCII";
                 }
 
                 field.IsFixedString = true;
@@ -295,6 +297,8 @@ internal static class TypeAnalyzer
                     int nestedBits = CalculateNestedBitLength(elementType!);
                     field.ListElementBitLength = nestedBits;
                     field.BitLength = 0;
+                    if (HasDynamicLengthRecursive(elementType!))
+                        field.ListElementHasDynamicLength = true;
                 }
                 else if (ImplementsBitSerializable(elementType!))
                 {
@@ -315,7 +319,14 @@ internal static class TypeAnalyzer
                     };
                 }
 
-                if (field.FixedCount.HasValue && field.ListElementBitLength > 0)
+                if (field.ListElementHasDynamicLength)
+                {
+                    model.HasDynamicLength = true;
+                    // Advance by static estimation so subsequent fields get correct BitStartIndex
+                    if (field.FixedCount.HasValue && field.ListElementBitLength > 0)
+                        currentBitIndex += field.FixedCount.Value * field.ListElementBitLength;
+                }
+                else if (field.FixedCount.HasValue && field.ListElementBitLength > 0)
                 {
                     int totalListBits = field.FixedCount.Value * field.ListElementBitLength;
                     currentBitIndex += totalListBits;
@@ -554,6 +565,11 @@ internal static class TypeAnalyzer
             if (fixedStrAttr != null)
             {
                 int byteLen = (int)fixedStrAttr.ConstructorArguments[0].Value!;
+                foreach (var named in fixedStrAttr.NamedArguments)
+                {
+                    if (named.Key == "ByteLength" && named.Value.Value is int namedByteLen)
+                        byteLen = namedByteLen;
+                }
                 total += byteLen * 8;
                 continue;
             }
@@ -756,6 +772,11 @@ internal static class TypeAnalyzer
                 {
                     int? explBitLen = GetBitLengthFromAttribute(bitFieldAttr);
                     if (!explBitLen.HasValue) return true;
+                }
+                // Fixed-count list with [BitSerialize] elements that are themselves dynamic
+                if (listElemType != null && HasAttribute(listElemType, "BitSerializer.BitSerializeAttribute"))
+                {
+                    if (HasDynamicLengthRecursive(listElemType)) return true;
                 }
                 continue;
             }

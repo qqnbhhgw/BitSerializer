@@ -99,4 +99,5 @@ internal static class DiagnosticDescriptors
         "BitSerializer",
         DiagnosticSeverity.Error,
         true);
+
 }

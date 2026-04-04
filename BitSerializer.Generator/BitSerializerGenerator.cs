@@ -166,6 +166,18 @@ public class BitSerializerGenerator : IIncrementalGenerator
                     dynamicParts.Add(sumVar);
                 }
             }
+            else if (field.IsList && field.ListElementHasDynamicLength)
+            {
+                // [BitSerialize] list elements with dynamic length: sum actual element bit lengths
+                var sumVar = $"_sumBits_{field.MemberName}";
+                string countExpr = field.FixedCount.HasValue
+                    ? field.FixedCount.Value.ToString()
+                    : $"(int)this.{field.RelatedMemberName}";
+                preStatements.Add($"        int {sumVar} = 0;");
+                preStatements.Add($"        for (int _i = 0; _i < {countExpr}; _i++)");
+                preStatements.Add($"            {sumVar} += ((global::BitSerializer.IBitSerializable)this.{field.MemberName}[_i]).GetTotalBitLength();");
+                dynamicParts.Add(sumVar);
+            }
             else if (field.IsList && !field.FixedCount.HasValue)
             {
                 // Dynamic list: count * elementBits

@@ -47,4 +47,7 @@ internal class BitFieldModel
 
     // List element is manual IBitSerializable (needs interface dispatch)
     public bool ListElementIsManualBitSerializable { get; set; }
+
+    // List element is [BitSerialize] with dynamic length (needs runtime offset tracking)
+    public bool ListElementHasDynamicLength { get; set; }
 }
