@@ -130,8 +130,13 @@ public class BitSerializerGenerator : IIncrementalGenerator
     private static void EmitDynamicBitLength(StringBuilder sb, TypeModel model)
     {
         // Start with static portion (include base type bits)
-        int staticBits = model.BaseBitLength;
+        int staticBits = model.BaseHasDynamicLength ? 0 : model.BaseBitLength;
         var dynamicParts = new System.Collections.Generic.List<string>();
+
+        if (model.BaseHasDynamicLength)
+        {
+            dynamicParts.Add("base.GetTotalBitLength()");
+        }
 
         foreach (var field in model.Fields)
         {
@@ -139,6 +144,14 @@ public class BitSerializerGenerator : IIncrementalGenerator
             {
                 // Type parameter: bit length unknown at compile time, use interface dispatch
                 dynamicParts.Add($"((global::BitSerializer.IBitSerializable)this.{field.MemberName}).GetTotalBitLength()");
+            }
+            else if (field.IsList && field.ListElementIsManualBitSerializable)
+            {
+                // Manual IBitSerializable list elements: count * element bit length from a default instance
+                string countExpr = field.FixedCount.HasValue
+                    ? field.FixedCount.Value.ToString()
+                    : $"(int)this.{field.RelatedMemberName}";
+                dynamicParts.Add($"({countExpr} * ((global::BitSerializer.IBitSerializable)new {field.ListElementTypeFullName}()).GetTotalBitLength())");
             }
             else if (field.IsList && !field.FixedCount.HasValue)
             {

@@ -44,4 +44,7 @@ internal class BitFieldModel
 
     // Manual IBitSerializable support (without [BitSerialize])
     public bool IsManualBitSerializable { get; set; }
+
+    // List element is manual IBitSerializable (needs interface dispatch)
+    public bool ListElementIsManualBitSerializable { get; set; }
 }

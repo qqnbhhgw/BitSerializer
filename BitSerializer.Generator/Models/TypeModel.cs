@@ -49,6 +49,10 @@ internal class TypeModel : IEquatable<TypeModel>
     /// The total bit length of the base type (for derived types with [BitSerialize] base).
     /// </summary>
     public int BaseBitLength { get; set; }
+    /// <summary>
+    /// True if the base type contains dynamic-length fields (terminated strings, manual IBitSerializable, etc.).
+    /// </summary>
+    public bool BaseHasDynamicLength { get; set; }
 
     public bool Equals(TypeModel? other)
     {
@@ -88,7 +92,8 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.FixedStringByteLength == y.FixedStringByteLength
             && x.IsTerminatedString == y.IsTerminatedString
             && x.StringEncodingName == y.StringEncodingName
-            && x.IsManualBitSerializable == y.IsManualBitSerializable;
+            && x.IsManualBitSerializable == y.IsManualBitSerializable
+            && x.ListElementIsManualBitSerializable == y.ListElementIsManualBitSerializable;
     }
 
     public int GetHashCode(BitFieldModel obj) => obj.MemberName.GetHashCode();

@@ -633,4 +633,347 @@ public partial class BitSerializerStringAndCustomTypeTests
     }
 
     #endregion
+
+    #region Issue 1 - Dynamic base + derived field offset
+
+    // Base class with a terminated string (dynamic length)
+    [BitSerialize]
+    public partial class DynamicBase
+    {
+        [BitField(8)]
+        public byte Header { get; set; }
+
+        [BitTerminatedString]
+        public string Name { get; set; } = "";
+
+        [BitField(8)]
+        public byte BaseTrailer { get; set; }
+    }
+
+    // Derived class: fields must start after base's actual (dynamic) end
+    [BitSerialize]
+    public partial class DerivedFromDynamic : DynamicBase
+    {
+        [BitField(16)]
+        public ushort DerivedValue { get; set; }
+
+        [BitField(8)]
+        public byte DerivedTrailer { get; set; }
+    }
+
+    // Base class with manual IBitSerializable (dynamic length, no explicit bits)
+    [BitSerialize]
+    public partial class ManualBase
+    {
+        [BitField(8)]
+        public byte Header { get; set; }
+
+        [BitField]
+        public KiloMeter Distance { get; set; } = new();
+
+        [BitField(8)]
+        public byte BaseTrailer { get; set; }
+    }
+
+    // Derived class from manual IBitSerializable base
+    [BitSerialize]
+    public partial class DerivedFromManualBase : ManualBase
+    {
+        [BitField(16)]
+        public ushort DerivedValue { get; set; }
+    }
+
+    [Fact]
+    public void DynamicBase_DerivedFieldOffset_RoundTrip_MSB()
+    {
+        var original = new DerivedFromDynamic
+        {
+            Header = 0xAA,
+            Name = "Hello",
+            BaseTrailer = 0xBB,
+            DerivedValue = 0x1234,
+            DerivedTrailer = 0xCC
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<DerivedFromDynamic>(bytes);
+
+        restored.Header.ShouldBe((byte)0xAA);
+        restored.Name.ShouldBe("Hello");
+        restored.BaseTrailer.ShouldBe((byte)0xBB);
+        restored.DerivedValue.ShouldBe((ushort)0x1234);
+        restored.DerivedTrailer.ShouldBe((byte)0xCC);
+    }
+
+    [Fact]
+    public void DynamicBase_DerivedFieldOffset_RoundTrip_LSB()
+    {
+        var original = new DerivedFromDynamic
+        {
+            Header = 0xAA,
+            Name = "Test",
+            BaseTrailer = 0xBB,
+            DerivedValue = 0x5678,
+            DerivedTrailer = 0xDD
+        };
+
+        var bytes = BitSerializerLSB.Serialize(original);
+        var restored = BitSerializerLSB.Deserialize<DerivedFromDynamic>(bytes);
+
+        restored.Header.ShouldBe((byte)0xAA);
+        restored.Name.ShouldBe("Test");
+        restored.BaseTrailer.ShouldBe((byte)0xBB);
+        restored.DerivedValue.ShouldBe((ushort)0x5678);
+        restored.DerivedTrailer.ShouldBe((byte)0xDD);
+    }
+
+    [Fact]
+    public void DynamicBase_DerivedFieldOffset_EmptyString_MSB()
+    {
+        var original = new DerivedFromDynamic
+        {
+            Header = 0x01,
+            Name = "",
+            BaseTrailer = 0x02,
+            DerivedValue = 0xABCD,
+            DerivedTrailer = 0x03
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<DerivedFromDynamic>(bytes);
+
+        restored.Header.ShouldBe((byte)0x01);
+        restored.Name.ShouldBe("");
+        restored.BaseTrailer.ShouldBe((byte)0x02);
+        restored.DerivedValue.ShouldBe((ushort)0xABCD);
+        restored.DerivedTrailer.ShouldBe((byte)0x03);
+    }
+
+    [Fact]
+    public void DynamicBase_GetTotalBitLength()
+    {
+        var data = new DerivedFromDynamic
+        {
+            Name = "Hi" // 2 chars + null terminator = 3 bytes = 24 bits
+        };
+        // Header(8) + TerminatedString("Hi" = 24) + BaseTrailer(8) + DerivedValue(16) + DerivedTrailer(8) = 64
+        data.GetTotalBitLength().ShouldBe(64);
+    }
+
+    [Fact]
+    public void ManualBase_DerivedFieldOffset_RoundTrip_MSB()
+    {
+        var original = new DerivedFromManualBase
+        {
+            Header = 0x01,
+            Distance = new KiloMeter { Value = 42.5 },
+            BaseTrailer = 0xFF,
+            DerivedValue = 0x9876
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<DerivedFromManualBase>(bytes);
+
+        restored.Header.ShouldBe((byte)0x01);
+        restored.Distance.Value.ShouldBe(42.5);
+        restored.BaseTrailer.ShouldBe((byte)0xFF);
+        restored.DerivedValue.ShouldBe((ushort)0x9876);
+    }
+
+    #endregion
+
+    #region Issue 2 - UTF-8 multi-byte character truncation
+
+    [BitSerialize]
+    public partial class Utf8TruncationData
+    {
+        [BitFixedString(5, Encoding = BitStringEncoding.UTF8)]
+        public string Text { get; set; } = "";
+    }
+
+    [BitSerialize]
+    public partial class Utf8TruncationData4
+    {
+        [BitFixedString(4, Encoding = BitStringEncoding.UTF8)]
+        public string Text { get; set; } = "";
+    }
+
+    [BitSerialize]
+    public partial class Utf8ExactFitData
+    {
+        [BitFixedString(6, Encoding = BitStringEncoding.UTF8)]
+        public string Text { get; set; } = "";
+    }
+
+    [Fact]
+    public void Utf8FixedString_Truncation_CJK_RoundTrip_MSB()
+    {
+        // "你好" = E4 BD A0 E5 A5 BD (6 bytes), byteLen=5
+        // Should truncate to "你" (3 bytes), not split "好"
+        var original = new Utf8TruncationData { Text = "你好" };
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<Utf8TruncationData>(bytes);
+        restored.Text.ShouldBe("你");
+    }
+
+    [Fact]
+    public void Utf8FixedString_Truncation_MixedAsciiCJK_RoundTrip_MSB()
+    {
+        // "ab你" = 61 62 E4 BD A0 (5 bytes), byteLen=4
+        // Should truncate to "ab" (2 bytes), not split "你"
+        var original = new Utf8TruncationData4 { Text = "ab你" };
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<Utf8TruncationData4>(bytes);
+        restored.Text.ShouldBe("ab");
+    }
+
+    [Fact]
+    public void Utf8FixedString_ExactFit_CJK_RoundTrip_MSB()
+    {
+        // "你好" = 6 bytes, byteLen=6 → exact fit, no truncation
+        var original = new Utf8ExactFitData { Text = "你好" };
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<Utf8ExactFitData>(bytes);
+        restored.Text.ShouldBe("你好");
+    }
+
+    [Fact]
+    public void Utf8FixedString_AsciiOnly_NoTruncation_RoundTrip_MSB()
+    {
+        // ASCII strings should not be affected by the UTF-8 fix
+        var original = new Utf8TruncationData { Text = "Hello" };
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<Utf8TruncationData>(bytes);
+        restored.Text.ShouldBe("Hello");
+    }
+
+    #endregion
+
+    #region Issue 3 - IBitSerializable List/Array elements
+
+    [BitSerialize]
+    public partial class DataWithKiloMeterList
+    {
+        [BitField(8)]
+        public byte Count { get; set; }
+
+        [BitField]
+        [BitFieldRelated(nameof(Count))]
+        public List<KiloMeter> Distances { get; set; } = new();
+
+        [BitField(8)]
+        public byte Footer { get; set; }
+    }
+
+    [BitSerialize]
+    public partial class DataWithKiloMeterArray
+    {
+        [BitField(8)]
+        public byte Header { get; set; }
+
+        [BitField]
+        [BitFieldCount(2)]
+        public KiloMeter[] Distances { get; set; } = [];
+
+        [BitField(8)]
+        public byte Footer { get; set; }
+    }
+
+    [Fact]
+    public void KiloMeterList_RoundTrip_MSB()
+    {
+        var original = new DataWithKiloMeterList
+        {
+            Count = 2,
+            Distances = new List<KiloMeter>
+            {
+                new KiloMeter { Value = 1.5 },
+                new KiloMeter { Value = 99.999 }
+            },
+            Footer = 0xEE
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<DataWithKiloMeterList>(bytes);
+
+        restored.Count.ShouldBe((byte)2);
+        restored.Distances.Count.ShouldBe(2);
+        restored.Distances[0].Value.ShouldBe(1.5);
+        restored.Distances[1].Value.ShouldBe(99.999);
+        restored.Footer.ShouldBe((byte)0xEE);
+    }
+
+    [Fact]
+    public void KiloMeterList_RoundTrip_LSB()
+    {
+        var original = new DataWithKiloMeterList
+        {
+            Count = 1,
+            Distances = new List<KiloMeter>
+            {
+                new KiloMeter { Value = 42.0 }
+            },
+            Footer = 0xAA
+        };
+
+        var bytes = BitSerializerLSB.Serialize(original);
+        var restored = BitSerializerLSB.Deserialize<DataWithKiloMeterList>(bytes);
+
+        restored.Count.ShouldBe((byte)1);
+        restored.Distances.Count.ShouldBe(1);
+        restored.Distances[0].Value.ShouldBe(42.0);
+        restored.Footer.ShouldBe((byte)0xAA);
+    }
+
+    [Fact]
+    public void KiloMeterArray_RoundTrip_MSB()
+    {
+        var original = new DataWithKiloMeterArray
+        {
+            Header = 0x01,
+            Distances = new[]
+            {
+                new KiloMeter { Value = 10.0 },
+                new KiloMeter { Value = 20.0 }
+            },
+            Footer = 0x02
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<DataWithKiloMeterArray>(bytes);
+
+        restored.Header.ShouldBe((byte)0x01);
+        restored.Distances.Length.ShouldBe(2);
+        restored.Distances[0].Value.ShouldBe(10.0);
+        restored.Distances[1].Value.ShouldBe(20.0);
+        restored.Footer.ShouldBe((byte)0x02);
+    }
+
+    [Fact]
+    public void KiloMeterList_GetTotalBitLength()
+    {
+        var data = new DataWithKiloMeterList
+        {
+            Count = 3,
+            Distances = new List<KiloMeter>
+            {
+                new KiloMeter(), new KiloMeter(), new KiloMeter()
+            }
+        };
+        // Count(8) + 3 * KiloMeter(80) + Footer(8) = 256
+        data.GetTotalBitLength().ShouldBe(256);
+    }
+
+    [Fact]
+    public void KiloMeterArray_GetTotalBitLength()
+    {
+        var data = new DataWithKiloMeterArray
+        {
+            Distances = new[] { new KiloMeter(), new KiloMeter() }
+        };
+        // Header(8) + 2 * KiloMeter(80) + Footer(8) = 176
+        data.GetTotalBitLength().ShouldBe(176);
+    }
+
+    #endregion
 }

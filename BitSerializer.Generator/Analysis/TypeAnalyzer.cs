@@ -72,6 +72,7 @@ internal static class TypeAnalyzer
         // Check if any ancestor type has [BitSerialize] and collect intermediate fields
         bool hasBitSerializableBase = false;
         int baseBitLength = 0;
+        bool baseHasDynamicLength = false;
         var intermediateFields = new List<ISymbol>();
         {
             var current = symbol.BaseType;
@@ -82,6 +83,7 @@ internal static class TypeAnalyzer
                     // Found a [BitSerialize] ancestor - it generates its own code
                     hasBitSerializableBase = true;
                     baseBitLength = CalculateNestedBitLength(current);
+                    baseHasDynamicLength = HasDynamicLengthRecursive(current);
                     break;
                 }
                 // This intermediate base doesn't have [BitSerialize], collect its fields
@@ -102,7 +104,9 @@ internal static class TypeAnalyzer
             IsOpenGeneric = symbol.TypeParameters.Length > 0,
             ContainingTypes = containingTypes,
             HasBitSerializableBaseType = hasBitSerializableBase,
-            BaseBitLength = baseBitLength
+            BaseBitLength = baseBitLength,
+            BaseHasDynamicLength = baseHasDynamicLength,
+            HasDynamicLength = baseHasDynamicLength
         };
 
         // Collect members: intermediate base fields first, then own declared members
@@ -282,9 +286,16 @@ internal static class TypeAnalyzer
                     field.ListElementBitLength = nestedBits;
                     field.BitLength = 0;
                 }
+                else if (ImplementsBitSerializable(elementType!))
+                {
+                    field.ListElementIsNested = true;
+                    field.ListElementIsManualBitSerializable = true;
+                    field.ListElementBitLength = explicitBitLength ?? 0;
+                    field.BitLength = 0;
+                }
                 else
                 {
-                    // List element is a non-numeric type without [BitSerialize]
+                    // List element is a non-numeric type without [BitSerialize] or IBitSerializable
                     return new AnalyzeResult
                     {
                         Diagnostic = Diagnostic.Create(
@@ -294,7 +305,7 @@ internal static class TypeAnalyzer
                     };
                 }
 
-                if (field.FixedCount.HasValue)
+                if (field.FixedCount.HasValue && field.ListElementBitLength > 0)
                 {
                     int totalListBits = field.FixedCount.Value * field.ListElementBitLength;
                     currentBitIndex += totalListBits;

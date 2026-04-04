@@ -15,13 +15,22 @@ internal static class SerializerEmitter
         sb.AppendLine($"    public {newKeyword}int {methodName}(global::System.Span<byte> bytes, int bitOffset)");
         sb.AppendLine("    {");
 
-        if (model.HasBitSerializableBaseType)
-        {
-            sb.AppendLine($"        base.{methodName}(bytes, bitOffset);");
-        }
-
         string? runtimeOffsetVar = null;
         int runtimeStaticEnd = 0;
+
+        if (model.HasBitSerializableBaseType)
+        {
+            if (model.BaseHasDynamicLength)
+            {
+                sb.AppendLine($"        int _baseEndBit = bitOffset + base.{methodName}(bytes, bitOffset);");
+                runtimeOffsetVar = "_baseEndBit";
+                runtimeStaticEnd = model.BaseBitLength;
+            }
+            else
+            {
+                sb.AppendLine($"        base.{methodName}(bytes, bitOffset);");
+            }
+        }
 
         foreach (var field in model.Fields)
         {
@@ -139,14 +148,34 @@ internal static class SerializerEmitter
     private static void EmitListSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
     {
         int elemBits = field.ListElementBitLength;
+        var serializeMethod = GetSerializeMethodFromHelper(helper);
 
-        if (field.FixedCount.HasValue)
+        if (field.ListElementIsManualBitSerializable)
+        {
+            // Manual IBitSerializable elements: use interface dispatch with runtime offset tracking
+            string countExpr;
+            if (field.FixedCount.HasValue)
+            {
+                countExpr = field.FixedCount.Value.ToString();
+            }
+            else
+            {
+                countExpr = $"_listCount_{field.MemberName}";
+                sb.AppendLine($"        int {countExpr} = (int)this.{field.RelatedMemberName};");
+            }
+            sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
+            sb.AppendLine($"        for (int _i = 0; _i < {countExpr}; _i++)");
+            sb.AppendLine("        {");
+            sb.AppendLine($"            {bitIndexVar} += ((global::BitSerializer.IBitSerializable){memberAccess}[_i]).{serializeMethod}(bytes, {bitIndexVar});");
+            sb.AppendLine("        }");
+        }
+        else if (field.FixedCount.HasValue)
         {
             sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
             sb.AppendLine("        {");
             if (field.ListElementIsNested)
             {
-                sb.AppendLine($"            {memberAccess}[_i].{GetSerializeMethodFromHelper(helper)}(bytes, {offsetExpr} + _i * {elemBits});");
+                sb.AppendLine($"            {memberAccess}[_i].{serializeMethod}(bytes, {offsetExpr} + _i * {elemBits});");
             }
             else
             {
@@ -163,7 +192,7 @@ internal static class SerializerEmitter
             sb.AppendLine("        {");
             if (field.ListElementIsNested)
             {
-                sb.AppendLine($"            {memberAccess}[_i].{GetSerializeMethodFromHelper(helper)}(bytes, {bitIndexVar});");
+                sb.AppendLine($"            {memberAccess}[_i].{serializeMethod}(bytes, {bitIndexVar});");
             }
             else
             {
@@ -219,6 +248,17 @@ internal static class SerializerEmitter
         sb.AppendLine("        {");
         sb.AppendLine($"            byte[] _strBytes_{name} = {encoding}.GetBytes({memberAccess} ?? \"\");");
         sb.AppendLine($"            int _strLen_{name} = global::System.Math.Min(_strBytes_{name}.Length, {byteLen});");
+
+        // For UTF-8: ensure we don't split multi-byte characters
+        if (field.StringEncodingName == "UTF8")
+        {
+            sb.AppendLine($"            if (_strLen_{name} < _strBytes_{name}.Length)");
+            sb.AppendLine("            {");
+            sb.AppendLine($"                while (_strLen_{name} > 0 && (_strBytes_{name}[_strLen_{name} - 1] & 0xC0) == 0x80) _strLen_{name}--;");
+            sb.AppendLine($"                if (_strLen_{name} > 0 && _strBytes_{name}[_strLen_{name} - 1] >= 0xC0) _strLen_{name}--;");
+            sb.AppendLine("            }");
+        }
+
         sb.AppendLine($"            for (int _si = 0; _si < _strLen_{name}; _si++)");
         sb.AppendLine($"                {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si * 8, 8, _strBytes_{name}[_si]);");
         sb.AppendLine($"            for (int _si = _strLen_{name}; _si < {byteLen}; _si++)");
@@ -250,7 +290,8 @@ internal static class SerializerEmitter
         return field.IsTypeParameter
                || field.IsPotentiallyDynamic
                || field.IsTerminatedString
-               || (field.IsList && !field.FixedCount.HasValue);
+               || (field.IsList && !field.FixedCount.HasValue)
+               || (field.IsList && field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0);
     }
 
     private static int GetStaticFieldEnd(BitFieldModel field)
