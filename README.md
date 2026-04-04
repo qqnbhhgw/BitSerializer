@@ -10,8 +10,10 @@
 - **自动推断位长** — 未指定位长时，自动根据类型推断（`byte` = 8, `ushort` = 16, `int` = 32 ...）
 - **嵌套类型** — 支持嵌套复合类型的递归序列化
 - **继承链支持** — 支持多层继承，包括通过未标记 `[BitSerialize]` 的中间抽象类型（如泛型基类）正确序列化
+- **字符串支持** — 支持固定长度字符串（`[BitFixedString]`）和 NUL 终止字符串（`[BitTerminatedString]`），支持 ASCII 和 UTF-8 编码
+- **自定义序列化类型** — 支持实现 `IBitSerializable` 接口的自定义类型，无需 `[BitSerialize]` 标记
 - **泛型类型参数** — 支持泛型类型参数字段的序列化，通过 `IBitSerializable` 接口在运行时分发
-- **集合支持** — 支持 `List<T>` 的序列化，元素数量可动态关联或固定指定
+- **集合支持** — 支持 `List<T>` / `T[]` 的序列化，元素数量可动态关联或固定指定
 - **多态类型** — 通过类型判别字段自动分发到具体子类
 - **值转换器** — 支持自定义序列化/反序列化时的值变换
 - **record 类型支持** — 支持 `record class` 和 `record struct`
@@ -200,7 +202,58 @@ public abstract record Container<T> : BaseType where T : PayloadBase
 }
 ```
 
-### 集合（List）
+### 字符串
+
+支持固定长度和 NUL 终止两种字符串序列化模式，默认 ASCII 编码，可选 UTF-8：
+
+```csharp
+[BitSerialize]
+public partial class StringPacket
+{
+    [BitField]
+    [BitFixedString(10)]                // 固定 10 字节，不足补 NUL
+    public string Name { get; set; } = "";
+
+    [BitField]
+    [BitTerminatedString]               // NUL 终止，动态长度
+    public string Description { get; set; } = "";
+
+    [BitField]
+    [BitFixedString(16, Encoding = StringEncoding.UTF8)]  // UTF-8 编码
+    public string Utf8Field { get; set; } = "";
+}
+```
+
+### 自定义序列化类型（IBitSerializable）
+
+实现 `IBitSerializable` 接口的类型可直接用作字段或集合元素，无需标记 `[BitSerialize]`：
+
+```csharp
+public struct CustomHeader : IBitSerializable
+{
+    public byte Magic;
+    public ushort Length;
+
+    public int SerializeLSB(Span<byte> bytes, int bitOffset) { /* 手动写入 */ }
+    public int SerializeMSB(Span<byte> bytes, int bitOffset) { /* 手动写入 */ }
+    public int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset) { /* 手动读取 */ }
+    public int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset) { /* 手动读取 */ }
+    public int GetTotalBitLength() => 24;
+}
+
+[BitSerialize]
+public partial class Packet
+{
+    [BitField(24)]
+    public CustomHeader Header { get; set; }    // 自定义序列化类型
+
+    [BitField(8)]
+    [BitFieldCount(4)]
+    public CustomHeader[] Items { get; set; }   // 也可作为集合元素
+}
+```
+
+### 集合（List / Array）
 
 通过 `BitFieldRelated` 关联计数字段，或通过 `BitFieldCount` 指定固定数量：
 
@@ -314,8 +367,19 @@ Source Generator 会在编译期检查常见错误并报告诊断信息：
 
 | 诊断码 | 说明 |
 |--------|------|
-| `BITS001` | 标记 `[BitSerialize]` 的类型必须是 `partial` |
+| `BITS001` | 成员缺少 `[BitField]` 或 `[BitIgnore]` |
+| `BITS002` | 不支持的字段类型 |
+| `BITS003` | List 缺少计数信息（需 `[BitFieldRelated]` 或 `[BitFieldCount]`） |
+| `BITS004` | 值转换器未实现 `IBitFieldValueConverter` |
+| `BITS005` | 标记 `[BitSerialize]` 的类型必须是 `partial` |
 | `BITS006` | 嵌套的序列化字段类型必须标记 `[BitSerialize]` |
+| `BITS007` | 多态成员缺少判别字段关联 |
+| `BITS008` | 关联成员未找到 |
+| `BITS009` | 成员有序列化辅助特性但缺少 `[BitField]` |
+| `BITS010` | `[BitFixedString]` 只能用于 `string` 类型 |
+| `BITS011` | `[BitTerminatedString]` 只能用于 `string` 类型 |
+| `BITS012` | `[BitFixedString]` 字节长度必须为正数 |
+| `BITS013` | 泛型类型参数缺少 `new()` 或 `struct` 约束 |
 
 例如，以下代码会触发 `BITS006` 编译错误：
 
@@ -343,15 +407,19 @@ public partial record Frame
 | `[BitField(n)]` | 声明字段参与序列化，`n` 为位长度（可选，不指定则自动推断） |
 | `[BitFieldRelated(name)]` | 关联另一个字段（用于 List 计数或多态判别） |
 | `[BitFieldRelated(name, converterType)]` | 关联字段并指定值转换器 |
-| `[BitFieldCount(n)]` | 指定 List 的固定元素数量 |
+| `[BitFieldCount(n)]` | 指定 List / Array 的固定元素数量 |
 | `[BitPoly(id, type)]` | 多态映射：当判别值为 `id` 时反序列化为 `type` |
+| `[BitFixedString(n)]` | 固定长度字符串（`n` 字节），不足补 NUL，可选 `Encoding` 参数 |
+| `[BitTerminatedString]` | NUL 终止字符串，动态长度，可选 `Encoding` 参数 |
 | `[BitIgnore]` | 忽略该字段，不参与序列化/反序列化 |
 
 ## 支持的数据类型
 
 - 整数类型：`byte`, `sbyte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`
 - 枚举类型（任意底层整数类型）
+- 字符串：固定长度（`[BitFixedString]`）或 NUL 终止（`[BitTerminatedString]`）
 - 嵌套的 BitField 类型（class / struct / record）
+- 自定义 `IBitSerializable` 类型
 - `List<T>` / `T[]`（T 为上述支持的类型）
 
 ## API 参考

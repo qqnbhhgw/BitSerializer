@@ -130,8 +130,14 @@ public class BitSerializerGenerator : IIncrementalGenerator
     private static void EmitDynamicBitLength(StringBuilder sb, TypeModel model)
     {
         // Start with static portion (include base type bits)
-        int staticBits = model.BaseBitLength;
+        int staticBits = model.BaseHasDynamicLength ? 0 : model.BaseBitLength;
         var dynamicParts = new System.Collections.Generic.List<string>();
+        var preStatements = new System.Collections.Generic.List<string>();
+
+        if (model.BaseHasDynamicLength)
+        {
+            dynamicParts.Add("base.GetTotalBitLength()");
+        }
 
         foreach (var field in model.Fields)
         {
@@ -139,6 +145,38 @@ public class BitSerializerGenerator : IIncrementalGenerator
             {
                 // Type parameter: bit length unknown at compile time, use interface dispatch
                 dynamicParts.Add($"((global::BitSerializer.IBitSerializable)this.{field.MemberName}).GetTotalBitLength()");
+            }
+            else if (field.IsList && field.ListElementIsManualBitSerializable)
+            {
+                if (field.FixedCount.HasValue && field.ListElementBitLength > 0)
+                {
+                    // Fixed-count with explicit element width: treat as static
+                    staticBits += field.FixedCount.Value * field.ListElementBitLength;
+                }
+                else
+                {
+                    // Manual IBitSerializable list elements: sum actual element bit lengths
+                    var sumVar = $"_sumBits_{field.MemberName}";
+                    string countExpr = field.FixedCount.HasValue
+                        ? field.FixedCount.Value.ToString()
+                        : $"(int)this.{field.RelatedMemberName}";
+                    preStatements.Add($"        int {sumVar} = 0;");
+                    preStatements.Add($"        for (int _i = 0; _i < {countExpr}; _i++)");
+                    preStatements.Add($"            {sumVar} += ((global::BitSerializer.IBitSerializable)this.{field.MemberName}[_i]).GetTotalBitLength();");
+                    dynamicParts.Add(sumVar);
+                }
+            }
+            else if (field.IsList && field.ListElementHasDynamicLength)
+            {
+                // [BitSerialize] list elements with dynamic length: sum actual element bit lengths
+                var sumVar = $"_sumBits_{field.MemberName}";
+                string countExpr = field.FixedCount.HasValue
+                    ? field.FixedCount.Value.ToString()
+                    : $"(int)this.{field.RelatedMemberName}";
+                preStatements.Add($"        int {sumVar} = 0;");
+                preStatements.Add($"        for (int _i = 0; _i < {countExpr}; _i++)");
+                preStatements.Add($"            {sumVar} += ((global::BitSerializer.IBitSerializable)this.{field.MemberName}[_i]).GetTotalBitLength();");
+                dynamicParts.Add(sumVar);
             }
             else if (field.IsList && !field.FixedCount.HasValue)
             {
@@ -148,6 +186,15 @@ public class BitSerializerGenerator : IIncrementalGenerator
             else if (field.IsList && field.FixedCount.HasValue)
             {
                 staticBits += field.FixedCount.Value * field.ListElementBitLength;
+            }
+            else if (field.IsTerminatedString)
+            {
+                var encoding = GetEncodingExpression(field.StringEncodingName);
+                var tsVar = $"_ts_{field.MemberName}";
+                preStatements.Add($"        string {tsVar} = this.{field.MemberName} ?? \"\";");
+                preStatements.Add($"        int _tsNul_{field.MemberName} = {tsVar}.IndexOf('\\0');");
+                preStatements.Add($"        if (_tsNul_{field.MemberName} >= 0) {tsVar} = {tsVar}.Substring(0, _tsNul_{field.MemberName});");
+                dynamicParts.Add($"({encoding}.GetByteCount({tsVar}) + 1) * 8");
             }
             else if (field.IsPotentiallyDynamic)
             {
@@ -159,11 +206,23 @@ public class BitSerializerGenerator : IIncrementalGenerator
             }
         }
 
+        foreach (var stmt in preStatements)
+        {
+            sb.AppendLine(stmt);
+        }
+
         var expr = staticBits.ToString();
         foreach (var part in dynamicParts)
         {
             expr += $" + {part}";
         }
         sb.AppendLine($"        return {expr};");
+    }
+
+    private static string GetEncodingExpression(string encodingName)
+    {
+        return encodingName == "UTF8"
+            ? "global::System.Text.Encoding.UTF8"
+            : "global::System.Text.Encoding.ASCII";
     }
 }

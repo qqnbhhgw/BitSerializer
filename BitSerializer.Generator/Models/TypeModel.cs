@@ -49,6 +49,10 @@ internal class TypeModel : IEquatable<TypeModel>
     /// The total bit length of the base type (for derived types with [BitSerialize] base).
     /// </summary>
     public int BaseBitLength { get; set; }
+    /// <summary>
+    /// True if the base type contains dynamic-length fields (terminated strings, manual IBitSerializable, etc.).
+    /// </summary>
+    public bool BaseHasDynamicLength { get; set; }
 
     public bool Equals(TypeModel? other)
     {
@@ -56,12 +60,28 @@ internal class TypeModel : IEquatable<TypeModel>
         return FullyQualifiedName == other.FullyQualifiedName
             && TotalBitLength == other.TotalBitLength
             && HasDynamicLength == other.HasDynamicLength
+            && HasBitSerializableBaseType == other.HasBitSerializableBaseType
+            && BaseBitLength == other.BaseBitLength
+            && BaseHasDynamicLength == other.BaseHasDynamicLength
             && Fields.Count == other.Fields.Count
             && Fields.SequenceEqual(other.Fields, BitFieldModelComparer.Instance);
     }
 
     public override bool Equals(object? obj) => Equals(obj as TypeModel);
-    public override int GetHashCode() => FullyQualifiedName.GetHashCode();
+    public override int GetHashCode()
+    {
+        unchecked
+        {
+            var hash = FullyQualifiedName.GetHashCode();
+            hash = hash * 397 ^ TotalBitLength;
+            hash = hash * 397 ^ HasDynamicLength.GetHashCode();
+            hash = hash * 397 ^ HasBitSerializableBaseType.GetHashCode();
+            hash = hash * 397 ^ BaseBitLength;
+            hash = hash * 397 ^ BaseHasDynamicLength.GetHashCode();
+            hash = hash * 397 ^ Fields.Count;
+            return hash;
+        }
+    }
 }
 
 internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
@@ -83,7 +103,15 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.FixedCount == y.FixedCount
             && x.RelatedMemberName == y.RelatedMemberName
             && x.ValueConverterTypeFullName == y.ValueConverterTypeFullName
-            && x.IsPotentiallyDynamic == y.IsPotentiallyDynamic;
+            && x.IsPotentiallyDynamic == y.IsPotentiallyDynamic
+            && x.IsFixedString == y.IsFixedString
+            && x.FixedStringByteLength == y.FixedStringByteLength
+            && x.IsTerminatedString == y.IsTerminatedString
+            && x.StringEncodingName == y.StringEncodingName
+            && x.IsManualBitSerializable == y.IsManualBitSerializable
+            && x.ListElementIsManualBitSerializable == y.ListElementIsManualBitSerializable
+            && x.ListElementIsTypeParameter == y.ListElementIsTypeParameter
+            && x.ListElementHasDynamicLength == y.ListElementHasDynamicLength;
     }
 
     public int GetHashCode(BitFieldModel obj) => obj.MemberName.GetHashCode();

@@ -47,6 +47,12 @@ public class BitFieldMissingAnalyzer : DiagnosticAnalyzer
         if (hasBitIgnore)
             return;
 
+        bool hasStringAttribute = attributes.Any(a =>
+            a.AttributeClass?.ToDisplayString() == "BitSerializer.BitFixedStringAttribute" ||
+            a.AttributeClass?.ToDisplayString() == "BitSerializer.BitTerminatedStringAttribute");
+        if (hasStringAttribute)
+            return;
+
         bool hasHelperAttribute = attributes.Any(a =>
             a.AttributeClass != null &&
             HelperAttributeNames.Contains(a.AttributeClass.ToDisplayString()));

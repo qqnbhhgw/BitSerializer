@@ -72,6 +72,7 @@ internal static class TypeAnalyzer
         // Check if any ancestor type has [BitSerialize] and collect intermediate fields
         bool hasBitSerializableBase = false;
         int baseBitLength = 0;
+        bool baseHasDynamicLength = false;
         var intermediateFields = new List<ISymbol>();
         {
             var current = symbol.BaseType;
@@ -82,6 +83,7 @@ internal static class TypeAnalyzer
                     // Found a [BitSerialize] ancestor - it generates its own code
                     hasBitSerializableBase = true;
                     baseBitLength = CalculateNestedBitLength(current);
+                    baseHasDynamicLength = HasDynamicLengthRecursive(current);
                     break;
                 }
                 // This intermediate base doesn't have [BitSerialize], collect its fields
@@ -102,7 +104,9 @@ internal static class TypeAnalyzer
             IsOpenGeneric = symbol.TypeParameters.Length > 0,
             ContainingTypes = containingTypes,
             HasBitSerializableBaseType = hasBitSerializableBase,
-            BaseBitLength = baseBitLength
+            BaseBitLength = baseBitLength,
+            BaseHasDynamicLength = baseHasDynamicLength,
+            HasDynamicLength = baseHasDynamicLength
         };
 
         // Collect members: intermediate base fields first, then own declared members
@@ -122,10 +126,13 @@ internal static class TypeAnalyzer
             if (HasAttribute(member, "BitSerializer.BitIgnoreAttribute"))
                 continue;
 
-            // Check for BitField
+            // Check for BitField and string attributes
             var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");
-            if (bitFieldAttr == null)
-                continue; // Diagnostic reported elsewhere
+            var fixedStringAttr = GetAttribute(member, "BitSerializer.BitFixedStringAttribute");
+            var terminatedStringAttr = GetAttribute(member, "BitSerializer.BitTerminatedStringAttribute");
+
+            if (bitFieldAttr == null && fixedStringAttr == null && terminatedStringAttr == null)
+                continue;
 
             var field = new BitFieldModel
             {
@@ -134,8 +141,84 @@ internal static class TypeAnalyzer
                 BitStartIndex = currentBitIndex,
             };
 
-            // Get explicit bit length
-            int? explicitBitLength = GetBitLengthFromAttribute(bitFieldAttr);
+            // Handle [BitFixedString] (standalone, no [BitField] required)
+            if (fixedStringAttr != null)
+            {
+                if (memberType.SpecialType != SpecialType.System_String)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FixedStringMustBeString,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name)
+                    };
+                }
+
+                int byteLen = (int)fixedStringAttr.ConstructorArguments[0].Value!;
+                string encodingName = "ASCII";
+                foreach (var named in fixedStringAttr.NamedArguments)
+                {
+                    if (named.Key == "ByteLength" && named.Value.Value is int namedByteLen)
+                        byteLen = namedByteLen;
+                    else if (named.Key == "Encoding" && named.Value.Value is int encVal)
+                        encodingName = encVal == 1 ? "UTF8" : "ASCII";
+                }
+                if (byteLen <= 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FixedStringInvalidLength,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, byteLen)
+                    };
+                }
+
+                field.IsFixedString = true;
+                field.FixedStringByteLength = byteLen;
+                field.StringEncodingName = encodingName;
+                field.BitLength = byteLen * 8;
+                field.MemberTypeName = "string";
+                field.MemberTypeFullName = "string";
+                currentBitIndex += field.BitLength;
+                model.Fields.Add(field);
+                continue;
+            }
+
+            // Handle [BitTerminatedString] (standalone, always dynamic)
+            if (terminatedStringAttr != null)
+            {
+                if (memberType.SpecialType != SpecialType.System_String)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.TerminatedStringMustBeString,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name)
+                    };
+                }
+
+                string encodingName = "ASCII";
+                foreach (var named in terminatedStringAttr.NamedArguments)
+                {
+                    if (named.Key == "Encoding" && named.Value.Value is int encVal)
+                        encodingName = encVal == 1 ? "UTF8" : "ASCII";
+                }
+
+                field.IsTerminatedString = true;
+                field.StringEncodingName = encodingName;
+                field.BitLength = 0;
+                field.MemberTypeName = "string";
+                field.MemberTypeFullName = "string";
+                model.HasDynamicLength = true;
+                model.Fields.Add(field);
+                continue;
+            }
+
+            // Get explicit bit length from [BitField]
+            int? explicitBitLength = GetBitLengthFromAttribute(bitFieldAttr!);
 
             // Check for BitFieldRelated
             var relatedAttr = GetAttribute(member, "BitSerializer.BitFieldRelatedAttribute");
@@ -214,10 +297,32 @@ internal static class TypeAnalyzer
                     int nestedBits = CalculateNestedBitLength(elementType!);
                     field.ListElementBitLength = nestedBits;
                     field.BitLength = 0;
+                    if (HasDynamicLengthRecursive(elementType!))
+                        field.ListElementHasDynamicLength = true;
+                }
+                else if (ImplementsBitSerializable(elementType!))
+                {
+                    if (elementType is ITypeParameterSymbol elemTypeParam
+                        && !elemTypeParam.HasConstructorConstraint
+                        && !elemTypeParam.HasValueTypeConstraint)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.TypeParameterMissingNewConstraint,
+                                member.Locations.FirstOrDefault(),
+                                elemTypeParam.Name, member.Name, symbol.Name)
+                        };
+                    }
+                    field.ListElementIsNested = true;
+                    field.ListElementIsManualBitSerializable = true;
+                    field.ListElementIsTypeParameter = elementType is ITypeParameterSymbol;
+                    field.ListElementBitLength = explicitBitLength ?? 0;
+                    field.BitLength = 0;
                 }
                 else
                 {
-                    // List element is a non-numeric type without [BitSerialize]
+                    // List element is a non-numeric type without [BitSerialize] or IBitSerializable
                     return new AnalyzeResult
                     {
                         Diagnostic = Diagnostic.Create(
@@ -227,7 +332,14 @@ internal static class TypeAnalyzer
                     };
                 }
 
-                if (field.FixedCount.HasValue)
+                if (field.ListElementHasDynamicLength)
+                {
+                    model.HasDynamicLength = true;
+                    // Advance by static estimation so subsequent fields get correct BitStartIndex
+                    if (field.FixedCount.HasValue && field.ListElementBitLength > 0)
+                        currentBitIndex += field.FixedCount.Value * field.ListElementBitLength;
+                }
+                else if (field.FixedCount.HasValue && field.ListElementBitLength > 0)
                 {
                     int totalListBits = field.FixedCount.Value * field.ListElementBitLength;
                     currentBitIndex += totalListBits;
@@ -314,8 +426,20 @@ internal static class TypeAnalyzer
                 currentBitIndex += field.BitLength;
             }
             else if (memberType is ITypeParameterSymbol typeParam &&
-                     typeParam.ConstraintTypes.Any(c => HasAttribute(c, "BitSerializer.BitSerializeAttribute")))
+                     (typeParam.ConstraintTypes.Any(c => HasAttribute(c, "BitSerializer.BitSerializeAttribute")) ||
+                      typeParam.ConstraintTypes.Any(c => ImplementsBitSerializable(c)) ||
+                      ImplementsBitSerializable(memberType)))
             {
+                if (!typeParam.HasConstructorConstraint && !typeParam.HasValueTypeConstraint)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.TypeParameterMissingNewConstraint,
+                            member.Locations.FirstOrDefault(),
+                            typeParam.Name, member.Name, symbol.Name)
+                    };
+                }
                 // Type parameter with [BitSerialize] constraint (e.g., TExComLogSt : ExComLogStBase)
                 // Bit length is unknown at compile time, use interface dispatch at runtime
                 field.IsNestedType = true;
@@ -325,9 +449,29 @@ internal static class TypeAnalyzer
                 field.BitLength = 0; // Unknown at compile time
                 model.HasDynamicLength = true;
             }
+            else if (ImplementsBitSerializable(memberType))
+            {
+                // Manual IBitSerializable type (without [BitSerialize] attribute)
+                field.IsManualBitSerializable = true;
+                field.IsNestedType = true;
+                field.MemberTypeName = memberType.Name;
+                field.MemberTypeFullName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+
+                if (explicitBitLength.HasValue)
+                {
+                    field.BitLength = explicitBitLength.Value;
+                    currentBitIndex += field.BitLength;
+                }
+                else
+                {
+                    field.BitLength = 0;
+                    field.IsPotentiallyDynamic = true;
+                    model.HasDynamicLength = true;
+                }
+            }
             else
             {
-                // Non-numeric, non-list type without [BitSerialize]
+                // Non-numeric, non-list type without [BitSerialize] or IBitSerializable
                 return new AnalyzeResult
                 {
                     Diagnostic = Diagnostic.Create(
@@ -439,6 +583,23 @@ internal static class TypeAnalyzer
             if (memberType == null) continue;
             if (HasAttribute(member, "BitSerializer.BitIgnoreAttribute")) continue;
 
+            // Check for string attributes first
+            var fixedStrAttr = GetAttribute(member, "BitSerializer.BitFixedStringAttribute");
+            if (fixedStrAttr != null)
+            {
+                int byteLen = (int)fixedStrAttr.ConstructorArguments[0].Value!;
+                foreach (var named in fixedStrAttr.NamedArguments)
+                {
+                    if (named.Key == "ByteLength" && named.Value.Value is int namedByteLen)
+                        byteLen = namedByteLen;
+                }
+                total += byteLen * 8;
+                continue;
+            }
+            var termStrAttr = GetAttribute(member, "BitSerializer.BitTerminatedStringAttribute");
+            if (termStrAttr != null)
+                continue; // dynamic, contributes 0 to static total
+
             var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");
             if (bitFieldAttr == null) continue;
 
@@ -453,6 +614,8 @@ internal static class TypeAnalyzer
                     int elemBits;
                     if (IsNumericOrEnum(elemType!))
                         elemBits = explicitBitLength ?? GetDefaultBitLength(elemType!);
+                    else if (ImplementsBitSerializable(elemType!) && !HasAttribute(elemType!, "BitSerializer.BitSerializeAttribute"))
+                        elemBits = explicitBitLength ?? 0;
                     else
                         elemBits = CalculateNestedBitLength(elemType!);
                     total += count * elemBits;
@@ -504,6 +667,10 @@ internal static class TypeAnalyzer
                     int nested = CalculateNestedBitLength(memberType);
                     total += explicitBitLength ?? nested;
                 }
+            }
+            else if (ImplementsBitSerializable(memberType))
+            {
+                total += explicitBitLength ?? 0;
             }
         }
         return total;
@@ -606,15 +773,34 @@ internal static class TypeAnalyzer
             var memberType = GetMemberType(member);
             if (memberType == null) continue;
             if (HasAttribute(member, "BitSerializer.BitIgnoreAttribute")) continue;
+            // Check for string attributes
+            var fixedStrAttr2 = GetAttribute(member, "BitSerializer.BitFixedStringAttribute");
+            var termStrAttr2 = GetAttribute(member, "BitSerializer.BitTerminatedStringAttribute");
+
+            if (termStrAttr2 != null) return true; // always dynamic
+            if (fixedStrAttr2 != null) continue; // fixed, not dynamic
+
             var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");
             if (bitFieldAttr == null) continue;
 
             if (memberType is ITypeParameterSymbol) return true;
 
-            if (IsListType(memberType, out _, out _))
+            if (IsListType(memberType, out var listElemType, out _))
             {
                 var countAttr = GetAttribute(member, "BitSerializer.BitFieldCountAttribute");
                 if (countAttr == null) return true; // dynamic list
+                // Fixed-count list with manual IBitSerializable elements and no explicit bit length is dynamic
+                if (listElemType != null && ImplementsBitSerializable(listElemType)
+                    && !HasAttribute(listElemType, "BitSerializer.BitSerializeAttribute"))
+                {
+                    int? explBitLen = GetBitLengthFromAttribute(bitFieldAttr);
+                    if (!explBitLen.HasValue) return true;
+                }
+                // Fixed-count list with [BitSerialize] elements that are themselves dynamic
+                if (listElemType != null && HasAttribute(listElemType, "BitSerializer.BitSerializeAttribute"))
+                {
+                    if (HasDynamicLengthRecursive(listElemType)) return true;
+                }
                 continue;
             }
 
@@ -633,6 +819,13 @@ internal static class TypeAnalyzer
                 continue;
             }
 
+            if (ImplementsBitSerializable(memberType))
+            {
+                int? explBitLen = GetBitLengthFromAttribute(bitFieldAttr);
+                if (!explBitLen.HasValue) return true; // dynamic
+                continue;
+            }
+
             if (HasAttribute(memberType, "BitSerializer.BitSerializeAttribute"))
             {
                 if (HasDynamicLengthRecursive(memberType)) return true;
@@ -640,6 +833,12 @@ internal static class TypeAnalyzer
         }
 
         return false;
+    }
+
+    private static bool ImplementsBitSerializable(ITypeSymbol type)
+    {
+        return type.AllInterfaces.Any(i =>
+            i.ToDisplayString() == "BitSerializer.IBitSerializable");
     }
 
     private static INamedTypeSymbol? FindTypeByFullName(IAssemblySymbol assembly, string fullName)

@@ -75,4 +75,37 @@ internal static class DiagnosticDescriptors
         "BitSerializer",
         DiagnosticSeverity.Error,
         true);
+
+    public static readonly DiagnosticDescriptor FixedStringMustBeString = new(
+        "BITS010",
+        "[BitFixedString] on non-string member",
+        "[BitFixedString] can only be applied to string members, but '{0}' in '{1}' is not a string",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor TerminatedStringMustBeString = new(
+        "BITS011",
+        "[BitTerminatedString] on non-string member",
+        "[BitTerminatedString] can only be applied to string members, but '{0}' in '{1}' is not a string",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor FixedStringInvalidLength = new(
+        "BITS012",
+        "[BitFixedString] byte length must be positive",
+        "[BitFixedString] on '{0}' in '{1}' has byte length {2}, which must be greater than 0",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor TypeParameterMissingNewConstraint = new(
+        "BITS013",
+        "Type parameter missing new() constraint",
+        "Type parameter '{0}' used in '{1}' of '{2}' requires a new() or struct constraint for deserialization",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

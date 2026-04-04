@@ -15,13 +15,22 @@ internal static class SerializerEmitter
         sb.AppendLine($"    public {newKeyword}int {methodName}(global::System.Span<byte> bytes, int bitOffset)");
         sb.AppendLine("    {");
 
-        if (model.HasBitSerializableBaseType)
-        {
-            sb.AppendLine($"        base.{methodName}(bytes, bitOffset);");
-        }
-
         string? runtimeOffsetVar = null;
         int runtimeStaticEnd = 0;
+
+        if (model.HasBitSerializableBaseType)
+        {
+            if (model.BaseHasDynamicLength)
+            {
+                sb.AppendLine($"        int _baseEndBit = bitOffset + base.{methodName}(bytes, bitOffset);");
+                runtimeOffsetVar = "_baseEndBit";
+                runtimeStaticEnd = model.BaseBitLength;
+            }
+            else
+            {
+                sb.AppendLine($"        base.{methodName}(bytes, bitOffset);");
+            }
+        }
 
         foreach (var field in model.Fields)
         {
@@ -42,7 +51,16 @@ internal static class SerializerEmitter
 
             string? fieldEndVar = null;
 
-            if (field.IsList)
+            if (field.IsFixedString)
+            {
+                EmitFixedStringSerialize(sb, field, helper, memberAccess, offsetExpr);
+            }
+            else if (field.IsTerminatedString)
+            {
+                fieldEndVar = $"_bitIndex_{field.MemberName}";
+                EmitTerminatedStringSerialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
+            }
+            else if (field.IsList)
             {
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
                 EmitListSerialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
@@ -66,14 +84,18 @@ internal static class SerializerEmitter
             }
             else if (field.IsNestedType)
             {
+                string callExpr = field.IsManualBitSerializable
+                    ? $"((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr})"
+                    : $"{memberAccess}.{methodName}(bytes, {offsetExpr})";
+
                 if (usesRuntimeBitLength)
                 {
                     fieldEndVar = $"_bitIndex_{field.MemberName}";
-                    sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {memberAccess}.{methodName}(bytes, {offsetExpr});");
+                    sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {callExpr};");
                 }
                 else
                 {
-                    sb.AppendLine($"        {memberAccess}.{methodName}(bytes, {offsetExpr});");
+                    sb.AppendLine($"        {callExpr};");
                 }
             }
             else if (field.IsNumericOrEnum)
@@ -126,21 +148,65 @@ internal static class SerializerEmitter
     private static void EmitListSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
     {
         int elemBits = field.ListElementBitLength;
+        var serializeMethod = GetSerializeMethodFromHelper(helper);
 
-        if (field.FixedCount.HasValue)
+        if (field.ListElementIsManualBitSerializable)
         {
-            sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
-            sb.AppendLine("        {");
-            if (field.ListElementIsNested)
+            if (field.FixedCount.HasValue && elemBits > 0)
             {
-                sb.AppendLine($"            {memberAccess}[_i].{GetSerializeMethodFromHelper(helper)}(bytes, {offsetExpr} + _i * {elemBits});");
+                // Fixed-count manual IBitSerializable with declared element width: use fixed stride
+                sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            ((global::BitSerializer.IBitSerializable){memberAccess}[_i]).{serializeMethod}(bytes, {offsetExpr} + _i * {elemBits});");
+                sb.AppendLine("        }");
+                sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {field.FixedCount.Value * elemBits};");
             }
             else
             {
-                sb.AppendLine($"            {helper}.SetValueLength<{field.ListElementTypeName}>(bytes, {offsetExpr} + _i * {elemBits}, {elemBits}, {memberAccess}[_i]);");
+                // Dynamic: use runtime offset tracking via interface dispatch
+                string countExpr;
+                if (field.FixedCount.HasValue)
+                {
+                    countExpr = field.FixedCount.Value.ToString();
+                }
+                else
+                {
+                    countExpr = $"_listCount_{field.MemberName}";
+                    sb.AppendLine($"        int {countExpr} = (int)this.{field.RelatedMemberName};");
+                }
+                sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
+                sb.AppendLine($"        for (int _i = 0; _i < {countExpr}; _i++)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            {bitIndexVar} += ((global::BitSerializer.IBitSerializable){memberAccess}[_i]).{serializeMethod}(bytes, {bitIndexVar});");
+                sb.AppendLine("        }");
             }
-            sb.AppendLine("        }");
-            sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {field.FixedCount.Value * elemBits};");
+        }
+        else if (field.FixedCount.HasValue)
+        {
+            if (field.ListElementHasDynamicLength)
+            {
+                // Dynamic nested elements: use runtime offset tracking via return value
+                sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
+                sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            {bitIndexVar} += {memberAccess}[_i].{serializeMethod}(bytes, {bitIndexVar});");
+                sb.AppendLine("        }");
+            }
+            else
+            {
+                sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
+                sb.AppendLine("        {");
+                if (field.ListElementIsNested)
+                {
+                    sb.AppendLine($"            {memberAccess}[_i].{serializeMethod}(bytes, {offsetExpr} + _i * {elemBits});");
+                }
+                else
+                {
+                    sb.AppendLine($"            {helper}.SetValueLength<{field.ListElementTypeName}>(bytes, {offsetExpr} + _i * {elemBits}, {elemBits}, {memberAccess}[_i]);");
+                }
+                sb.AppendLine("        }");
+                sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {field.FixedCount.Value * elemBits};");
+            }
         }
         else
         {
@@ -148,15 +214,20 @@ internal static class SerializerEmitter
             sb.AppendLine($"        int _listCount_{field.MemberName} = (int)this.{field.RelatedMemberName};");
             sb.AppendLine($"        for (int _i = 0; _i < _listCount_{field.MemberName}; _i++)");
             sb.AppendLine("        {");
-            if (field.ListElementIsNested)
+            if (field.ListElementHasDynamicLength)
             {
-                sb.AppendLine($"            {memberAccess}[_i].{GetSerializeMethodFromHelper(helper)}(bytes, {bitIndexVar});");
+                sb.AppendLine($"            {bitIndexVar} += {memberAccess}[_i].{serializeMethod}(bytes, {bitIndexVar});");
+            }
+            else if (field.ListElementIsNested)
+            {
+                sb.AppendLine($"            {memberAccess}[_i].{serializeMethod}(bytes, {bitIndexVar});");
+                sb.AppendLine($"            {bitIndexVar} += {elemBits};");
             }
             else
             {
                 sb.AppendLine($"            {helper}.SetValueLength<{field.ListElementTypeName}>(bytes, {bitIndexVar}, {elemBits}, {memberAccess}[_i]);");
+                sb.AppendLine($"            {bitIndexVar} += {elemBits};");
             }
-            sb.AppendLine($"            {bitIndexVar} += {elemBits};");
             sb.AppendLine("        }");
         }
     }
@@ -197,15 +268,74 @@ internal static class SerializerEmitter
         return helper.Contains("LSB") ? "SerializeLSB" : "SerializeMSB";
     }
 
+    private static void EmitFixedStringSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string offsetExpr)
+    {
+        var encoding = GetEncodingExpression(field.StringEncodingName);
+        int byteLen = field.FixedStringByteLength;
+        var name = field.MemberName;
+
+        sb.AppendLine("        {");
+        sb.AppendLine($"            byte[] _strBytes_{name} = {encoding}.GetBytes({memberAccess} ?? \"\");");
+        sb.AppendLine($"            int _strLen_{name} = global::System.Math.Min(_strBytes_{name}.Length, {byteLen});");
+
+        // For UTF-8: ensure we don't split multi-byte characters
+        if (field.StringEncodingName == "UTF8")
+        {
+            sb.AppendLine($"            if (_strLen_{name} < _strBytes_{name}.Length)");
+            sb.AppendLine("            {");
+            sb.AppendLine($"                int _lcs_{name} = _strLen_{name} - 1;");
+            sb.AppendLine($"                while (_lcs_{name} > 0 && (_strBytes_{name}[_lcs_{name}] & 0xC0) == 0x80) _lcs_{name}--;");
+            sb.AppendLine($"                byte _lead_{name} = _strBytes_{name}[_lcs_{name}];");
+            sb.AppendLine($"                int _seqLen_{name} = _lead_{name} < 0x80 ? 1 : (_lead_{name} & 0xE0) == 0xC0 ? 2 : (_lead_{name} & 0xF0) == 0xE0 ? 3 : (_lead_{name} & 0xF8) == 0xF0 ? 4 : 1;");
+            sb.AppendLine($"                if (_lcs_{name} + _seqLen_{name} > _strLen_{name}) _strLen_{name} = _lcs_{name};");
+            sb.AppendLine("            }");
+        }
+
+        sb.AppendLine($"            for (int _si = 0; _si < _strLen_{name}; _si++)");
+        sb.AppendLine($"                {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si * 8, 8, _strBytes_{name}[_si]);");
+        sb.AppendLine($"            for (int _si = _strLen_{name}; _si < {byteLen}; _si++)");
+        sb.AppendLine($"                {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si * 8, 8, 0);");
+        sb.AppendLine("        }");
+    }
+
+    private static void EmitTerminatedStringSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
+    {
+        var encoding = GetEncodingExpression(field.StringEncodingName);
+        var name = field.MemberName;
+
+        sb.AppendLine($"        byte[] _strBytes_{name} = {encoding}.GetBytes({memberAccess} ?? \"\");");
+        sb.AppendLine($"        int _strWriteLen_{name} = global::System.Array.IndexOf(_strBytes_{name}, (byte)0);");
+        sb.AppendLine($"        if (_strWriteLen_{name} < 0) _strWriteLen_{name} = _strBytes_{name}.Length;");
+        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _strWriteLen_{name}; _si_{name}++)");
+        sb.AppendLine($"            {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si_{name} * 8, 8, _strBytes_{name}[_si_{name}]);");
+        sb.AppendLine($"        {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _strWriteLen_{name} * 8, 8, 0);");
+        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + (_strWriteLen_{name} + 1) * 8;");
+    }
+
+    private static string GetEncodingExpression(string encodingName)
+    {
+        return encodingName == "UTF8"
+            ? "global::System.Text.Encoding.UTF8"
+            : "global::System.Text.Encoding.ASCII";
+    }
+
     private static bool UsesRuntimeBitLength(BitFieldModel field)
     {
         return field.IsTypeParameter
                || field.IsPotentiallyDynamic
-               || (field.IsList && !field.FixedCount.HasValue);
+               || field.IsTerminatedString
+               || (field.IsList && !field.FixedCount.HasValue)
+               || (field.IsList && field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0)
+               || (field.IsList && field.ListElementHasDynamicLength);
     }
 
     private static int GetStaticFieldEnd(BitFieldModel field)
     {
+        if (field.IsTerminatedString)
+        {
+            return field.BitStartIndex;
+        }
+
         if (field.IsList)
         {
             return field.BitStartIndex + (field.FixedCount ?? 0) * field.ListElementBitLength;

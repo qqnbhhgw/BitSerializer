@@ -35,4 +35,22 @@ internal class BitFieldModel
     public string? ValueConverterTypeFullName { get; set; }
     public int PolymorphicBitLength { get; set; }
     public bool IsPotentiallyDynamic { get; set; }
+
+    // String support
+    public bool IsFixedString { get; set; }
+    public int FixedStringByteLength { get; set; }
+    public bool IsTerminatedString { get; set; }
+    public string StringEncodingName { get; set; } = "ASCII";
+
+    // Manual IBitSerializable support (without [BitSerialize])
+    public bool IsManualBitSerializable { get; set; }
+
+    // List element is manual IBitSerializable (needs interface dispatch)
+    public bool ListElementIsManualBitSerializable { get; set; }
+
+    // List element is a generic type parameter (needs Activator.CreateInstance)
+    public bool ListElementIsTypeParameter { get; set; }
+
+    // List element is [BitSerialize] with dynamic length (needs runtime offset tracking)
+    public bool ListElementHasDynamicLength { get; set; }
 }
