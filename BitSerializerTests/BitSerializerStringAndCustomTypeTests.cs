@@ -792,6 +792,13 @@ public partial class BitSerializerStringAndCustomTypeTests
     }
 
     [BitSerialize]
+    public partial class Utf8TruncationData3
+    {
+        [BitFixedString(3, Encoding = BitStringEncoding.UTF8)]
+        public string Text { get; set; } = "";
+    }
+
+    [BitSerialize]
     public partial class Utf8TruncationData4
     {
         [BitFixedString(4, Encoding = BitStringEncoding.UTF8)]
@@ -835,6 +842,17 @@ public partial class BitSerializerStringAndCustomTypeTests
         var bytes = BitSerializerMSB.Serialize(original);
         var restored = BitSerializerMSB.Deserialize<Utf8ExactFitData>(bytes);
         restored.Text.ShouldBe("你好");
+    }
+
+    [Fact]
+    public void Utf8FixedString_Truncation_CompleteCharAtBoundary_RoundTrip_MSB()
+    {
+        // "你a" = E4 BD A0 61 (4 bytes), byteLen=3
+        // "你" fits exactly in 3 bytes, should keep it (not drop to empty)
+        var original = new Utf8TruncationData3 { Text = "你a" };
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<Utf8TruncationData3>(bytes);
+        restored.Text.ShouldBe("你");
     }
 
     [Fact]

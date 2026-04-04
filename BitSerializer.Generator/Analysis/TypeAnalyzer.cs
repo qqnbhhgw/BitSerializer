@@ -732,10 +732,17 @@ internal static class TypeAnalyzer
 
             if (memberType is ITypeParameterSymbol) return true;
 
-            if (IsListType(memberType, out _, out _))
+            if (IsListType(memberType, out var listElemType, out _))
             {
                 var countAttr = GetAttribute(member, "BitSerializer.BitFieldCountAttribute");
                 if (countAttr == null) return true; // dynamic list
+                // Fixed-count list with manual IBitSerializable elements and no explicit bit length is dynamic
+                if (listElemType != null && ImplementsBitSerializable(listElemType)
+                    && !HasAttribute(listElemType, "BitSerializer.BitSerializeAttribute"))
+                {
+                    int? explBitLen = GetBitLengthFromAttribute(bitFieldAttr);
+                    if (!explBitLen.HasValue) return true;
+                }
                 continue;
             }
 

@@ -132,6 +132,7 @@ public class BitSerializerGenerator : IIncrementalGenerator
         // Start with static portion (include base type bits)
         int staticBits = model.BaseHasDynamicLength ? 0 : model.BaseBitLength;
         var dynamicParts = new System.Collections.Generic.List<string>();
+        var preStatements = new System.Collections.Generic.List<string>();
 
         if (model.BaseHasDynamicLength)
         {
@@ -147,11 +148,15 @@ public class BitSerializerGenerator : IIncrementalGenerator
             }
             else if (field.IsList && field.ListElementIsManualBitSerializable)
             {
-                // Manual IBitSerializable list elements: count * element bit length from a default instance
+                // Manual IBitSerializable list elements: sum actual element bit lengths
+                var sumVar = $"_sumBits_{field.MemberName}";
                 string countExpr = field.FixedCount.HasValue
                     ? field.FixedCount.Value.ToString()
                     : $"(int)this.{field.RelatedMemberName}";
-                dynamicParts.Add($"({countExpr} * ((global::BitSerializer.IBitSerializable)new {field.ListElementTypeFullName}()).GetTotalBitLength())");
+                preStatements.Add($"        int {sumVar} = 0;");
+                preStatements.Add($"        for (int _i = 0; _i < {countExpr}; _i++)");
+                preStatements.Add($"            {sumVar} += ((global::BitSerializer.IBitSerializable)this.{field.MemberName}[_i]).GetTotalBitLength();");
+                dynamicParts.Add(sumVar);
             }
             else if (field.IsList && !field.FixedCount.HasValue)
             {
@@ -175,6 +180,11 @@ public class BitSerializerGenerator : IIncrementalGenerator
             {
                 staticBits += field.BitLength;
             }
+        }
+
+        foreach (var stmt in preStatements)
+        {
+            sb.AppendLine(stmt);
         }
 
         var expr = staticBits.ToString();

@@ -254,8 +254,11 @@ internal static class SerializerEmitter
         {
             sb.AppendLine($"            if (_strLen_{name} < _strBytes_{name}.Length)");
             sb.AppendLine("            {");
-            sb.AppendLine($"                while (_strLen_{name} > 0 && (_strBytes_{name}[_strLen_{name} - 1] & 0xC0) == 0x80) _strLen_{name}--;");
-            sb.AppendLine($"                if (_strLen_{name} > 0 && _strBytes_{name}[_strLen_{name} - 1] >= 0xC0) _strLen_{name}--;");
+            sb.AppendLine($"                int _lcs_{name} = _strLen_{name} - 1;");
+            sb.AppendLine($"                while (_lcs_{name} > 0 && (_strBytes_{name}[_lcs_{name}] & 0xC0) == 0x80) _lcs_{name}--;");
+            sb.AppendLine($"                byte _lead_{name} = _strBytes_{name}[_lcs_{name}];");
+            sb.AppendLine($"                int _seqLen_{name} = _lead_{name} < 0x80 ? 1 : (_lead_{name} & 0xE0) == 0xC0 ? 2 : (_lead_{name} & 0xF0) == 0xE0 ? 3 : (_lead_{name} & 0xF8) == 0xF0 ? 4 : 1;");
+            sb.AppendLine($"                if (_lcs_{name} + _seqLen_{name} > _strLen_{name}) _strLen_{name} = _lcs_{name};");
             sb.AppendLine("            }");
         }
 
