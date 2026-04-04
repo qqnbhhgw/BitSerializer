@@ -275,10 +275,12 @@ internal static class SerializerEmitter
         var name = field.MemberName;
 
         sb.AppendLine($"        byte[] _strBytes_{name} = {encoding}.GetBytes({memberAccess} ?? \"\");");
-        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _strBytes_{name}.Length; _si_{name}++)");
+        sb.AppendLine($"        int _strWriteLen_{name} = global::System.Array.IndexOf(_strBytes_{name}, (byte)0);");
+        sb.AppendLine($"        if (_strWriteLen_{name} < 0) _strWriteLen_{name} = _strBytes_{name}.Length;");
+        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _strWriteLen_{name}; _si_{name}++)");
         sb.AppendLine($"            {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si_{name} * 8, 8, _strBytes_{name}[_si_{name}]);");
-        sb.AppendLine($"        {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _strBytes_{name}.Length * 8, 8, 0);");
-        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + (_strBytes_{name}.Length + 1) * 8;");
+        sb.AppendLine($"        {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _strWriteLen_{name} * 8, 8, 0);");
+        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + (_strWriteLen_{name} + 1) * 8;");
     }
 
     private static string GetEncodingExpression(string encodingName)

@@ -170,7 +170,11 @@ public class BitSerializerGenerator : IIncrementalGenerator
             else if (field.IsTerminatedString)
             {
                 var encoding = GetEncodingExpression(field.StringEncodingName);
-                dynamicParts.Add($"({encoding}.GetByteCount(this.{field.MemberName} ?? \"\") + 1) * 8");
+                var tsVar = $"_ts_{field.MemberName}";
+                preStatements.Add($"        string {tsVar} = this.{field.MemberName} ?? \"\";");
+                preStatements.Add($"        int _tsNul_{field.MemberName} = {tsVar}.IndexOf('\\0');");
+                preStatements.Add($"        if (_tsNul_{field.MemberName} >= 0) {tsVar} = {tsVar}.Substring(0, _tsNul_{field.MemberName});");
+                dynamicParts.Add($"({encoding}.GetByteCount({tsVar}) + 1) * 8");
             }
             else if (field.IsPotentiallyDynamic)
             {

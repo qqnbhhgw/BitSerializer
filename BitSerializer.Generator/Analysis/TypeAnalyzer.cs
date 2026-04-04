@@ -575,6 +575,8 @@ internal static class TypeAnalyzer
                     int elemBits;
                     if (IsNumericOrEnum(elemType!))
                         elemBits = explicitBitLength ?? GetDefaultBitLength(elemType!);
+                    else if (ImplementsBitSerializable(elemType!) && !HasAttribute(elemType!, "BitSerializer.BitSerializeAttribute"))
+                        elemBits = explicitBitLength ?? 0;
                     else
                         elemBits = CalculateNestedBitLength(elemType!);
                     total += count * elemBits;
