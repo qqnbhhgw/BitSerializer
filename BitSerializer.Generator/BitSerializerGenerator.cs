@@ -149,6 +149,11 @@ public class BitSerializerGenerator : IIncrementalGenerator
             {
                 staticBits += field.FixedCount.Value * field.ListElementBitLength;
             }
+            else if (field.IsTerminatedString)
+            {
+                var encoding = GetEncodingExpression(field.StringEncodingName);
+                dynamicParts.Add($"({encoding}.GetByteCount(this.{field.MemberName} ?? \"\") + 1) * 8");
+            }
             else if (field.IsPotentiallyDynamic)
             {
                 dynamicParts.Add($"((global::BitSerializer.IBitSerializable)this.{field.MemberName}).GetTotalBitLength()");
@@ -165,5 +170,12 @@ public class BitSerializerGenerator : IIncrementalGenerator
             expr += $" + {part}";
         }
         sb.AppendLine($"        return {expr};");
+    }
+
+    private static string GetEncodingExpression(string encodingName)
+    {
+        return encodingName == "UTF8"
+            ? "global::System.Text.Encoding.UTF8"
+            : "global::System.Text.Encoding.ASCII";
     }
 }

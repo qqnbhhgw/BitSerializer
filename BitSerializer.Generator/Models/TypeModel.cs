@@ -83,7 +83,12 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.FixedCount == y.FixedCount
             && x.RelatedMemberName == y.RelatedMemberName
             && x.ValueConverterTypeFullName == y.ValueConverterTypeFullName
-            && x.IsPotentiallyDynamic == y.IsPotentiallyDynamic;
+            && x.IsPotentiallyDynamic == y.IsPotentiallyDynamic
+            && x.IsFixedString == y.IsFixedString
+            && x.FixedStringByteLength == y.FixedStringByteLength
+            && x.IsTerminatedString == y.IsTerminatedString
+            && x.StringEncodingName == y.StringEncodingName
+            && x.IsManualBitSerializable == y.IsManualBitSerializable;
     }
 
     public int GetHashCode(BitFieldModel obj) => obj.MemberName.GetHashCode();

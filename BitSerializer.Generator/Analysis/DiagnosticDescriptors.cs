@@ -75,4 +75,20 @@ internal static class DiagnosticDescriptors
         "BitSerializer",
         DiagnosticSeverity.Error,
         true);
+
+    public static readonly DiagnosticDescriptor FixedStringMustBeString = new(
+        "BITS010",
+        "[BitFixedString] on non-string member",
+        "[BitFixedString] can only be applied to string members, but '{0}' in '{1}' is not a string",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor TerminatedStringMustBeString = new(
+        "BITS011",
+        "[BitTerminatedString] on non-string member",
+        "[BitTerminatedString] can only be applied to string members, but '{0}' in '{1}' is not a string",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
 }

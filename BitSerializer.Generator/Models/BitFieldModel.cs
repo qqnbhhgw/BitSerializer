@@ -35,4 +35,13 @@ internal class BitFieldModel
     public string? ValueConverterTypeFullName { get; set; }
     public int PolymorphicBitLength { get; set; }
     public bool IsPotentiallyDynamic { get; set; }
+
+    // String support
+    public bool IsFixedString { get; set; }
+    public int FixedStringByteLength { get; set; }
+    public bool IsTerminatedString { get; set; }
+    public string StringEncodingName { get; set; } = "ASCII";
+
+    // Manual IBitSerializable support (without [BitSerialize])
+    public bool IsManualBitSerializable { get; set; }
 }
