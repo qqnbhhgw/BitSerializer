@@ -156,6 +156,16 @@ internal static class TypeAnalyzer
                 }
 
                 int byteLen = (int)fixedStringAttr.ConstructorArguments[0].Value!;
+                if (byteLen <= 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FixedStringInvalidLength,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, byteLen)
+                    };
+                }
                 string encodingName = "ASCII";
                 foreach (var named in fixedStringAttr.NamedArguments)
                 {
@@ -392,7 +402,9 @@ internal static class TypeAnalyzer
                 currentBitIndex += field.BitLength;
             }
             else if (memberType is ITypeParameterSymbol typeParam &&
-                     typeParam.ConstraintTypes.Any(c => HasAttribute(c, "BitSerializer.BitSerializeAttribute")))
+                     (typeParam.ConstraintTypes.Any(c => HasAttribute(c, "BitSerializer.BitSerializeAttribute")) ||
+                      typeParam.ConstraintTypes.Any(c => ImplementsBitSerializable(c)) ||
+                      ImplementsBitSerializable(memberType)))
             {
                 // Type parameter with [BitSerialize] constraint (e.g., TExComLogSt : ExComLogStBase)
                 // Bit length is unknown at compile time, use interface dispatch at runtime

@@ -994,4 +994,150 @@ public partial class BitSerializerStringAndCustomTypeTests
     }
 
     #endregion
+
+    #region Fix - Struct IBitSerializable boxing
+
+    // Struct implementing IBitSerializable: tests that deserialization
+    // does not lose data due to interface boxing of value types
+    public struct CompactInt16 : IBitSerializable
+    {
+        public short Value { get; set; }
+
+        public int SerializeLSB(Span<byte> bytes, int bitOffset)
+        {
+            BitHelperLSB.SetValueLength<short>(bytes, bitOffset, 16, Value);
+            return 16;
+        }
+
+        public int SerializeMSB(Span<byte> bytes, int bitOffset)
+        {
+            BitHelperMSB.SetValueLength<short>(bytes, bitOffset, 16, Value);
+            return 16;
+        }
+
+        public int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset)
+        {
+            Value = BitHelperLSB.ValueLength<short>(bytes, bitOffset, 16);
+            return 16;
+        }
+
+        public int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset)
+        {
+            Value = BitHelperMSB.ValueLength<short>(bytes, bitOffset, 16);
+            return 16;
+        }
+
+        public int GetTotalBitLength() => 16;
+    }
+
+    [BitSerialize]
+    public partial class DataWithStructField
+    {
+        [BitField(8)]
+        public byte Header { get; set; }
+
+        [BitField(16)]
+        public CompactInt16 Data { get; set; }
+
+        [BitField(8)]
+        public byte Footer { get; set; }
+    }
+
+    [BitSerialize]
+    public partial class DataWithStructList
+    {
+        [BitField(8)]
+        public byte Count { get; set; }
+
+        [BitField]
+        [BitFieldRelated(nameof(Count))]
+        public List<CompactInt16> Items { get; set; } = new();
+
+        [BitField(8)]
+        public byte Footer { get; set; }
+    }
+
+    [BitSerialize]
+    public partial class DataWithStructArray
+    {
+        [BitField(8)]
+        public byte Header { get; set; }
+
+        [BitField]
+        [BitFieldCount(3)]
+        public CompactInt16[] Items { get; set; } = [];
+
+        [BitField(8)]
+        public byte Footer { get; set; }
+    }
+
+    [Fact]
+    public void StructField_RoundTrip_MSB()
+    {
+        var original = new DataWithStructField
+        {
+            Header = 0xAA,
+            Data = new CompactInt16 { Value = 12345 },
+            Footer = 0xBB
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<DataWithStructField>(bytes);
+
+        restored.Header.ShouldBe((byte)0xAA);
+        restored.Data.Value.ShouldBe((short)12345);
+        restored.Footer.ShouldBe((byte)0xBB);
+    }
+
+    [Fact]
+    public void StructList_RoundTrip_MSB()
+    {
+        var original = new DataWithStructList
+        {
+            Count = 2,
+            Items = new List<CompactInt16>
+            {
+                new CompactInt16 { Value = 100 },
+                new CompactInt16 { Value = -200 }
+            },
+            Footer = 0xCC
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var restored = BitSerializerMSB.Deserialize<DataWithStructList>(bytes);
+
+        restored.Count.ShouldBe((byte)2);
+        restored.Items.Count.ShouldBe(2);
+        restored.Items[0].Value.ShouldBe((short)100);
+        restored.Items[1].Value.ShouldBe((short)-200);
+        restored.Footer.ShouldBe((byte)0xCC);
+    }
+
+    [Fact]
+    public void StructArray_RoundTrip_LSB()
+    {
+        var original = new DataWithStructArray
+        {
+            Header = 0x01,
+            Items = new[]
+            {
+                new CompactInt16 { Value = 1000 },
+                new CompactInt16 { Value = 2000 },
+                new CompactInt16 { Value = 3000 }
+            },
+            Footer = 0x02
+        };
+
+        var bytes = BitSerializerLSB.Serialize(original);
+        var restored = BitSerializerLSB.Deserialize<DataWithStructArray>(bytes);
+
+        restored.Header.ShouldBe((byte)0x01);
+        restored.Items.Length.ShouldBe(3);
+        restored.Items[0].Value.ShouldBe((short)1000);
+        restored.Items[1].Value.ShouldBe((short)2000);
+        restored.Items[2].Value.ShouldBe((short)3000);
+        restored.Footer.ShouldBe((byte)0x02);
+    }
+
+    #endregion
 }

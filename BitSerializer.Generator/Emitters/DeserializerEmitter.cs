@@ -85,20 +85,37 @@ internal static class DeserializerEmitter
             }
             else if (field.IsNestedType)
             {
-                sb.AppendLine($"        {memberAccess} = new {field.MemberTypeFullName}();");
-
-                string callExpr = field.IsManualBitSerializable
-                    ? $"((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr})"
-                    : $"{memberAccess}.{methodName}(bytes, {offsetExpr})";
-
-                if (usesRuntimeBitLength)
+                if (field.IsManualBitSerializable)
                 {
-                    fieldEndVar = $"_bitIndex_{field.MemberName}";
-                    sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {callExpr};");
+                    // Use a local variable to avoid struct boxing:
+                    // calling interface method on a property/field of value type would box the copy
+                    var localVar = $"_nested_{field.MemberName}";
+                    sb.AppendLine($"        var {localVar} = new {field.MemberTypeFullName}();");
+                    if (usesRuntimeBitLength)
+                    {
+                        fieldEndVar = $"_bitIndex_{field.MemberName}";
+                        sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {localVar}.{methodName}(bytes, {offsetExpr});");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"        {localVar}.{methodName}(bytes, {offsetExpr});");
+                    }
+                    sb.AppendLine($"        {memberAccess} = {localVar};");
                 }
                 else
                 {
-                    sb.AppendLine($"        {callExpr};");
+                    sb.AppendLine($"        {memberAccess} = new {field.MemberTypeFullName}();");
+                    string callExpr = $"{memberAccess}.{methodName}(bytes, {offsetExpr})";
+
+                    if (usesRuntimeBitLength)
+                    {
+                        fieldEndVar = $"_bitIndex_{field.MemberName}";
+                        sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {callExpr};");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"        {callExpr};");
+                    }
                 }
             }
             else if (field.IsNumericOrEnum)
@@ -186,7 +203,7 @@ internal static class DeserializerEmitter
             sb.AppendLine($"        for (int _i = 0; _i < {countExpr}; _i++)");
             sb.AppendLine("        {");
             sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
-            sb.AppendLine($"            {bitIndexVar} += ((global::BitSerializer.IBitSerializable)_elem).{deserializeMethod}(bytes, {bitIndexVar});");
+            sb.AppendLine($"            {bitIndexVar} += _elem.{deserializeMethod}(bytes, {bitIndexVar});");
             if (field.IsArray)
                 sb.AppendLine($"            {memberAccess}[_i] = _elem;");
             else

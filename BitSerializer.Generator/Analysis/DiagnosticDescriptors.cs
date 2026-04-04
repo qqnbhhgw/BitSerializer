@@ -91,4 +91,12 @@ internal static class DiagnosticDescriptors
         "BitSerializer",
         DiagnosticSeverity.Error,
         true);
+
+    public static readonly DiagnosticDescriptor FixedStringInvalidLength = new(
+        "BITS012",
+        "[BitFixedString] byte length must be positive",
+        "[BitFixedString] on '{0}' in '{1}' has byte length {2}, which must be greater than 0",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
 }
