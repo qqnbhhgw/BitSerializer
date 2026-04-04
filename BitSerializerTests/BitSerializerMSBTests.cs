@@ -916,6 +916,95 @@ public partial class BitSerializerMSBTests
     }
 
     [Fact]
+    public void Serialize_ListData_ShouldAutoBackfillCount()
+    {
+        var data = new ListData
+        {
+            Reserved = 0x0,
+            Items = new List<byte> { 0x11, 0x22, 0x33 }
+        };
+        // Count is NOT set manually — serializer should backfill it from Items.Count
+
+        var bytes = BitSerializerMSB.Serialize(data);
+
+        data.Count.ShouldBe((byte)3);
+        bytes[0].ShouldBe((byte)0x30); // Count=3 in upper 4 bits
+        bytes[1].ShouldBe((byte)0x11);
+        bytes[2].ShouldBe((byte)0x22);
+        bytes[3].ShouldBe((byte)0x33);
+    }
+
+    [Fact]
+    public void Serialize_ListNestedData_ShouldAutoBackfillCount()
+    {
+        var data = new ListNestedData
+        {
+            Items = new List<InnerData>
+            {
+                new InnerData { X = 0x11, Y = 0x22 },
+                new InnerData { X = 0x33, Y = 0x44 }
+            }
+        };
+
+        var bytes = BitSerializerMSB.Serialize(data);
+
+        data.Count.ShouldBe((byte)2);
+        bytes[0].ShouldBe((byte)0x02);
+        bytes[1].ShouldBe((byte)0x11);
+        bytes[2].ShouldBe((byte)0x22);
+        bytes[3].ShouldBe((byte)0x33);
+        bytes[4].ShouldBe((byte)0x44);
+    }
+
+    [Fact]
+    public void Serialize_ListData_AutoBackfillCount_RoundTrip()
+    {
+        var original = new ListData
+        {
+            Reserved = 0x5,
+            Items = new List<byte> { 0xAA, 0xBB }
+        };
+
+        var bytes = BitSerializerMSB.Serialize(original);
+        var result = BitSerializerMSB.Deserialize<ListData>(bytes);
+
+        result.Count.ShouldBe((byte)2);
+        result.Reserved.ShouldBe((byte)0x5);
+        result.Items.Count.ShouldBe(2);
+        result.Items[0].ShouldBe((byte)0xAA);
+        result.Items[1].ShouldBe((byte)0xBB);
+    }
+
+    [Fact]
+    public void Serialize_ListData_ShouldThrowWhenCountExceedsBitWidth()
+    {
+        var data = new ListData
+        {
+            Reserved = 0,
+            Items = new List<byte>(Enumerable.Range(0, 16).Select(i => (byte)i))
+        };
+        // ListData.Count is 4-bit, max representable value is 15. 16 elements should throw.
+
+        Should.Throw<InvalidOperationException>(() => BitSerializerMSB.Serialize(data));
+    }
+
+    [Fact]
+    public void GetTotalBitLength_ShouldNotMutateCountField()
+    {
+        var data = new ListData
+        {
+            Count = 0,
+            Reserved = 0,
+            Items = new List<byte> { 0x11, 0x22, 0x33 }
+        };
+
+        _ = data.GetTotalBitLength();
+
+        // GetTotalBitLength should be side-effect free — Count must remain 0
+        data.Count.ShouldBe((byte)0);
+    }
+
+    [Fact]
     public void Serialize_PolymorphicTypeA_ShouldSerializeCorrectly()
     {
         var data = new PolymorphicContainer
@@ -946,6 +1035,41 @@ public partial class BitSerializerMSBTests
         bytes[1].ShouldBe((byte)0xCC);
         bytes[2].ShouldBe((byte)0x12);
         bytes[3].ShouldBe((byte)0x34);
+    }
+
+    [Fact]
+    public void Serialize_PolymorphicTypeA_ShouldAutoBackfillDiscriminator()
+    {
+        var data = new PolymorphicContainer
+        {
+            Message = new MessageTypeA { CommonField = 0xAA, FieldA = 0xBB }
+        };
+        // MessageType is NOT set — serializer should backfill from runtime type
+
+        var bytes = BitSerializerMSB.Serialize(data);
+
+        data.MessageType.ShouldBe((byte)1);
+        bytes[0].ShouldBe((byte)0x01);
+        bytes[1].ShouldBe((byte)0xAA);
+        bytes[2].ShouldBe((byte)0xBB);
+    }
+
+    [Fact]
+    public void Serialize_PolymorphicTypeB_ShouldAutoBackfillDiscriminator_RoundTrip()
+    {
+        var data = new PolymorphicContainer
+        {
+            Message = new MessageTypeB { CommonField = 0xCC, FieldB = 0x1234 }
+        };
+
+        var bytes = BitSerializerMSB.Serialize(data);
+        var result = BitSerializerMSB.Deserialize<PolymorphicContainer>(bytes);
+
+        data.MessageType.ShouldBe((byte)2);
+        result.MessageType.ShouldBe((byte)2);
+        result.Message.ShouldBeOfType<MessageTypeB>();
+        result.Message.CommonField.ShouldBe((byte)0xCC);
+        ((MessageTypeB)result.Message).FieldB.ShouldBe((ushort)0x1234);
     }
 
     #endregion

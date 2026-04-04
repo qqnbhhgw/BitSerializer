@@ -247,6 +247,26 @@ public partial class BitSerializerLSBTests
     }
 
     [Fact]
+    public void Serialize_ListData_ShouldAutoBackfillCount()
+    {
+        var original = new ListData
+        {
+            Reserved = 0,
+            Items = new List<byte> { 10, 20, 30 }
+        };
+
+        var bytes = BitSerializerLSB.Serialize(original);
+        var result = BitSerializerLSB.Deserialize<ListData>(bytes);
+
+        original.Count.ShouldBe((byte)3);
+        result.Count.ShouldBe((byte)3);
+        result.Items.Count.ShouldBe(3);
+        result.Items[0].ShouldBe((byte)10);
+        result.Items[1].ShouldBe((byte)20);
+        result.Items[2].ShouldBe((byte)30);
+    }
+
+    [Fact]
     public void Serialize_DataWithIgnored_ShouldRoundTrip()
     {
         var original = new DataWithIgnored

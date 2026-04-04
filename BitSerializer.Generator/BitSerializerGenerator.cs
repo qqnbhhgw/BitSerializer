@@ -127,6 +127,16 @@ public class BitSerializerGenerator : IIncrementalGenerator
         return isClass ? "class" : "struct";
     }
 
+    /// <summary>
+    /// Returns a null-safe expression for the actual collection length (e.g. "this.Items?.Count ?? 0").
+    /// Used in GetTotalBitLength which must remain side-effect free and null-safe.
+    /// </summary>
+    private static string ListLengthExpr(BitFieldModel field)
+    {
+        var lengthProp = field.IsArray ? "Length" : "Count";
+        return $"(this.{field.MemberName}?.{lengthProp} ?? 0)";
+    }
+
     private static void EmitDynamicBitLength(StringBuilder sb, TypeModel model)
     {
         // Start with static portion (include base type bits)
@@ -159,7 +169,7 @@ public class BitSerializerGenerator : IIncrementalGenerator
                     var sumVar = $"_sumBits_{field.MemberName}";
                     string countExpr = field.FixedCount.HasValue
                         ? field.FixedCount.Value.ToString()
-                        : $"(int)this.{field.RelatedMemberName}";
+                        : ListLengthExpr(field);
                     preStatements.Add($"        int {sumVar} = 0;");
                     preStatements.Add($"        for (int _i = 0; _i < {countExpr}; _i++)");
                     preStatements.Add($"            {sumVar} += ((global::BitSerializer.IBitSerializable)this.{field.MemberName}[_i]).GetTotalBitLength();");
@@ -172,7 +182,7 @@ public class BitSerializerGenerator : IIncrementalGenerator
                 var sumVar = $"_sumBits_{field.MemberName}";
                 string countExpr = field.FixedCount.HasValue
                     ? field.FixedCount.Value.ToString()
-                    : $"(int)this.{field.RelatedMemberName}";
+                    : ListLengthExpr(field);
                 preStatements.Add($"        int {sumVar} = 0;");
                 preStatements.Add($"        for (int _i = 0; _i < {countExpr}; _i++)");
                 preStatements.Add($"            {sumVar} += ((global::BitSerializer.IBitSerializable)this.{field.MemberName}[_i]).GetTotalBitLength();");
@@ -180,8 +190,8 @@ public class BitSerializerGenerator : IIncrementalGenerator
             }
             else if (field.IsList && !field.FixedCount.HasValue)
             {
-                // Dynamic list: count * elementBits
-                dynamicParts.Add($"(int)this.{field.RelatedMemberName} * {field.ListElementBitLength}");
+                // Dynamic list: use actual collection length directly (side-effect free)
+                dynamicParts.Add($"{ListLengthExpr(field)} * {field.ListElementBitLength}");
             }
             else if (field.IsList && field.FixedCount.HasValue)
             {

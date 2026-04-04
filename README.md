@@ -14,6 +14,7 @@
 - **自定义序列化类型** — 支持实现 `IBitSerializable` 接口的自定义类型，无需 `[BitSerialize]` 标记
 - **泛型类型参数** — 支持泛型类型参数字段的序列化，通过 `IBitSerializable` 接口在运行时分发
 - **集合支持** — 支持 `List<T>` / `T[]` 的序列化，元素数量可动态关联或固定指定
+- **自动回填关联字段** — 序列化时自动将集合长度写入关联的计数字段、将运行时类型写入多态判别字段，无需手动设置
 - **多态类型** — 通过类型判别字段自动分发到具体子类
 - **值转换器** — 支持自定义序列化/反序列化时的值变换
 - **record 类型支持** — 支持 `record class` 和 `record struct`
@@ -262,7 +263,7 @@ public partial class Packet
 public class DynamicList
 {
     [BitField(4)]
-    public byte Count { get; set; }
+    public byte Count { get; set; }         // 序列化时自动从 Items.Count 回填
 
     [BitField(4)]
     public byte Reserved { get; set; }
@@ -271,6 +272,11 @@ public class DynamicList
     [BitFieldRelated(nameof(Count))]        // 元素数量由 Count 字段决定
     public List<byte> Items { get; set; } = new();
 }
+
+// 序列化时无需手动设置 Count，会自动回填：
+var data = new DynamicList { Reserved = 0, Items = [0x11, 0x22, 0x33] };
+byte[] bytes = BitSerializerMSB.Serialize(data);
+// data.Count 自动设为 3，溢出（超过 4-bit 最大值 15）时抛出异常
 
 // 固定数量
 public class FixedList
@@ -307,7 +313,7 @@ public class MessageB : BaseMessage
 public class Container
 {
     [BitField(8)]
-    public byte MessageType { get; set; }           // 类型判别字段
+    public byte MessageType { get; set; }           // 序列化时自动从 Message 的运行时类型回填
 
     [BitField(24)]                                  // 需指定所有子类的最大位长
     [BitFieldRelated(nameof(MessageType))]          // 关联判别字段
@@ -315,6 +321,11 @@ public class Container
     [BitPoly(2, typeof(MessageB))]                  // MessageType=2 → MessageB
     public BaseMessage Message { get; set; }
 }
+
+// 序列化时无需手动设置 MessageType，会自动根据运行时类型回填：
+var data = new Container { Message = new MessageA { CommonField = 0xAA, FieldA = 0xBB } };
+byte[] bytes = BitSerializerMSB.Serialize(data);
+// data.MessageType 自动设为 1
 ```
 
 ### 值转换器

@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using BitSerializer.Generator.Models;
 
@@ -5,6 +7,53 @@ namespace BitSerializer.Generator.Emitters;
 
 internal static class SerializerEmitter
 {
+    /// <summary>
+    /// Emits statements that auto-backfill related fields before serialization:
+    /// - List/array count fields: set from collection length (with overflow check)
+    /// - Polymorphic discriminator fields: set from runtime type via [BitPoly] mappings
+    /// </summary>
+    internal static void EmitAutoBackfill(StringBuilder sb, List<BitFieldModel> fields)
+    {
+        foreach (var field in fields)
+        {
+            if (field.RelatedMemberName == null)
+                continue;
+
+            var relatedField = fields.Find(f => f.MemberName == field.RelatedMemberName);
+            if (relatedField == null)
+                continue;
+
+            if (field.IsList && !field.FixedCount.HasValue)
+            {
+                // Backfill count field from collection length (null-safe: skip if collection is null)
+                var lengthProp = field.IsArray ? "Length" : "Count";
+                sb.AppendLine($"        if (this.{field.MemberName} != null)");
+                sb.AppendLine("        {");
+                // Overflow check: skip for bit widths >= 32 since List.Count/Array.Length is int
+                if (relatedField.BitLength < 32)
+                {
+                    long maxValue = (1L << relatedField.BitLength) - 1;
+                    sb.AppendLine($"            if (this.{field.MemberName}.{lengthProp} > {maxValue})");
+                    sb.AppendLine($"                throw new global::System.InvalidOperationException($\"Collection '{field.MemberName}' has {{this.{field.MemberName}.{lengthProp}}} elements, which exceeds the maximum ({maxValue}) representable by the {relatedField.BitLength}-bit field '{relatedField.MemberName}'.\");");
+                }
+                sb.AppendLine($"            this.{relatedField.MemberName} = ({relatedField.MemberTypeName})this.{field.MemberName}.{lengthProp};");
+                sb.AppendLine("        }");
+            }
+            else if (field.IsPolymorphic && field.PolyMappings is { Count: > 0 })
+            {
+                // Backfill discriminator field from runtime type
+                bool first = true;
+                foreach (var mapping in field.PolyMappings)
+                {
+                    var keyword = first ? "if" : "else if";
+                    first = false;
+                    sb.AppendLine($"        {keyword} (this.{field.MemberName} is {mapping.ConcreteTypeFullName})");
+                    sb.AppendLine($"            this.{relatedField.MemberName} = ({relatedField.MemberTypeName}){mapping.TypeId};");
+                }
+            }
+        }
+    }
+
     public static string EmitMethod(TypeModel model, string bitOrder)
     {
         var helper = bitOrder == "LSB" ? "global::BitSerializer.BitHelperLSB" : "global::BitSerializer.BitHelperMSB";
@@ -31,6 +80,8 @@ internal static class SerializerEmitter
                 sb.AppendLine($"        base.{methodName}(bytes, bitOffset);");
             }
         }
+
+        EmitAutoBackfill(sb, model.Fields);
 
         foreach (var field in model.Fields)
         {
