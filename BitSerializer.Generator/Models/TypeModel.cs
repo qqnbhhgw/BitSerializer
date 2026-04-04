@@ -60,12 +60,28 @@ internal class TypeModel : IEquatable<TypeModel>
         return FullyQualifiedName == other.FullyQualifiedName
             && TotalBitLength == other.TotalBitLength
             && HasDynamicLength == other.HasDynamicLength
+            && HasBitSerializableBaseType == other.HasBitSerializableBaseType
+            && BaseBitLength == other.BaseBitLength
+            && BaseHasDynamicLength == other.BaseHasDynamicLength
             && Fields.Count == other.Fields.Count
             && Fields.SequenceEqual(other.Fields, BitFieldModelComparer.Instance);
     }
 
     public override bool Equals(object? obj) => Equals(obj as TypeModel);
-    public override int GetHashCode() => FullyQualifiedName.GetHashCode();
+    public override int GetHashCode()
+    {
+        unchecked
+        {
+            var hash = FullyQualifiedName.GetHashCode();
+            hash = hash * 397 ^ TotalBitLength;
+            hash = hash * 397 ^ HasDynamicLength.GetHashCode();
+            hash = hash * 397 ^ HasBitSerializableBaseType.GetHashCode();
+            hash = hash * 397 ^ BaseBitLength;
+            hash = hash * 397 ^ BaseHasDynamicLength.GetHashCode();
+            hash = hash * 397 ^ Fields.Count;
+            return hash;
+        }
+    }
 }
 
 internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
