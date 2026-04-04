@@ -152,22 +152,34 @@ internal static class SerializerEmitter
 
         if (field.ListElementIsManualBitSerializable)
         {
-            // Manual IBitSerializable elements: use interface dispatch with runtime offset tracking
-            string countExpr;
-            if (field.FixedCount.HasValue)
+            if (field.FixedCount.HasValue && elemBits > 0)
             {
-                countExpr = field.FixedCount.Value.ToString();
+                // Fixed-count manual IBitSerializable with declared element width: use fixed stride
+                sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            ((global::BitSerializer.IBitSerializable){memberAccess}[_i]).{serializeMethod}(bytes, {offsetExpr} + _i * {elemBits});");
+                sb.AppendLine("        }");
+                sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {field.FixedCount.Value * elemBits};");
             }
             else
             {
-                countExpr = $"_listCount_{field.MemberName}";
-                sb.AppendLine($"        int {countExpr} = (int)this.{field.RelatedMemberName};");
+                // Dynamic: use runtime offset tracking via interface dispatch
+                string countExpr;
+                if (field.FixedCount.HasValue)
+                {
+                    countExpr = field.FixedCount.Value.ToString();
+                }
+                else
+                {
+                    countExpr = $"_listCount_{field.MemberName}";
+                    sb.AppendLine($"        int {countExpr} = (int)this.{field.RelatedMemberName};");
+                }
+                sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
+                sb.AppendLine($"        for (int _i = 0; _i < {countExpr}; _i++)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            {bitIndexVar} += ((global::BitSerializer.IBitSerializable){memberAccess}[_i]).{serializeMethod}(bytes, {bitIndexVar});");
+                sb.AppendLine("        }");
             }
-            sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
-            sb.AppendLine($"        for (int _i = 0; _i < {countExpr}; _i++)");
-            sb.AppendLine("        {");
-            sb.AppendLine($"            {bitIndexVar} += ((global::BitSerializer.IBitSerializable){memberAccess}[_i]).{serializeMethod}(bytes, {bitIndexVar});");
-            sb.AppendLine("        }");
         }
         else if (field.FixedCount.HasValue)
         {

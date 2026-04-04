@@ -180,35 +180,56 @@ internal static class DeserializerEmitter
 
         if (field.ListElementIsManualBitSerializable)
         {
-            // Manual IBitSerializable elements: use interface dispatch with runtime offset tracking
-            string countExpr;
-            if (field.FixedCount.HasValue)
+            if (field.FixedCount.HasValue && elemBits > 0)
             {
-                countExpr = field.FixedCount.Value.ToString();
+                // Fixed-count manual IBitSerializable with declared element width: use fixed stride
                 if (field.IsArray)
                     sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[{field.FixedCount.Value}];");
                 else
                     sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({field.FixedCount.Value});");
+                sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+                sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {offsetExpr} + _i * {elemBits});");
+                if (field.IsArray)
+                    sb.AppendLine($"            {memberAccess}[_i] = _elem;");
+                else
+                    sb.AppendLine($"            {memberAccess}.Add(_elem);");
+                sb.AppendLine("        }");
+                sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {field.FixedCount.Value * elemBits};");
             }
             else
             {
-                countExpr = $"_listCount_{field.MemberName}";
-                sb.AppendLine($"        int {countExpr} = (int)this.{field.RelatedMemberName};");
-                if (field.IsArray)
-                    sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[{countExpr}];");
+                // Dynamic: use runtime offset tracking via interface dispatch
+                string countExpr;
+                if (field.FixedCount.HasValue)
+                {
+                    countExpr = field.FixedCount.Value.ToString();
+                    if (field.IsArray)
+                        sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[{field.FixedCount.Value}];");
+                    else
+                        sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({field.FixedCount.Value});");
+                }
                 else
-                    sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({countExpr});");
+                {
+                    countExpr = $"_listCount_{field.MemberName}";
+                    sb.AppendLine($"        int {countExpr} = (int)this.{field.RelatedMemberName};");
+                    if (field.IsArray)
+                        sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[{countExpr}];");
+                    else
+                        sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({countExpr});");
+                }
+                sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
+                sb.AppendLine($"        for (int _i = 0; _i < {countExpr}; _i++)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+                sb.AppendLine($"            {bitIndexVar} += _elem.{deserializeMethod}(bytes, {bitIndexVar});");
+                if (field.IsArray)
+                    sb.AppendLine($"            {memberAccess}[_i] = _elem;");
+                else
+                    sb.AppendLine($"            {memberAccess}.Add(_elem);");
+                sb.AppendLine("        }");
             }
-            sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
-            sb.AppendLine($"        for (int _i = 0; _i < {countExpr}; _i++)");
-            sb.AppendLine("        {");
-            sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
-            sb.AppendLine($"            {bitIndexVar} += _elem.{deserializeMethod}(bytes, {bitIndexVar});");
-            if (field.IsArray)
-                sb.AppendLine($"            {memberAccess}[_i] = _elem;");
-            else
-                sb.AppendLine($"            {memberAccess}.Add(_elem);");
-            sb.AppendLine("        }");
         }
         else if (field.FixedCount.HasValue)
         {

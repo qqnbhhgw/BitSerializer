@@ -148,15 +148,23 @@ public class BitSerializerGenerator : IIncrementalGenerator
             }
             else if (field.IsList && field.ListElementIsManualBitSerializable)
             {
-                // Manual IBitSerializable list elements: sum actual element bit lengths
-                var sumVar = $"_sumBits_{field.MemberName}";
-                string countExpr = field.FixedCount.HasValue
-                    ? field.FixedCount.Value.ToString()
-                    : $"(int)this.{field.RelatedMemberName}";
-                preStatements.Add($"        int {sumVar} = 0;");
-                preStatements.Add($"        for (int _i = 0; _i < {countExpr}; _i++)");
-                preStatements.Add($"            {sumVar} += ((global::BitSerializer.IBitSerializable)this.{field.MemberName}[_i]).GetTotalBitLength();");
-                dynamicParts.Add(sumVar);
+                if (field.FixedCount.HasValue && field.ListElementBitLength > 0)
+                {
+                    // Fixed-count with explicit element width: treat as static
+                    staticBits += field.FixedCount.Value * field.ListElementBitLength;
+                }
+                else
+                {
+                    // Manual IBitSerializable list elements: sum actual element bit lengths
+                    var sumVar = $"_sumBits_{field.MemberName}";
+                    string countExpr = field.FixedCount.HasValue
+                        ? field.FixedCount.Value.ToString()
+                        : $"(int)this.{field.RelatedMemberName}";
+                    preStatements.Add($"        int {sumVar} = 0;");
+                    preStatements.Add($"        for (int _i = 0; _i < {countExpr}; _i++)");
+                    preStatements.Add($"            {sumVar} += ((global::BitSerializer.IBitSerializable)this.{field.MemberName}[_i]).GetTotalBitLength();");
+                    dynamicParts.Add(sumVar);
+                }
             }
             else if (field.IsList && !field.FixedCount.HasValue)
             {
