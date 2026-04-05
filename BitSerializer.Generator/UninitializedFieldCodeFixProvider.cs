@@ -92,11 +92,26 @@ public class UninitializedFieldCodeFixProvider : CodeFixProvider
     private static async Task<Document> AddInitializerAsync(
         Document document, PropertyDeclarationSyntax propDecl, string initializer, CancellationToken ct)
     {
-        var initializerExpr = SyntaxFactory.ParseExpression(initializer);
-        var equalsClause = SyntaxFactory.EqualsValueClause(initializerExpr)
-            .WithLeadingTrivia(SyntaxFactory.Space);
+        var initializerExpr = SyntaxFactory.ParseExpression(initializer)
+            .WithoutLeadingTrivia()
+            .WithoutTrailingTrivia();
+
+        var equalsToken = SyntaxFactory.Token(
+            SyntaxFactory.TriviaList(SyntaxFactory.Space),
+            SyntaxKind.EqualsToken,
+            SyntaxFactory.TriviaList(SyntaxFactory.Space));
+
+        var equalsClause = SyntaxFactory.EqualsValueClause(equalsToken, initializerExpr);
+
+        // Strip trailing trivia from accessor list so the initializer stays on the same line
+        var accessorList = propDecl.AccessorList;
+        if (accessorList != null)
+        {
+            accessorList = accessorList.WithTrailingTrivia(SyntaxTriviaList.Empty);
+        }
 
         var newPropDecl = propDecl
+            .WithAccessorList(accessorList)
             .WithInitializer(equalsClause)
             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
 
