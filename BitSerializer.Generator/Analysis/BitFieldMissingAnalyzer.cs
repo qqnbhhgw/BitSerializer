@@ -72,9 +72,6 @@ public class BitFieldMissingAnalyzer : DiagnosticAnalyzer
         }
 
         // BITS014: reference-type [BitField] member without default value
-        if (!hasBitField && !hasStringAttribute)
-            return;
-
         var memberType = symbol switch
         {
             IPropertySymbol prop => prop.Type,

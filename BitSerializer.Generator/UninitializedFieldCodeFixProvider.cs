@@ -99,7 +99,18 @@ public class UninitializedFieldCodeFixProvider : CodeFixProvider
         var equalsClause = SyntaxFactory.EqualsValueClause(initializerExpr)
             .WithLeadingTrivia(SyntaxFactory.Space);
 
-        var newPropDecl = propDecl
+        // Replace the accessor list's trailing newline/whitespace with a single space
+        // so that the initializer stays on the same line as "{ get; set; }"
+        var newPropDecl = propDecl;
+        if (propDecl.AccessorList != null)
+        {
+            var closeBrace = propDecl.AccessorList.CloseBraceToken;
+            var newCloseBrace = closeBrace.WithTrailingTrivia(SyntaxTriviaList.Empty);
+            newPropDecl = newPropDecl.WithAccessorList(
+                propDecl.AccessorList.WithCloseBraceToken(newCloseBrace));
+        }
+
+        newPropDecl = newPropDecl
             .WithInitializer(equalsClause)
             .WithSemicolonToken(SyntaxFactory.Token(SyntaxKind.SemicolonToken));
 
