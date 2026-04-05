@@ -108,4 +108,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor UninitializedReferenceField = new(
+        "BITS014",
+        "Reference-type [BitField] member has no default value",
+        "Member '{0}' in '{1}' is a reference type without a default value; it will be null before deserialization",
+        "BitSerializer",
+        DiagnosticSeverity.Warning,
+        true);
+
 }

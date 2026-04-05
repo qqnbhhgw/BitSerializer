@@ -391,6 +391,7 @@ Source Generator 会在编译期检查常见错误并报告诊断信息：
 | `BITS011` | `[BitTerminatedString]` 只能用于 `string` 类型 |
 | `BITS012` | `[BitFixedString]` 字节长度必须为正数 |
 | `BITS013` | 泛型类型参数缺少 `new()` 或 `struct` 约束 |
+| `BITS014` | 引用类型的 `[BitField]` 成员缺少默认值（序列化前可能为 null） |
 
 例如，以下代码会触发 `BITS006` 编译错误：
 
