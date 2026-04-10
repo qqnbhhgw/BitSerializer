@@ -94,7 +94,7 @@ public partial class HlhtBalise830 : Balise830
     [BitField]
     [BitFieldRelated(nameof(ETCSPkgId))]
     [BitPoly(44, typeof(HlhtETCS44))]
-    public HlhtETCS44 HlhtETCS44 { get; set; }
+    public HlhtETCS44 HlhtETCS44 { get; set; } = new();
 }
 
 [BitSerialize]
@@ -126,7 +126,7 @@ public partial class HlhtETCS44 : ETCS44Base
     [BitFieldRelated(nameof(NIDXUser))]
     [BitPoly(202, typeof(CTCS202))]
     [BitPoly(203, typeof(CTCS203))]
-    public CTCS CTCSPkg { get; set; }
+    public CTCS CTCSPkg { get; set; } = new();
 }
 
 [BitSerialize]
@@ -152,7 +152,7 @@ public partial class CTCS203 : CTCS
     /// 填充应答器时为所填充进路始端信号机的状态。
     /// </summary>
     [BitField]
-    public CTCS203Aspect Aspect { get; set; }
+    public CTCS203Aspect Aspect { get; set; } = new();
 
     /// <summary>
     /// 该应答器预告信号状态。该位仅对于主应答器有效，该位表示该主应答器兼具预告应答器功能时，对应的沿进路方向第二架信号机显示状态。
@@ -160,7 +160,7 @@ public partial class CTCS203 : CTCS
     /// 填充应答器该位无效（填充应答器全部填0），应用不应采用。
     /// </summary>
     [BitField]
-    public CTCS203Aspect PreAspect { get; set; }
+    public CTCS203Aspect PreAspect { get; set; } = new();
 
     /// <summary>
     /// 联锁与LEU通信状态。
@@ -203,7 +203,7 @@ public partial class CTCS203 : CTCS
     /// </summary>
     [BitField]
     [BitFieldRelated(nameof(MaSwitchCount))]
-    public List<BaliseSwitch> MaSwitches { get; set; }
+    public List<BaliseSwitch> MaSwitches { get; set; } = [];
 
     /// <summary>
     /// 信号机编号
@@ -216,7 +216,7 @@ public partial class CTCS203 : CTCS
     /// </summary>
     [BitField]
     [BitFieldRelated(nameof(MaSignalCount))]
-    public List<uint> MaSignalIds { get; set; }
+    public List<uint> MaSignalIds { get; set; } = [];
 }
 
 /// <summary>
@@ -260,7 +260,7 @@ public partial class CTCS203Aspect
     /// 对向道岔位置
     /// </summary>
     [BitField]
-    public FacingSwitchesPositions SwitchesPositions { get; set; }
+    public FacingSwitchesPositions SwitchesPositions { get; set; } = new();
 
     /// <summary>
     /// 是否绿显

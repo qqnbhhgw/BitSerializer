@@ -6,11 +6,12 @@
 		<IsRoslynComponent>true</IsRoslynComponent>
 		<LangVersion>latest</LangVersion>
 		<Nullable>enable</Nullable>
+		<NoWarn>RS2008</NoWarn>
 		<DefaultItemExcludes>$(DefaultItemExcludes);BitSerializer/**</DefaultItemExcludes>
 		<PackageId>Jlzeng.BitSerializer.Generator</PackageId>
 		<GeneratePackageOnBuild>False</GeneratePackageOnBuild>
 		<Title>BitSerializer.Generator</Title>
-		<Version>0.7.1</Version>
+		<Version>0.7.2</Version>
 		<Authors>zeng jl</Authors>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<RepositoryUrl>https://github.com/qqnbhhgw/BitSerializer</RepositoryUrl>
