@@ -101,8 +101,8 @@ public class BitSerializerGenerator : IIncrementalGenerator
         sb.AppendLine();
 
         // Partial methods for user context access
-        sb.AppendLine("    partial void OnSerializing(object context);");
-        sb.AppendLine("    partial void OnDeserializing(object context);");
+        sb.AppendLine("    partial void OnSerializing(object? context);");
+        sb.AppendLine("    partial void OnDeserializing(object? context);");
         sb.AppendLine();
 
         // GetTotalBitLength

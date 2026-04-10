@@ -1,6 +1,6 @@
 # BitSerializer
 
-一个高性能的 .NET **位级别**二进制序列化库。通过 Attribute 声明字段的位长度，自动生成基于 Expression Tree 的序列化/反序列化逻辑，适用于网络协议解析、嵌入式通信、二进制文件格式处理等场景。
+一个高性能的 .NET **位级别**二进制序列化库。通过 Attribute 声明字段的位长度，Source Generator 在编译期自动生成序列化/反序列化代码，零反射开销，适用于网络协议解析、嵌入式通信、二进制文件格式处理等场景。
 
 ## 特性
 
@@ -16,7 +16,8 @@
 - **集合支持** — 支持 `List<T>` / `T[]` 的序列化，元素数量可动态关联或固定指定
 - **自动回填关联字段** — 序列化时自动将集合长度写入关联的计数字段、将运行时类型写入多态判别字段，无需手动设置
 - **多态类型** — 通过类型判别字段自动分发到具体子类
-- **值转换器** — 支持自定义序列化/反序列化时的值变换
+- **值转换器** — 支持自定义序列化/反序列化时的值变换，支持上下文感知重载
+- **序列化上下文与生命周期钩子** — 支持通过上下文对象传递状态，以及序列化/反序列化前后的回调
 - **record 类型支持** — 支持 `record class` 和 `record struct`
 - **Source Generator** — 编译期自动生成序列化代码，零反射开销
 - **编译期诊断** — 自动检测嵌套类型是否缺少 `[BitSerialize]` 标记，编译时报错
@@ -330,19 +331,17 @@ byte[] bytes = BitSerializerMSB.Serialize(data);
 
 ### 值转换器
 
-实现 `IBitFieldValueConverter` 接口，自定义序列化/反序列化时的值变换：
+实现 `IBitFieldValueConverter` 接口，自定义序列化/反序列化时的值变换。值转换器可用于所有字段类型（数值、枚举、字符串、嵌套类型、多态、泛型参数、集合）。
+
+接口的四个方法均为 `static virtual`，只需实现你关心的重载即可：
 
 ```csharp
 public class DoubleConverter : IBitFieldValueConverter
 {
+    // 只实现反序列化转换——序列化侧不会调用转换器
     public static object OnDeserializeConvert(object value)
     {
         return (byte)((byte)value * 2);     // 反序列化时乘 2
-    }
-
-    public static object OnSerializeConvert(object value)
-    {
-        return (byte)((byte)value / 2);     // 序列化时除 2
     }
 }
 
@@ -353,6 +352,84 @@ public class ConvertedData
     public byte Value { get; set; }
 }
 ```
+
+### 上下文感知值转换器
+
+值转换器可以接收上下文对象，用于在转换时访问额外状态。只需重写带 `context` 参数的重载：
+
+```csharp
+public class OffsetConverter : IBitFieldValueConverter
+{
+    // 基础重载（必须实现）
+    public static object OnDeserializeConvert(object value) => value;
+    public static object OnSerializeConvert(object value) => value;
+
+    // 上下文感知重载（可选）
+    public static object OnDeserializeConvert(object value, object? context)
+    {
+        if (context is int offset)
+            return (byte)((byte)value + offset);
+        return value;
+    }
+
+    public static object OnSerializeConvert(object value, object? context)
+    {
+        if (context is int offset)
+            return (byte)((byte)value - offset);
+        return value;
+    }
+}
+```
+
+Source Generator 会**独立检测**每一侧的上下文重载：只重写了 `OnSerializeConvert(object, object?)` 的转换器，反序列化侧仍会调用无上下文的 `OnDeserializeConvert(object)`，反之亦然。
+
+### 序列化上下文与生命周期钩子
+
+类型可以提供上下文对象并在序列化/反序列化前后执行回调，实现校验和计算、数据填充等逻辑：
+
+```csharp
+[BitSerialize]
+public partial class ChecksumPacket
+{
+    [BitField(8)]
+    public byte Header { get; set; }
+
+    [BitField(16)]
+    public ushort Data { get; set; }
+
+    [BitField(8)]
+    public byte Checksum { get; set; }
+
+    // 提供序列化上下文（传递给嵌套类型和值转换器）
+    public object? SerializeContext() => this;
+    public object? DeserializeContext() => this;
+
+    // 序列化后回调：计算校验和
+    public void AfterSerialize(object? context, Span<byte> bytes)
+    {
+        Checksum = CalculateChecksum(bytes);
+    }
+
+    // 反序列化后回调：验证校验和
+    public void AfterDeserialize(object? context, ReadOnlySpan<byte> bytes)
+    {
+        if (Checksum != CalculateChecksum(bytes))
+            throw new InvalidDataException("Checksum mismatch");
+    }
+}
+```
+
+生命周期钩子的完整调用顺序：
+
+| 钩子 | 序列化时 | 反序列化时 |
+|------|---------|-----------|
+| `SerializeContext()` / `DeserializeContext()` | 获取上下文对象 | 获取上下文对象 |
+| `BeforeSerialize()` / `BeforeDeserialize()` | 序列化字段前 | 反序列化字段前 |
+| `AfterSerialize()` / `AfterDeserialize()` | 所有字段序列化后 | 所有字段反序列化后 |
+
+用户也可以通过 `partial void OnSerializing(object? context)` / `partial void OnDeserializing(object? context)` 拦截生成代码的入口。
+
+> **注意**：上下文和钩子仅用于辅助序列化逻辑（如值转换、校验和计算），不应改变类型的总位长度。
 
 ### 忽略字段
 

@@ -61,7 +61,7 @@ internal static class SerializerEmitter
 
         var sb = new StringBuilder();
         var newKeyword = model.HasBitSerializableBaseType ? "new " : "";
-        sb.AppendLine($"    public {newKeyword}int {methodName}(global::System.Span<byte> bytes, int bitOffset, object context)");
+        sb.AppendLine($"    public {newKeyword}int {methodName}(global::System.Span<byte> bytes, int bitOffset, object? context)");
         sb.AppendLine("    {");
         sb.AppendLine("        OnSerializing(context);");
 
@@ -79,6 +79,19 @@ internal static class SerializerEmitter
             else
             {
                 sb.AppendLine($"        base.{methodName}(bytes, bitOffset, context);");
+            }
+        }
+
+        // Apply list-level value converters before backfill (converters may change list length)
+        foreach (var f in model.Fields)
+        {
+            if (f.IsList && f.ValueConverterTypeFullName != null && f.ValueConverterHasSerialize)
+            {
+                var ma = $"this.{f.MemberName}";
+                var convertCall = f.ValueConverterSerializeHasContext
+                    ? $"{f.ValueConverterTypeFullName}.OnSerializeConvert((object){ma}, context)"
+                    : $"{f.ValueConverterTypeFullName}.OnSerializeConvert((object){ma})";
+                sb.AppendLine($"        {ma} = ({f.MemberTypeFullName}){convertCall};");
             }
         }
 
@@ -105,20 +118,24 @@ internal static class SerializerEmitter
 
             if (field.IsFixedString)
             {
+                EmitSerializeConverter(sb, field, memberAccess);
                 EmitFixedStringSerialize(sb, field, helper, memberAccess, offsetExpr);
             }
             else if (field.IsTerminatedString)
             {
+                EmitSerializeConverter(sb, field, memberAccess);
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
                 EmitTerminatedStringSerialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
             }
             else if (field.IsList)
             {
+                // List converter is applied before backfill (see pre-backfill loop above)
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
                 EmitListSerialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
             }
             else if (field.IsPolymorphic)
             {
+                EmitSerializeConverter(sb, field, memberAccess);
                 if (usesRuntimeBitLength)
                 {
                     fieldEndVar = $"_bitIndex_{field.MemberName}";
@@ -131,11 +148,13 @@ internal static class SerializerEmitter
             }
             else if (field.IsTypeParameter)
             {
+                EmitSerializeConverter(sb, field, memberAccess);
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
                 sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + ((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr}, context);");
             }
             else if (field.IsNestedType)
             {
+                EmitSerializeConverter(sb, field, memberAccess);
                 string callExpr = field.IsManualBitSerializable
                     ? $"((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr}, context)"
                     : $"{memberAccess}.{methodName}(bytes, {offsetExpr}, context)";
@@ -152,6 +171,7 @@ internal static class SerializerEmitter
             }
             else if (field.IsNumericOrEnum)
             {
+                // Primitive converter is handled inside EmitPrimitiveSerialize
                 EmitPrimitiveSerialize(sb, field, helper, memberAccess, offsetExpr);
             }
 
@@ -190,9 +210,9 @@ internal static class SerializerEmitter
     {
         var typeName = field.IsEnum ? field.EnumUnderlyingTypeName! : field.MemberTypeName;
 
-        if (field.ValueConverterTypeFullName != null)
+        if (field.ValueConverterTypeFullName != null && field.ValueConverterHasSerialize)
         {
-            var convertCall = field.ValueConverterHasContext
+            var convertCall = field.ValueConverterSerializeHasContext
                 ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess}, context)"
                 : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess})";
             sb.AppendLine($"        {helper}.SetValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength}, ({typeName}){convertCall});");
@@ -379,6 +399,15 @@ internal static class SerializerEmitter
         return encodingName == "UTF8"
             ? "global::System.Text.Encoding.UTF8"
             : "global::System.Text.Encoding.ASCII";
+    }
+
+    private static void EmitSerializeConverter(StringBuilder sb, BitFieldModel field, string memberAccess)
+    {
+        if (field.ValueConverterTypeFullName == null || !field.ValueConverterHasSerialize) return;
+        var convertCall = field.ValueConverterSerializeHasContext
+            ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess}, context)"
+            : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess})";
+        sb.AppendLine($"        {memberAccess} = ({field.MemberTypeFullName}){convertCall};");
     }
 
     private static bool UsesRuntimeBitLength(BitFieldModel field)

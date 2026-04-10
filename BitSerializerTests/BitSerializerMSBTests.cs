@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Shouldly;
 using BitSerializer;
 
@@ -10,94 +11,75 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class SimpleData
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
-        [BitField(16)]
-        public ushort Value { get; set; }
+        [BitField(16)] public ushort Value { get; set; }
 
-        [BitField(8)]
-        public byte Footer { get; set; }
+        [BitField(8)] public byte Footer { get; set; }
     }
 
     [BitSerialize]
     public partial class AutoBitLengthData
     {
-        [BitField]
-        public byte ByteValue { get; set; }
+        [BitField] public byte ByteValue { get; set; }
 
-        [BitField]
-        public ushort UShortValue { get; set; }
+        [BitField] public ushort UShortValue { get; set; }
 
-        [BitField]
-        public int IntValue { get; set; }
+        [BitField] public int IntValue { get; set; }
     }
 
     [BitSerialize]
     public partial class CustomBitLengthData
     {
-        [BitField(4)]
-        public byte NibbleHigh { get; set; }
+        [BitField(4)] public byte NibbleHigh { get; set; }
 
-        [BitField(4)]
-        public byte NibbleLow { get; set; }
+        [BitField(4)] public byte NibbleLow { get; set; }
 
-        [BitField(12)]
-        public ushort TwelveBits { get; set; }
+        [BitField(12)] public ushort TwelveBits { get; set; }
 
-        [BitField(4)]
-        public byte FourBits { get; set; }
+        [BitField(4)] public byte FourBits { get; set; }
     }
 
     public enum TestStatus : byte
     {
-        Unknown = 0,
-        Active = 1,
+        Unknown  = 0,
+        Active   = 1,
         Inactive = 2,
-        Error = 3
+        Error    = 3
     }
 
     [BitSerialize]
     public partial class EnumData
     {
-        [BitField(8)]
-        public TestStatus Status { get; set; }
+        [BitField(8)] public TestStatus Status { get; set; }
 
-        [BitField(16)]
-        public ushort Code { get; set; }
+        [BitField(16)] public ushort Code { get; set; }
     }
 
     [BitSerialize]
     public partial class InnerData
     {
-        [BitField(8)]
-        public byte X { get; set; }
+        [BitField(8)] public byte X { get; set; }
 
-        [BitField(8)]
-        public byte Y { get; set; }
+        [BitField(8)] public byte Y { get; set; }
     }
 
     [BitSerialize]
     public partial class NestedData
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
-        [BitField]
-        public InnerData Inner { get; set; } = new();
+        [BitField] public InnerData Inner { get; set; } = new();
 
-        [BitField(8)]
-        public byte Footer { get; set; }
+        [BitField(8)] public byte Footer { get; set; }
     }
 
     [BitSerialize]
     public partial class ListData
     {
-        [BitField(4)]
-        public byte Count { get; set; }
+        [BitField(4)] public byte Count { get; set; }
 
-        [BitField(4)]
-        public byte Reserved { get; set; }
+        [BitField(4)] public byte Reserved { get; set; }
 
         [BitField]
         [BitFieldRelated(nameof(Count))]
@@ -107,8 +89,7 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class ListNestedData
     {
-        [BitField(8)]
-        public byte Count { get; set; }
+        [BitField(8)] public byte Count { get; set; }
 
         [BitField]
         [BitFieldRelated(nameof(Count))]
@@ -118,14 +99,11 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class DataWithIgnored
     {
-        [BitField(8)]
-        public byte Value { get; set; }
+        [BitField(8)] public byte Value { get; set; }
 
-        [BitIgnore]
-        public string Description { get; set; } = string.Empty;
+        [BitIgnore] public string Description { get; set; } = string.Empty;
 
-        [BitField(8)]
-        public byte AnotherValue { get; set; }
+        [BitField(8)] public byte AnotherValue { get; set; }
     }
 
     #endregion
@@ -135,20 +113,17 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class SimpleData2
     {
-        [BitField(4)]
-        public byte Header { get; set; }
+        [BitField(4)] public byte Header { get; set; }
 
-        [BitField(7)]
-        public ushort Value { get; set; }
+        [BitField(7)] public ushort Value { get; set; }
 
-        [BitField(5)]
-        public byte Footer { get; set; }
+        [BitField(5)] public byte Footer { get; set; }
     }
 
     [Fact]
     public void Deserialize_SimpleData2_ShouldDeserializeCorrectly()
     {
-        byte[] bytes = { 0xAB, 0x12};
+        byte[] bytes = { 0xAB, 0x12 };
 
         var result = BitSerializerMSB.Deserialize<SimpleData2>(bytes);
 
@@ -338,39 +313,33 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class BaseMessage
     {
-        [BitField(8)]
-        public byte CommonField { get; set; }
+        [BitField(8)] public byte CommonField { get; set; }
     }
 
     [BitSerialize]
     public partial class MessageTypeA : BaseMessage
     {
-        [BitField(8)]
-        public byte FieldA { get; set; }
+        [BitField(8)] public byte FieldA { get; set; }
     }
 
     [BitSerialize]
     public partial class MessageTypeB : BaseMessage
     {
-        [BitField(16)]
-        public ushort FieldB { get; set; }
+        [BitField(16)] public ushort FieldB { get; set; }
     }
 
     [BitSerialize]
     public partial class MessageTypeC : BaseMessage
     {
-        [BitField(8)]
-        public byte FieldC1 { get; set; }
+        [BitField(8)] public byte FieldC1 { get; set; }
 
-        [BitField(8)]
-        public byte FieldC2 { get; set; }
+        [BitField(8)] public byte FieldC2 { get; set; }
     }
 
     [BitSerialize]
     public partial class PolymorphicContainer
     {
-        [BitField(8)]
-        public byte MessageType { get; set; }
+        [BitField(8)] public byte MessageType { get; set; }
 
         [BitField(24)]
         [BitFieldRelated(nameof(MessageType))]
@@ -383,8 +352,7 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class PolymorphicContainerAutoLength
     {
-        [BitField(8)]
-        public byte MessageType { get; set; }
+        [BitField(8)] public byte MessageType { get; set; }
 
         [BitField]
         [BitFieldRelated(nameof(MessageType))]
@@ -1079,46 +1047,38 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class SignedByteData
     {
-        [BitField]
-        public sbyte Value1 { get; set; }
+        [BitField] public sbyte Value1 { get; set; }
 
-        [BitField]
-        public sbyte Value2 { get; set; }
+        [BitField] public sbyte Value2 { get; set; }
     }
 
     [BitSerialize]
     public partial class ShortData
     {
-        [BitField]
-        public short SignedValue { get; set; }
+        [BitField] public short SignedValue { get; set; }
 
-        [BitField]
-        public ushort UnsignedValue { get; set; }
+        [BitField] public ushort UnsignedValue { get; set; }
     }
 
     [BitSerialize]
     public partial class IntData
     {
-        [BitField]
-        public int SignedValue { get; set; }
+        [BitField] public int SignedValue { get; set; }
 
-        [BitField]
-        public uint UnsignedValue { get; set; }
+        [BitField] public uint UnsignedValue { get; set; }
     }
 
     [BitSerialize]
     public partial class LongData
     {
-        [BitField]
-        public long SignedValue { get; set; }
+        [BitField] public long SignedValue { get; set; }
 
-        [BitField]
-        public ulong UnsignedValue { get; set; }
+        [BitField] public ulong UnsignedValue { get; set; }
     }
 
     public enum StatusUShort : ushort
     {
-        None = 0,
+        None    = 0,
         Running = 1,
         Stopped = 0xFFFF
     }
@@ -1126,21 +1086,17 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class EnumCustomBitLengthData
     {
-        [BitField(4)]
-        public TestStatus Status { get; set; }
+        [BitField(4)] public TestStatus Status { get; set; }
 
-        [BitField(4)]
-        public byte Padding { get; set; }
+        [BitField(4)] public byte Padding { get; set; }
     }
 
     [BitSerialize]
     public partial class EnumUShortData
     {
-        [BitField]
-        public StatusUShort Status { get; set; }
+        [BitField] public StatusUShort Status { get; set; }
 
-        [BitField(8)]
-        public byte Extra { get; set; }
+        [BitField(8)] public byte Extra { get; set; }
     }
 
     [Fact]
@@ -1318,15 +1274,13 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class DataWithConverter
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
         [BitField(8)]
         [BitFieldRelated(null, typeof(OffsetConverter))]
         public byte ConvertedValue { get; set; }
 
-        [BitField(8)]
-        public byte Footer { get; set; }
+        [BitField(8)] public byte Footer { get; set; }
     }
 
     [BitSerialize]
@@ -1340,15 +1294,13 @@ public partial class BitSerializerMSBTests
         [BitFieldRelated(null, typeof(InvertConverter))]
         public byte InvertedField { get; set; }
 
-        [BitField(8)]
-        public byte NormalField { get; set; }
+        [BitField(8)] public byte NormalField { get; set; }
     }
 
     [BitSerialize]
     public partial class DataWithUShortConverter
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
         [BitField(16)]
         [BitFieldRelated(null, typeof(DoubleConverter))]
@@ -1362,21 +1314,17 @@ public partial class BitSerializerMSBTests
         [BitFieldRelated(null, typeof(OffsetConverter))]
         public byte X { get; set; }
 
-        [BitField(8)]
-        public byte Y { get; set; }
+        [BitField(8)] public byte Y { get; set; }
     }
 
     [BitSerialize]
     public partial class NestedDataWithConverter
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
-        [BitField]
-        public InnerDataWithConverter Inner { get; set; } = new();
+        [BitField] public InnerDataWithConverter Inner { get; set; } = new();
 
-        [BitField(8)]
-        public byte Footer { get; set; }
+        [BitField(8)] public byte Footer { get; set; }
     }
 
     [BitSerialize]
@@ -1390,7 +1338,7 @@ public partial class BitSerializerMSBTests
         [BitFieldRelated(nameof(Count))]
         public List<uint> Values { get; set; } = [];
     }
-    
+
     /// <summary>
     /// 区段锁闭状态
     /// </summary>
@@ -1400,7 +1348,7 @@ public partial class BitSerializerMSBTests
         Locked   = 0b01,
         Default  = 0b11,
     }
-    
+
     /// <summary>
     /// 区段占用状态
     /// </summary>
@@ -1410,34 +1358,57 @@ public partial class BitSerializerMSBTests
         Occupied = 0b10,
         Default  = 0b11,
     }
-    
+
     [BitSerialize]
-    public partial class AtsSectionStatus
+    public partial class SectionStatus
     {
-        [BitField(2)] public AtsSectionLock Lock { get; set; }
-        [BitField(2)] public AtsSectionOccupy Occupy { get; set; }
+        [BitField(2)] public AtsSectionLock Lock { get; set; } = AtsSectionLock.Default;
+        [BitField(2)] public AtsSectionOccupy Occupy { get; set; } = AtsSectionOccupy.Default;
     }
 
     public class StationSectionCountConverter : IBitFieldValueConverter
     {
-        public static object OnDeserializeConvert(object value)
+        public static object OnDeserializeConvert(object value, object? context)
         {
             var val = (byte)value;
-            return val % 2 == 0 ? val : val + 1;
-        }
 
-        public static object OnSerializeConvert(object value)
-        {
-            return value;
+            if (val % 2 != 0 && context is StrongBox<bool> ctx)
+            {
+                ctx.Value = true;
+                return (byte)(val + 1);
+            }
+
+            return val;
         }
     }
-    
+
+    public class StationSectionStatusConverter : IBitFieldValueConverter
+    {
+        public static object OnSerializeConvert(object value, object? context)
+        {
+            var list = (List<SectionStatus>)value;
+
+            if (context is StrongBox<bool> v && list.Count % 2 == 1)
+            {
+                v.Value = true;
+                list.Insert(list.Count - 1, new SectionStatus());
+            }
+
+            return list;
+        }
+    }
+
     /// <summary>
     /// 一个联锁站的区段显示状态
     /// </summary>
     [BitSerialize]
     public partial class StationSectionDisplayInfo
     {
+        [BitIgnore] private StrongBox<bool> HasPaddingSection { get; set; } = new(false);
+
+        public object SerializeContext() => HasPaddingSection;
+        public object DeserializeContext() => HasPaddingSection;
+
         /// <summary>
         /// 联锁站ID（4字节，位于Data头部）
         /// </summary>
@@ -1445,15 +1416,72 @@ public partial class BitSerializerMSBTests
         public uint CiStationId { get; set; }
 
         [BitField(8)]
-        [BitFieldRelated(null,ValueConverterType = typeof(StationSectionCountConverter))]
+        [BitFieldRelated(null, ValueConverterType = typeof(StationSectionCountConverter))]
         public byte StationSectionCount { get; set; }
 
         [BitField]
-        [BitFieldRelated(nameof(StationSectionCount))]
-        public List<AtsSectionStatus> StationSectionStatuses { get; set; } = [];
+        [BitFieldRelated(nameof(StationSectionCount),typeof(StationSectionStatusConverter))]
+        public List<SectionStatus> StationSectionStatuses { get; set; } = [];
+        
+        public void AfterSerialize(object? serializeContext, Span<byte> afterSerializedBytes)
+        {
+            if (HasPaddingSection.Value)
+            {
+                afterSerializedBytes[4] -= 1;
+                StationSectionStatuses.RemoveAt(StationSectionStatuses.Count - 2);
+            }
+        }
+        
+        public void AfterDeserialize(object? serializeContext, ReadOnlySpan<byte> afterSerializedBytes)
+        {
+            if (HasPaddingSection.Value)
+            {
+                StationSectionCount--;
+                if (StationSectionStatuses.Count >= 2)
+                {
+                    StationSectionStatuses.RemoveAt(StationSectionStatuses.Count - 2);
+                }
+            }
+        }
     }
-    
-    
+
+    [Fact]
+    public void Deserialize_WithComplexValueConvertAndContext_ShouldApplyConversion()
+    {
+        var obj = new StationSectionDisplayInfo
+        {
+            CiStationId = 0x12345678,
+            StationSectionCount = 3,
+            StationSectionStatuses =
+            [
+                new SectionStatus
+                {
+                    Lock = AtsSectionLock.Unlocked,
+                    Occupy = AtsSectionOccupy.Free,
+                },
+                new SectionStatus
+                {
+                    Lock = AtsSectionLock.Unlocked,
+                    Occupy = AtsSectionOccupy.Free,
+                },
+                new SectionStatus
+                {
+                    Lock = AtsSectionLock.Unlocked,
+                    Occupy = AtsSectionOccupy.Free,
+                }
+            ]
+        };
+
+        var bytes = BitSerializerMSB.Serialize(obj);
+        var another = BitSerializerMSB.Deserialize<StationSectionDisplayInfo>(bytes);
+
+        another.ShouldNotBeNull();
+        another.CiStationId.ShouldBe(obj.CiStationId);
+        another.StationSectionCount.ShouldBe((byte)3);
+        another.StationSectionStatuses.Count.ShouldBe(3);
+        another.StationSectionStatuses.ShouldBeEquivalentTo(obj.StationSectionStatuses);
+    }
+
     #endregion
 
     #region ValueConverter Deserialization Tests
@@ -1665,15 +1693,13 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class DataWithContextConverter
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
         [BitField(8)]
         [BitFieldRelated(null, typeof(ContextAwareOffsetConverter))]
         public byte ConvertedValue { get; set; }
 
-        [BitField(8)]
-        public byte Footer { get; set; }
+        [BitField(8)] public byte Footer { get; set; }
 
         public object? SerializeContext() => "converter-ser-ctx";
         public object? DeserializeContext() => "converter-deser-ctx";
@@ -1724,30 +1750,23 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class FixedCountListData
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
-        [BitField]
-        [BitFieldCount(3)]
-        public List<byte> Items { get; set; } = new();
+        [BitField] [BitFieldCount(3)] public List<byte> Items { get; set; } = new();
     }
 
     [BitSerialize]
     public partial class FixedCountNestedListData
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
-        [BitField]
-        [BitFieldCount(2)]
-        public List<InnerData> Items { get; set; } = new();
+        [BitField] [BitFieldCount(2)] public List<InnerData> Items { get; set; } = new();
     }
 
     [BitSerialize]
     public partial class FixedCountPriorityData
     {
-        [BitField(8)]
-        public byte Count { get; set; }
+        [BitField(8)] public byte Count { get; set; }
 
         [BitField]
         [BitFieldCount(2)]
@@ -1758,12 +1777,9 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class FixedCountCustomBitData
     {
-        [BitField(4)]
-        public byte Prefix { get; set; }
+        [BitField(4)] public byte Prefix { get; set; }
 
-        [BitField(4)]
-        [BitFieldCount(3)]
-        public List<byte> Nibbles { get; set; } = new();
+        [BitField(4)] [BitFieldCount(3)] public List<byte> Nibbles { get; set; } = new();
     }
 
     #endregion
@@ -1928,11 +1944,9 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class ArrayData
     {
-        [BitField(4)]
-        public byte Count { get; set; }
+        [BitField(4)] public byte Count { get; set; }
 
-        [BitField(4)]
-        public byte Reserved { get; set; }
+        [BitField(4)] public byte Reserved { get; set; }
 
         [BitField]
         [BitFieldRelated(nameof(Count))]
@@ -1942,19 +1956,15 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class FixedCountArrayData
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
-        [BitField]
-        [BitFieldCount(3)]
-        public byte[] Items { get; set; } = [];
+        [BitField] [BitFieldCount(3)] public byte[] Items { get; set; } = [];
     }
 
     [BitSerialize]
     public partial class NestedArrayData
     {
-        [BitField(8)]
-        public byte Count { get; set; }
+        [BitField(8)] public byte Count { get; set; }
 
         [BitField]
         [BitFieldRelated(nameof(Count))]
@@ -1964,12 +1974,9 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class FixedCountCustomBitArrayData
     {
-        [BitField(4)]
-        public byte Prefix { get; set; }
+        [BitField(4)] public byte Prefix { get; set; }
 
-        [BitField(4)]
-        [BitFieldCount(3)]
-        public byte[] Nibbles { get; set; } = [];
+        [BitField(4)] [BitFieldCount(3)] public byte[] Nibbles { get; set; } = [];
     }
 
     #endregion
@@ -2104,80 +2111,63 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial record RecordClassData
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
-        [BitField(16)]
-        public ushort Value { get; set; }
+        [BitField(16)] public ushort Value { get; set; }
 
-        [BitField(8)]
-        public byte Footer { get; set; }
+        [BitField(8)] public byte Footer { get; set; }
     }
 
     [BitSerialize]
     public partial record struct RecordStructData
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
-        [BitField(16)]
-        public ushort Value { get; set; }
+        [BitField(16)] public ushort Value { get; set; }
 
-        [BitField(8)]
-        public byte Footer { get; set; }
+        [BitField(8)] public byte Footer { get; set; }
     }
 
     [BitSerialize]
     public partial record class RecordWithCustomBitLength
     {
-        [BitField(4)]
-        public byte NibbleHigh { get; set; }
+        [BitField(4)] public byte NibbleHigh { get; set; }
 
-        [BitField(4)]
-        public byte NibbleLow { get; set; }
+        [BitField(4)] public byte NibbleLow { get; set; }
 
-        [BitField(12)]
-        public ushort TwelveBits { get; set; }
+        [BitField(12)] public ushort TwelveBits { get; set; }
     }
 
     [BitSerialize]
     public partial record class RecordWithEnum
     {
-        [BitField(8)]
-        public TestStatus Status { get; set; }
+        [BitField(8)] public TestStatus Status { get; set; }
 
-        [BitField(16)]
-        public ushort Code { get; set; }
+        [BitField(16)] public ushort Code { get; set; }
     }
 
     [BitSerialize]
     public partial record class RecordInnerData
     {
-        [BitField(8)]
-        public byte X { get; set; }
+        [BitField(8)] public byte X { get; set; }
 
-        [BitField(8)]
-        public byte Y { get; set; }
+        [BitField(8)] public byte Y { get; set; }
     }
 
     [BitSerialize]
     public partial record class RecordWithNested
     {
-        [BitField(8)]
-        public byte Header { get; set; }
+        [BitField(8)] public byte Header { get; set; }
 
-        [BitField]
-        public RecordInnerData Inner { get; set; } = new();
+        [BitField] public RecordInnerData Inner { get; set; } = new();
 
-        [BitField(8)]
-        public byte Footer { get; set; }
+        [BitField(8)] public byte Footer { get; set; }
     }
 
     [BitSerialize]
     public partial record class RecordWithList
     {
-        [BitField(8)]
-        public byte Count { get; set; }
+        [BitField(8)] public byte Count { get; set; }
 
         [BitField]
         [BitFieldRelated(nameof(Count))]
@@ -2187,14 +2177,11 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial record class RecordWithIgnored
     {
-        [BitField(8)]
-        public byte Value { get; set; }
+        [BitField(8)] public byte Value { get; set; }
 
-        [BitIgnore]
-        public string Description { get; set; } = string.Empty;
+        [BitIgnore] public string Description { get; set; } = string.Empty;
 
-        [BitField(8)]
-        public byte AnotherValue { get; set; }
+        [BitField(8)] public byte AnotherValue { get; set; }
     }
 
     #endregion
@@ -2395,17 +2382,13 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class HookTrackingData
     {
-        [BitField(8)]
-        public byte Value { get; set; }
+        [BitField(8)] public byte Value { get; set; }
 
-        [BitIgnore]
-        public List<string> CallLog { get; } = new();
+        [BitIgnore] public List<string> CallLog { get; } = new();
 
-        [BitIgnore]
-        public object? CapturedSerializeContext { get; set; }
+        [BitIgnore] public object? CapturedSerializeContext { get; set; }
 
-        [BitIgnore]
-        public object? CapturedDeserializeContext { get; set; }
+        [BitIgnore] public object? CapturedDeserializeContext { get; set; }
 
         public object? SerializeContext()
         {
@@ -2539,21 +2522,18 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class ContextFlowInner
     {
-        [BitField(8)]
-        public byte InnerValue { get; set; }
+        [BitField(8)] public byte InnerValue { get; set; }
 
-        [BitIgnore]
-        public object? ReceivedSerializeContext { get; set; }
+        [BitIgnore] public object? ReceivedSerializeContext { get; set; }
 
-        [BitIgnore]
-        public object? ReceivedDeserializeContext { get; set; }
+        [BitIgnore] public object? ReceivedDeserializeContext { get; set; }
 
-        partial void OnSerializing(object context)
+        partial void OnSerializing(object? context)
         {
             ReceivedSerializeContext = context;
         }
 
-        partial void OnDeserializing(object context)
+        partial void OnDeserializing(object? context)
         {
             ReceivedDeserializeContext = context;
         }
@@ -2562,27 +2542,23 @@ public partial class BitSerializerMSBTests
     [BitSerialize]
     public partial class ContextFlowOuter
     {
-        [BitField(8)]
-        public byte OuterValue { get; set; }
+        [BitField(8)] public byte OuterValue { get; set; }
 
-        [BitField]
-        public ContextFlowInner Inner { get; set; } = new();
+        [BitField] public ContextFlowInner Inner { get; set; } = new();
 
-        [BitIgnore]
-        public object? ReceivedSerializeContext { get; set; }
+        [BitIgnore] public object? ReceivedSerializeContext { get; set; }
 
-        [BitIgnore]
-        public object? ReceivedDeserializeContext { get; set; }
+        [BitIgnore] public object? ReceivedDeserializeContext { get; set; }
 
         public object? SerializeContext() => "parent-ser-ctx";
         public object? DeserializeContext() => "parent-deser-ctx";
 
-        partial void OnSerializing(object context)
+        partial void OnSerializing(object? context)
         {
             ReceivedSerializeContext = context;
         }
 
-        partial void OnDeserializing(object context)
+        partial void OnDeserializing(object? context)
         {
             ReceivedDeserializeContext = context;
         }

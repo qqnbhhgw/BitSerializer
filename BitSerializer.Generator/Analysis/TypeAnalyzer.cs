@@ -279,9 +279,12 @@ internal static class TypeAnalyzer
                 }
                 if (converterSymbol != null)
                 {
-                    field.ValueConverterHasContext = converterSymbol.GetMembers("OnSerializeConvert")
-                        .OfType<IMethodSymbol>()
-                        .Any(m => m.Parameters.Length == 2);
+                    var serMethods = converterSymbol.GetMembers("OnSerializeConvert").OfType<IMethodSymbol>().ToList();
+                    var deserMethods = converterSymbol.GetMembers("OnDeserializeConvert").OfType<IMethodSymbol>().ToList();
+                    field.ValueConverterHasSerialize = serMethods.Count > 0;
+                    field.ValueConverterHasDeserialize = deserMethods.Count > 0;
+                    field.ValueConverterSerializeHasContext = serMethods.Any(m => m.Parameters.Length == 2);
+                    field.ValueConverterDeserializeHasContext = deserMethods.Any(m => m.Parameters.Length == 2);
                 }
             }
 
