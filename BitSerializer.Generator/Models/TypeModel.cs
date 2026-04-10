@@ -111,7 +111,9 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.IsManualBitSerializable == y.IsManualBitSerializable
             && x.ListElementIsManualBitSerializable == y.ListElementIsManualBitSerializable
             && x.ListElementIsTypeParameter == y.ListElementIsTypeParameter
-            && x.ListElementHasDynamicLength == y.ListElementHasDynamicLength;
+            && x.ListElementHasDynamicLength == y.ListElementHasDynamicLength
+            && x.ListElementHasOwnContext == y.ListElementHasOwnContext
+            && x.NestedHasOwnContext == y.NestedHasOwnContext;
     }
 
     public int GetHashCode(BitFieldModel obj) => obj.MemberName.GetHashCode();

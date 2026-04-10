@@ -61,10 +61,11 @@ def set_source() -> str:
     print("常用源：")
     print("  1) nuget.org          (https://api.nuget.org/v3/index.json)")
     print("  2) GitHub Packages    (https://nuget.pkg.github.com/<OWNER>/index.json)")
-    print("  3) 自定义源（手动输入）")
+    print("  3) 本地源（目录路径）")
+    print("  4) 自定义源（手动输入）")
     print()
 
-    choice = input("请选择 [1/2/3]: ").strip()
+    choice = input("请选择 [1/2/3/4]: ").strip()
 
     if choice == "1":
         source = "https://api.nuget.org/v3/index.json"
@@ -74,6 +75,12 @@ def set_source() -> str:
             error("用户名不能为空")
         source = f"https://nuget.pkg.github.com/{owner}/index.json"
     elif choice == "3":
+        source = input("请输入本地源目录路径: ").strip()
+        if not source:
+            error("目录路径不能为空")
+        if not os.path.isdir(source):
+            error(f"目录不存在: {source}")
+    elif choice == "4":
         source = input("请输入自定义源 URL: ").strip()
         if not source:
             error("源 URL 不能为空")
@@ -128,7 +135,25 @@ def build_and_pack(version: str):
 # ════════════════════════════════════════════════════════════════
 # 推送
 # ════════════════════════════════════════════════════════════════
-def push_packages(source: str, api_key: str):
+def get_local_sources() -> list[tuple[str, str]]:
+    """从 dotnet nuget list source 解析出本地源（名称, 路径）"""
+    result = subprocess.run(
+        ["dotnet", "nuget", "list", "source"],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        return []
+    sources = []
+    lines = result.stdout.splitlines()
+    for i, line in enumerate(lines):
+        # 源名称行格式: "  1.  Name [已启用]" 或 "  1.  Name [Enabled]"
+        m = re.match(r'\s+\d+\.\s+(.+?)\s+\[', line)
+        if m and i + 1 < len(lines):
+            path = lines[i + 1].strip()
+            if os.path.isdir(path):
+                sources.append((m.group(1), path))
+    return sources
+
+def push_packages(source: str, api_key: str | None = None):
     header(f"🚀 推送包到 {source}")
 
     pkgs = glob.glob(os.path.join(OUTPUT_DIR, "*.nupkg"))
@@ -138,10 +163,12 @@ def push_packages(source: str, api_key: str):
 
     for pkg in pkgs:
         info(f"推送 {os.path.basename(pkg)} ...")
-        run(["dotnet", "nuget", "push", pkg,
-             "--source", source,
-             "--api-key", api_key,
-             "--skip-duplicate"])
+        cmd = ["dotnet", "nuget", "push", pkg,
+               "--source", source,
+               "--skip-duplicate"]
+        if api_key:
+            cmd += ["--api-key", api_key]
+        run(cmd)
         success(f"{os.path.basename(pkg)} 推送成功")
 
 # ════════════════════════════════════════════════════════════════
@@ -161,17 +188,39 @@ def main():
     print("请选择操作：")
     print("  1) 仅列出 NuGet 源")
     print("  2) 仅打包")
-    print("  3) 打包并推送（交互式配置源和 API Key）")
+    print("  3) 打包并推送到本地源")
+    print("  4) 打包并推送到远程源（交互式配置源和 API Key）")
     print("  q) 退出")
     print()
 
-    action = input("请选择 [1/2/3/q]: ").strip().lower()
+    action = input("请选择 [1/2/3/4/q]: ").strip().lower()
 
     if action == "1":
         list_sources()
     elif action == "2":
         build_and_pack(version)
     elif action == "3":
+        local_sources = get_local_sources()
+        if not local_sources:
+            error("未找到已注册的本地 NuGet 源")
+        if len(local_sources) == 1:
+            name, path = local_sources[0]
+            info(f"检测到本地源: {name} ({path})")
+            local_dir = path
+        else:
+            header("📂 选择本地源")
+            for i, (name, path) in enumerate(local_sources, 1):
+                print(f"  {i}) {name}  ({path})")
+            print()
+            idx = input(f"请选择 [1-{len(local_sources)}]: ").strip()
+            if not idx.isdigit() or not (1 <= int(idx) <= len(local_sources)):
+                error("无效选项")
+            local_dir = local_sources[int(idx) - 1][1]
+        build_and_pack(version)
+        push_packages(local_dir)
+        print()
+        success("全部完成！")
+    elif action == "4":
         list_sources()
         source  = set_source()
         api_key = set_api_key()

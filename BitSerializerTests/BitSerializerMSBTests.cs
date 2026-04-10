@@ -1445,6 +1445,21 @@ public partial class BitSerializerMSBTests
         }
     }
 
+    [BitSerialize]
+    public partial class AtsSectionDisplayInfo
+    {
+        [BitField] public byte CiStationCount { get; set; }
+
+        [BitField]
+        [BitFieldRelated(nameof(CiStationCount))]
+        public List<StationSectionDisplayInfo> SectionStatuses { get; set; } = [];
+
+        public static AtsSectionDisplayInfo Parse(byte[] rawData)
+        {
+            return BitSerializerMSB.Deserialize<AtsSectionDisplayInfo>(rawData);
+        }
+    }
+    
     [Fact]
     public void Deserialize_WithComplexValueConvertAndContext_ShouldApplyConversion()
     {
@@ -1480,6 +1495,242 @@ public partial class BitSerializerMSBTests
         another.StationSectionCount.ShouldBe((byte)3);
         another.StationSectionStatuses.Count.ShouldBe(3);
         another.StationSectionStatuses.ShouldBeEquivalentTo(obj.StationSectionStatuses);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_ListElementWithOwnContext_ShouldRoundTrip()
+    {
+        // AtsSectionDisplayInfo contains List<StationSectionDisplayInfo>,
+        // where each StationSectionDisplayInfo defines its own SerializeContext/DeserializeContext.
+        // This test verifies that context lifecycle (SerializeContext, BeforeSerialize, AfterSerialize,
+        // DeserializeContext, BeforeDeserialize, AfterDeserialize) is properly invoked per element.
+        var obj = new AtsSectionDisplayInfo
+        {
+            CiStationCount = 2,
+            SectionStatuses =
+            [
+                new StationSectionDisplayInfo
+                {
+                    CiStationId = 0xAABBCCDD,
+                    StationSectionCount = 2,
+                    StationSectionStatuses =
+                    [
+                        new SectionStatus { Lock = AtsSectionLock.Locked, Occupy = AtsSectionOccupy.Occupied },
+                        new SectionStatus { Lock = AtsSectionLock.Unlocked, Occupy = AtsSectionOccupy.Free },
+                    ]
+                },
+                new StationSectionDisplayInfo
+                {
+                    CiStationId = 0x11223344,
+                    StationSectionCount = 2,
+                    StationSectionStatuses =
+                    [
+                        new SectionStatus { Lock = AtsSectionLock.Default, Occupy = AtsSectionOccupy.Default },
+                        new SectionStatus { Lock = AtsSectionLock.Locked, Occupy = AtsSectionOccupy.Free },
+                    ]
+                }
+            ]
+        };
+
+        var bytes = BitSerializerMSB.Serialize(obj);
+        var result = BitSerializerMSB.Deserialize<AtsSectionDisplayInfo>(bytes);
+
+        result.CiStationCount.ShouldBe((byte)2);
+        result.SectionStatuses.Count.ShouldBe(2);
+
+        result.SectionStatuses[0].CiStationId.ShouldBe(0xAABBCCDDu);
+        result.SectionStatuses[0].StationSectionCount.ShouldBe((byte)2);
+        result.SectionStatuses[0].StationSectionStatuses.Count.ShouldBe(2);
+        result.SectionStatuses[0].StationSectionStatuses[0].Lock.ShouldBe(AtsSectionLock.Locked);
+        result.SectionStatuses[0].StationSectionStatuses[0].Occupy.ShouldBe(AtsSectionOccupy.Occupied);
+        result.SectionStatuses[0].StationSectionStatuses[1].Lock.ShouldBe(AtsSectionLock.Unlocked);
+        result.SectionStatuses[0].StationSectionStatuses[1].Occupy.ShouldBe(AtsSectionOccupy.Free);
+
+        result.SectionStatuses[1].CiStationId.ShouldBe(0x11223344u);
+        result.SectionStatuses[1].StationSectionCount.ShouldBe((byte)2);
+        result.SectionStatuses[1].StationSectionStatuses.Count.ShouldBe(2);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_ListElementWithOwnContext_EachElementGetsIndependentContext()
+    {
+        // Multiple stations each with even counts.
+        // Verifies each list element creates its own independent context (StrongBox<bool>),
+        // and the converter correctly sees the context (even count => no padding needed).
+        var obj = new AtsSectionDisplayInfo
+        {
+            CiStationCount = 3,
+            SectionStatuses =
+            [
+                new StationSectionDisplayInfo
+                {
+                    CiStationId = 0x00000001,
+                    StationSectionCount = 2,
+                    StationSectionStatuses =
+                    [
+                        new SectionStatus { Lock = AtsSectionLock.Locked, Occupy = AtsSectionOccupy.Occupied },
+                        new SectionStatus { Lock = AtsSectionLock.Unlocked, Occupy = AtsSectionOccupy.Free },
+                    ]
+                },
+                new StationSectionDisplayInfo
+                {
+                    CiStationId = 0x00000002,
+                    StationSectionCount = 4,
+                    StationSectionStatuses =
+                    [
+                        new SectionStatus { Lock = AtsSectionLock.Default, Occupy = AtsSectionOccupy.Default },
+                        new SectionStatus { Lock = AtsSectionLock.Locked, Occupy = AtsSectionOccupy.Free },
+                        new SectionStatus { Lock = AtsSectionLock.Unlocked, Occupy = AtsSectionOccupy.Occupied },
+                        new SectionStatus { Lock = AtsSectionLock.Locked, Occupy = AtsSectionOccupy.Default },
+                    ]
+                },
+                new StationSectionDisplayInfo
+                {
+                    CiStationId = 0xAABB0001,
+                    StationSectionCount = 2,
+                    StationSectionStatuses =
+                    [
+                        new SectionStatus { Lock = AtsSectionLock.Default, Occupy = AtsSectionOccupy.Free },
+                        new SectionStatus { Lock = AtsSectionLock.Unlocked, Occupy = AtsSectionOccupy.Default },
+                    ]
+                }
+            ]
+        };
+
+        var bytes = BitSerializerMSB.Serialize(obj);
+        var result = BitSerializerMSB.Deserialize<AtsSectionDisplayInfo>(bytes);
+
+        result.CiStationCount.ShouldBe((byte)3);
+        result.SectionStatuses.Count.ShouldBe(3);
+
+        // First station
+        var s0 = result.SectionStatuses[0];
+        s0.CiStationId.ShouldBe(1u);
+        s0.StationSectionCount.ShouldBe((byte)2);
+        s0.StationSectionStatuses.Count.ShouldBe(2);
+        s0.StationSectionStatuses[0].Lock.ShouldBe(AtsSectionLock.Locked);
+        s0.StationSectionStatuses[0].Occupy.ShouldBe(AtsSectionOccupy.Occupied);
+        s0.StationSectionStatuses[1].Lock.ShouldBe(AtsSectionLock.Unlocked);
+        s0.StationSectionStatuses[1].Occupy.ShouldBe(AtsSectionOccupy.Free);
+
+        // Second station
+        var s1 = result.SectionStatuses[1];
+        s1.CiStationId.ShouldBe(2u);
+        s1.StationSectionCount.ShouldBe((byte)4);
+        s1.StationSectionStatuses.Count.ShouldBe(4);
+        s1.StationSectionStatuses[0].Lock.ShouldBe(AtsSectionLock.Default);
+        s1.StationSectionStatuses[1].Lock.ShouldBe(AtsSectionLock.Locked);
+        s1.StationSectionStatuses[2].Lock.ShouldBe(AtsSectionLock.Unlocked);
+        s1.StationSectionStatuses[3].Lock.ShouldBe(AtsSectionLock.Locked);
+
+        // Third station
+        var s2 = result.SectionStatuses[2];
+        s2.CiStationId.ShouldBe(0xAABB0001u);
+        s2.StationSectionCount.ShouldBe((byte)2);
+        s2.StationSectionStatuses.Count.ShouldBe(2);
+        s2.StationSectionStatuses[0].Lock.ShouldBe(AtsSectionLock.Default);
+        s2.StationSectionStatuses[1].Lock.ShouldBe(AtsSectionLock.Unlocked);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_ListElementWithOwnContext_OddCount_ShouldTriggerPadding()
+    {
+        // When StationSectionCount is odd, the context-driven padding logic kicks in.
+        // AfterSerialize uses afterSerializedBytes[4] -= 1 which requires receiving
+        // a sliced Span starting from the element's own offset (not the full parent buffer).
+        var obj = new AtsSectionDisplayInfo
+        {
+            CiStationCount = 1,
+            SectionStatuses =
+            [
+                new StationSectionDisplayInfo
+                {
+                    CiStationId = 0xDEADBEEF,
+                    StationSectionCount = 3,
+                    StationSectionStatuses =
+                    [
+                        new SectionStatus { Lock = AtsSectionLock.Locked, Occupy = AtsSectionOccupy.Occupied },
+                        new SectionStatus { Lock = AtsSectionLock.Unlocked, Occupy = AtsSectionOccupy.Free },
+                        new SectionStatus { Lock = AtsSectionLock.Default, Occupy = AtsSectionOccupy.Default },
+                    ]
+                }
+            ]
+        };
+
+        var bytes = BitSerializerMSB.Serialize(obj);
+        var result = BitSerializerMSB.Deserialize<AtsSectionDisplayInfo>(bytes);
+
+        result.CiStationCount.ShouldBe((byte)1);
+        result.SectionStatuses.Count.ShouldBe(1);
+
+        var station = result.SectionStatuses[0];
+        station.CiStationId.ShouldBe(0xDEADBEEFu);
+        station.StationSectionCount.ShouldBe((byte)3);
+        station.StationSectionStatuses.Count.ShouldBe(3);
+        station.StationSectionStatuses[0].Lock.ShouldBe(AtsSectionLock.Locked);
+        station.StationSectionStatuses[0].Occupy.ShouldBe(AtsSectionOccupy.Occupied);
+        station.StationSectionStatuses[1].Lock.ShouldBe(AtsSectionLock.Unlocked);
+        station.StationSectionStatuses[1].Occupy.ShouldBe(AtsSectionOccupy.Free);
+        station.StationSectionStatuses[2].Lock.ShouldBe(AtsSectionLock.Default);
+        station.StationSectionStatuses[2].Occupy.ShouldBe(AtsSectionOccupy.Default);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_ListElementWithOwnContext_MultipleStationsWithMixedParity()
+    {
+        // First station: even count (no padding), second station: odd count (padding triggered).
+        // Verifies each list element gets its own independent sliced buffer.
+        var obj = new AtsSectionDisplayInfo
+        {
+            CiStationCount = 2,
+            SectionStatuses =
+            [
+                new StationSectionDisplayInfo
+                {
+                    CiStationId = 0x00000001,
+                    StationSectionCount = 2,
+                    StationSectionStatuses =
+                    [
+                        new SectionStatus { Lock = AtsSectionLock.Locked, Occupy = AtsSectionOccupy.Occupied },
+                        new SectionStatus { Lock = AtsSectionLock.Unlocked, Occupy = AtsSectionOccupy.Free },
+                    ]
+                },
+                new StationSectionDisplayInfo
+                {
+                    CiStationId = 0x00000002,
+                    StationSectionCount = 3,
+                    StationSectionStatuses =
+                    [
+                        new SectionStatus { Lock = AtsSectionLock.Default, Occupy = AtsSectionOccupy.Default },
+                        new SectionStatus { Lock = AtsSectionLock.Locked, Occupy = AtsSectionOccupy.Free },
+                        new SectionStatus { Lock = AtsSectionLock.Unlocked, Occupy = AtsSectionOccupy.Occupied },
+                    ]
+                }
+            ]
+        };
+
+        var bytes = BitSerializerMSB.Serialize(obj);
+        var result = BitSerializerMSB.Deserialize<AtsSectionDisplayInfo>(bytes);
+
+        result.CiStationCount.ShouldBe((byte)2);
+        result.SectionStatuses.Count.ShouldBe(2);
+
+        // First station: even count, no padding
+        var s0 = result.SectionStatuses[0];
+        s0.CiStationId.ShouldBe(1u);
+        s0.StationSectionCount.ShouldBe((byte)2);
+        s0.StationSectionStatuses.Count.ShouldBe(2);
+        s0.StationSectionStatuses[0].Lock.ShouldBe(AtsSectionLock.Locked);
+        s0.StationSectionStatuses[1].Lock.ShouldBe(AtsSectionLock.Unlocked);
+
+        // Second station: odd count, padding context should work independently
+        var s1 = result.SectionStatuses[1];
+        s1.CiStationId.ShouldBe(2u);
+        s1.StationSectionCount.ShouldBe((byte)3);
+        s1.StationSectionStatuses.Count.ShouldBe(3);
+        s1.StationSectionStatuses[0].Lock.ShouldBe(AtsSectionLock.Default);
+        s1.StationSectionStatuses[1].Lock.ShouldBe(AtsSectionLock.Locked);
+        s1.StationSectionStatuses[2].Lock.ShouldBe(AtsSectionLock.Unlocked);
     }
 
     #endregion

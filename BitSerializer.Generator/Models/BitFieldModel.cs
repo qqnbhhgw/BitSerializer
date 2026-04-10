@@ -57,4 +57,10 @@ internal class BitFieldModel
 
     // List element is [BitSerialize] with dynamic length (needs runtime offset tracking)
     public bool ListElementHasDynamicLength { get; set; }
+
+    // Whether the list element type declares its own SerializeContext/DeserializeContext methods
+    public bool ListElementHasOwnContext { get; set; }
+
+    // Whether a nested (non-list) type declares its own SerializeContext/DeserializeContext methods
+    public bool NestedHasOwnContext { get; set; }
 }

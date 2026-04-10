@@ -340,6 +340,8 @@ internal static class TypeAnalyzer
                     field.BitLength = 0;
                     if (HasDynamicLengthRecursive(elementType!))
                         field.ListElementHasDynamicLength = true;
+                    if (HasOwnContextMethods(elementType!))
+                        field.ListElementHasOwnContext = true;
                 }
                 else if (ImplementsBitSerializable(elementType!))
                 {
@@ -360,6 +362,8 @@ internal static class TypeAnalyzer
                     field.ListElementIsTypeParameter = elementType is ITypeParameterSymbol;
                     field.ListElementBitLength = explicitBitLength ?? 0;
                     field.BitLength = 0;
+                    if (HasOwnContextMethods(elementType!))
+                        field.ListElementHasOwnContext = true;
                 }
                 else
                 {
@@ -464,6 +468,8 @@ internal static class TypeAnalyzer
                     field.IsPotentiallyDynamic = true;
                     model.HasDynamicLength = true;
                 }
+                if (HasOwnContextMethods(memberType))
+                    field.NestedHasOwnContext = true;
                 currentBitIndex += field.BitLength;
             }
             else if (memberType is ITypeParameterSymbol typeParam &&
@@ -509,6 +515,8 @@ internal static class TypeAnalyzer
                     field.IsPotentiallyDynamic = true;
                     model.HasDynamicLength = true;
                 }
+                if (HasOwnContextMethods(memberType))
+                    field.NestedHasOwnContext = true;
             }
             else
             {
@@ -880,6 +888,18 @@ internal static class TypeAnalyzer
     {
         return type.AllInterfaces.Any(i =>
             i.ToDisplayString() == "BitSerializer.IBitSerializable");
+    }
+
+    /// <summary>
+    /// Checks if the type declares its own SerializeContext() or DeserializeContext() methods
+    /// (not just the default interface implementations from IBitSerializable).
+    /// </summary>
+    private static bool HasOwnContextMethods(ITypeSymbol type)
+    {
+        return type.GetMembers("SerializeContext").OfType<IMethodSymbol>()
+                   .Any(m => m.Parameters.Length == 0 && !m.IsStatic)
+            || type.GetMembers("DeserializeContext").OfType<IMethodSymbol>()
+                   .Any(m => m.Parameters.Length == 0 && !m.IsStatic);
     }
 
     private static INamedTypeSymbol? FindTypeByFullName(IAssemblySymbol assembly, string fullName)
