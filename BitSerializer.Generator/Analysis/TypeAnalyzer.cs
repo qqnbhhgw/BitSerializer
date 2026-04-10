@@ -242,10 +242,48 @@ internal static class TypeAnalyzer
                         valueConverterFullName = converterType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                     }
                 }
+
+                // Also check named arguments (e.g. ValueConverterType = typeof(...))
+                if (valueConverterFullName == null)
+                {
+                    foreach (var namedArg in relatedAttr.NamedArguments)
+                    {
+                        if (namedArg.Key == "ValueConverterType" && namedArg.Value.Value is INamedTypeSymbol namedConverterType)
+                        {
+                            valueConverterFullName = namedConverterType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                            break;
+                        }
+                    }
+                }
             }
 
             field.RelatedMemberName = relatedMemberName;
             field.ValueConverterTypeFullName = valueConverterFullName;
+
+            // Check if converter type has context-aware overloads (2-param OnSerializeConvert/OnDeserializeConvert)
+            if (valueConverterFullName != null && relatedAttr != null)
+            {
+                INamedTypeSymbol? converterSymbol = null;
+                if (relatedAttr.ConstructorArguments.Length > 1 && !relatedAttr.ConstructorArguments[1].IsNull)
+                    converterSymbol = relatedAttr.ConstructorArguments[1].Value as INamedTypeSymbol;
+                if (converterSymbol == null)
+                {
+                    foreach (var namedArg in relatedAttr.NamedArguments)
+                    {
+                        if (namedArg.Key == "ValueConverterType" && namedArg.Value.Value is INamedTypeSymbol ns)
+                        {
+                            converterSymbol = ns;
+                            break;
+                        }
+                    }
+                }
+                if (converterSymbol != null)
+                {
+                    field.ValueConverterHasContext = converterSymbol.GetMembers("OnSerializeConvert")
+                        .OfType<IMethodSymbol>()
+                        .Any(m => m.Parameters.Length == 2);
+                }
+            }
 
             // Check for BitFieldCount
             var countAttr = GetAttribute(member, "BitSerializer.BitFieldCountAttribute");

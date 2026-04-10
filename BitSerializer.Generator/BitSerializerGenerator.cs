@@ -77,20 +77,32 @@ public class BitSerializerGenerator : IIncrementalGenerator
         sb.AppendLine($"{indent}partial {typeKeyword} {model.TypeName} : global::BitSerializer.IBitSerializable");
         sb.AppendLine($"{indent}{{");
 
-        // SerializeLSB
+        // SerializeLSB (context-aware, primary implementation)
         sb.Append(SerializerEmitter.EmitMethod(model, "LSB"));
         sb.AppendLine();
 
-        // SerializeMSB
+        // SerializeMSB (context-aware, primary implementation)
         sb.Append(SerializerEmitter.EmitMethod(model, "MSB"));
         sb.AppendLine();
 
-        // DeserializeLSB
+        // DeserializeLSB (context-aware, primary implementation)
         sb.Append(DeserializerEmitter.EmitMethod(model, "LSB"));
         sb.AppendLine();
 
-        // DeserializeMSB
+        // DeserializeMSB (context-aware, primary implementation)
         sb.Append(DeserializerEmitter.EmitMethod(model, "MSB"));
+        sb.AppendLine();
+
+        // Non-context delegation methods
+        sb.Append(SerializerEmitter.EmitDelegationMethod(model, "LSB"));
+        sb.Append(SerializerEmitter.EmitDelegationMethod(model, "MSB"));
+        sb.Append(DeserializerEmitter.EmitDelegationMethod(model, "LSB"));
+        sb.Append(DeserializerEmitter.EmitDelegationMethod(model, "MSB"));
+        sb.AppendLine();
+
+        // Partial methods for user context access
+        sb.AppendLine("    partial void OnSerializing(object context);");
+        sb.AppendLine("    partial void OnDeserializing(object context);");
         sb.AppendLine();
 
         // GetTotalBitLength

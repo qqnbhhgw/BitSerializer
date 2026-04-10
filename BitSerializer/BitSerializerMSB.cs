@@ -10,7 +10,10 @@ public static class BitSerializerMSB
     public static T Deserialize<T>(ReadOnlySpan<byte> bytes) where T : IBitSerializable, new()
     {
         var result = new T();
-        result.DeserializeMSB(bytes, 0);
+        var ctx = result.DeserializeContext();
+        result.BeforeDeserialize(ctx, bytes);
+        result.DeserializeMSB(bytes, 0, ctx);
+        result.AfterDeserialize(ctx, bytes);
         return result;
     }
 
@@ -37,14 +40,20 @@ public static class BitSerializerMSB
     {
         int totalBits = obj.GetTotalBitLength();
         var bytes = new byte[(totalBits + 7) / 8];
-        obj.SerializeMSB(bytes, 0);
+        var ctx = obj.SerializeContext();
+        obj.BeforeSerialize(ctx, bytes);
+        obj.SerializeMSB(bytes, 0, ctx);
+        obj.AfterSerialize(ctx, bytes);
         return bytes;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Serialize<T>(T obj, Span<byte> bytes) where T : IBitSerializable
     {
-        obj.SerializeMSB(bytes, 0);
+        var ctx = obj.SerializeContext();
+        obj.BeforeSerialize(ctx, bytes);
+        obj.SerializeMSB(bytes, 0, ctx);
+        obj.AfterSerialize(ctx, bytes);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

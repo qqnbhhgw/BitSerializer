@@ -1379,6 +1379,81 @@ public partial class BitSerializerMSBTests
         public byte Footer { get; set; }
     }
 
+    [BitSerialize]
+    public partial class RelateDataWithConverter
+    {
+        [BitField(8)]
+        [BitFieldRelated(null, typeof(OffsetConverter))]
+        public byte Count { get; set; }
+
+        [BitField]
+        [BitFieldRelated(nameof(Count))]
+        public List<uint> Values { get; set; } = [];
+    }
+    
+    /// <summary>
+    /// 区段锁闭状态
+    /// </summary>
+    public enum AtsSectionLock
+    {
+        Unlocked = 0b10,
+        Locked   = 0b01,
+        Default  = 0b11,
+    }
+    
+    /// <summary>
+    /// 区段占用状态
+    /// </summary>
+    public enum AtsSectionOccupy
+    {
+        Free     = 0b01,
+        Occupied = 0b10,
+        Default  = 0b11,
+    }
+    
+    [BitSerialize]
+    public partial class AtsSectionStatus
+    {
+        [BitField(2)] public AtsSectionLock Lock { get; set; }
+        [BitField(2)] public AtsSectionOccupy Occupy { get; set; }
+    }
+
+    public class StationSectionCountConverter : IBitFieldValueConverter
+    {
+        public static object OnDeserializeConvert(object value)
+        {
+            var val = (byte)value;
+            return val % 2 == 0 ? val : val + 1;
+        }
+
+        public static object OnSerializeConvert(object value)
+        {
+            return value;
+        }
+    }
+    
+    /// <summary>
+    /// 一个联锁站的区段显示状态
+    /// </summary>
+    [BitSerialize]
+    public partial class StationSectionDisplayInfo
+    {
+        /// <summary>
+        /// 联锁站ID（4字节，位于Data头部）
+        /// </summary>
+        [BitField]
+        public uint CiStationId { get; set; }
+
+        [BitField(8)]
+        [BitFieldRelated(null,ValueConverterType = typeof(StationSectionCountConverter))]
+        public byte StationSectionCount { get; set; }
+
+        [BitField]
+        [BitFieldRelated(nameof(StationSectionCount))]
+        public List<AtsSectionStatus> StationSectionStatuses { get; set; } = [];
+    }
+    
+    
     #endregion
 
     #region ValueConverter Deserialization Tests
@@ -1560,6 +1635,86 @@ public partial class BitSerializerMSBTests
 
         deserialized.Header.ShouldBe(original.Header);
         deserialized.DoubledValue.ShouldBe(original.DoubledValue);
+    }
+
+    #endregion
+
+    #region Context-Aware ValueConverter Models
+
+    public class ContextAwareOffsetConverter : IBitFieldValueConverter
+    {
+        public static object? ReceivedSerializeContext { get; set; }
+        public static object? ReceivedDeserializeContext { get; set; }
+
+        public static object OnDeserializeConvert(object formDataValue) => formDataValue;
+        public static object OnSerializeConvert(object propertyValue) => propertyValue;
+
+        public static object OnDeserializeConvert(object formDataValue, object? context)
+        {
+            ReceivedDeserializeContext = context;
+            return (byte)((byte)formDataValue + 10);
+        }
+
+        public static object OnSerializeConvert(object propertyValue, object? context)
+        {
+            ReceivedSerializeContext = context;
+            return (byte)((byte)propertyValue - 10);
+        }
+    }
+
+    [BitSerialize]
+    public partial class DataWithContextConverter
+    {
+        [BitField(8)]
+        public byte Header { get; set; }
+
+        [BitField(8)]
+        [BitFieldRelated(null, typeof(ContextAwareOffsetConverter))]
+        public byte ConvertedValue { get; set; }
+
+        [BitField(8)]
+        public byte Footer { get; set; }
+
+        public object? SerializeContext() => "converter-ser-ctx";
+        public object? DeserializeContext() => "converter-deser-ctx";
+    }
+
+    #endregion
+
+    #region Context-Aware ValueConverter Tests
+
+    [Fact]
+    public void Serialize_WithContextConverter_ShouldPassContextToConverter()
+    {
+        ContextAwareOffsetConverter.ReceivedSerializeContext = null;
+        var data = new DataWithContextConverter { Header = 0xAA, ConvertedValue = 15, Footer = 0xBB };
+        var bytes = BitSerializerMSB.Serialize(data);
+
+        ContextAwareOffsetConverter.ReceivedSerializeContext.ShouldBe("converter-ser-ctx");
+        bytes[1].ShouldBe((byte)5); // 15 - 10 = 5
+    }
+
+    [Fact]
+    public void Deserialize_WithContextConverter_ShouldPassContextToConverter()
+    {
+        ContextAwareOffsetConverter.ReceivedDeserializeContext = null;
+        byte[] bytes = [0xAA, 0x05, 0xBB];
+        var result = BitSerializerMSB.Deserialize<DataWithContextConverter>(bytes);
+
+        ContextAwareOffsetConverter.ReceivedDeserializeContext.ShouldBe("converter-deser-ctx");
+        result.ConvertedValue.ShouldBe((byte)15); // 5 + 10 = 15
+    }
+
+    [Fact]
+    public void SerializeDeserialize_WithContextConverter_ShouldRoundTrip()
+    {
+        var original = new DataWithContextConverter { Header = 0xAA, ConvertedValue = 25, Footer = 0xBB };
+        var bytes = BitSerializerMSB.Serialize(original);
+        var result = BitSerializerMSB.Deserialize<DataWithContextConverter>(bytes);
+
+        result.Header.ShouldBe(original.Header);
+        result.ConvertedValue.ShouldBe(original.ConvertedValue);
+        result.Footer.ShouldBe(original.Footer);
     }
 
     #endregion
@@ -2231,6 +2386,259 @@ public partial class BitSerializerMSBTests
         deserialized.Value.ShouldBe(original.Value);
         deserialized.AnotherValue.ShouldBe(original.AnotherValue);
         deserialized.Description.ShouldBeEmpty();
+    }
+
+    #endregion
+
+    #region Lifecycle Hook Models
+
+    [BitSerialize]
+    public partial class HookTrackingData
+    {
+        [BitField(8)]
+        public byte Value { get; set; }
+
+        [BitIgnore]
+        public List<string> CallLog { get; } = new();
+
+        [BitIgnore]
+        public object? CapturedSerializeContext { get; set; }
+
+        [BitIgnore]
+        public object? CapturedDeserializeContext { get; set; }
+
+        public object? SerializeContext()
+        {
+            var ctx = "ser-ctx";
+            CallLog.Add("SerializeContext");
+            return ctx;
+        }
+
+        public void BeforeSerialize(object? ctx, Span<byte> bytes)
+        {
+            CapturedSerializeContext = ctx;
+            CallLog.Add("BeforeSerialize");
+        }
+
+        public void AfterSerialize(object? ctx, Span<byte> bytes)
+        {
+            CallLog.Add("AfterSerialize");
+            // Verify same context object
+            if (!ReferenceEquals(ctx, CapturedSerializeContext))
+                throw new InvalidOperationException("Context mismatch in AfterSerialize");
+        }
+
+        public object? DeserializeContext()
+        {
+            var ctx = "deser-ctx";
+            CallLog.Add("DeserializeContext");
+            return ctx;
+        }
+
+        public void BeforeDeserialize(object? ctx, ReadOnlySpan<byte> bytes)
+        {
+            CapturedDeserializeContext = ctx;
+            CallLog.Add("BeforeDeserialize");
+        }
+
+        public void AfterDeserialize(object? ctx, ReadOnlySpan<byte> bytes)
+        {
+            CallLog.Add("AfterDeserialize");
+            if (!ReferenceEquals(ctx, CapturedDeserializeContext))
+                throw new InvalidOperationException("Context mismatch in AfterDeserialize");
+        }
+    }
+
+    #endregion
+
+    #region Lifecycle Hook Tests
+
+    [Fact]
+    public void Serialize_WithHooks_ShouldCallInCorrectOrder()
+    {
+        var data = new HookTrackingData { Value = 0x42 };
+        var bytes = BitSerializerMSB.Serialize(data);
+
+        data.CallLog.ShouldBe(new[] { "SerializeContext", "BeforeSerialize", "AfterSerialize" });
+        bytes[0].ShouldBe((byte)0x42);
+    }
+
+    [Fact]
+    public void Deserialize_WithHooks_ShouldCallInCorrectOrder()
+    {
+        byte[] bytes = [0x42];
+        var result = BitSerializerMSB.Deserialize<HookTrackingData>(bytes);
+
+        result.CallLog.ShouldBe(new[] { "DeserializeContext", "BeforeDeserialize", "AfterDeserialize" });
+        result.Value.ShouldBe((byte)0x42);
+    }
+
+    [Fact]
+    public void Serialize_WithHooks_ContextShouldPassThrough()
+    {
+        var data = new HookTrackingData { Value = 0xAB };
+        BitSerializerMSB.Serialize(data);
+
+        data.CapturedSerializeContext.ShouldBe("ser-ctx");
+    }
+
+    [Fact]
+    public void Deserialize_WithHooks_ContextShouldPassThrough()
+    {
+        byte[] bytes = [0xAB];
+        var result = BitSerializerMSB.Deserialize<HookTrackingData>(bytes);
+
+        result.CapturedDeserializeContext.ShouldBe("deser-ctx");
+    }
+
+    [Fact]
+    public void Serialize_SpanOverload_WithHooks_ShouldCallInCorrectOrder()
+    {
+        var data = new HookTrackingData { Value = 0x42 };
+        var bytes = new byte[1];
+        BitSerializerMSB.Serialize(data, bytes);
+
+        data.CallLog.ShouldBe(new[] { "SerializeContext", "BeforeSerialize", "AfterSerialize" });
+        bytes[0].ShouldBe((byte)0x42);
+    }
+
+    [Fact]
+    public void SerializeDeserialize_WithHooks_ShouldRoundTrip()
+    {
+        var original = new HookTrackingData { Value = 0xFF };
+        var bytes = BitSerializerMSB.Serialize(original);
+        var result = BitSerializerMSB.Deserialize<HookTrackingData>(bytes);
+
+        result.Value.ShouldBe(original.Value);
+    }
+
+    [Fact]
+    public void Serialize_LSB_WithHooks_ShouldCallInCorrectOrder()
+    {
+        var data = new HookTrackingData { Value = 0x42 };
+        var bytes = BitSerializerLSB.Serialize(data);
+
+        data.CallLog.ShouldBe(new[] { "SerializeContext", "BeforeSerialize", "AfterSerialize" });
+        bytes[0].ShouldBe((byte)0x42);
+    }
+
+    [Fact]
+    public void Deserialize_LSB_WithHooks_ShouldCallInCorrectOrder()
+    {
+        byte[] bytes = [0x42];
+        var result = BitSerializerLSB.Deserialize<HookTrackingData>(bytes);
+
+        result.CallLog.ShouldBe(new[] { "DeserializeContext", "BeforeDeserialize", "AfterDeserialize" });
+        result.Value.ShouldBe((byte)0x42);
+    }
+
+    #endregion
+
+    #region Context Flow Models
+
+    [BitSerialize]
+    public partial class ContextFlowInner
+    {
+        [BitField(8)]
+        public byte InnerValue { get; set; }
+
+        [BitIgnore]
+        public object? ReceivedSerializeContext { get; set; }
+
+        [BitIgnore]
+        public object? ReceivedDeserializeContext { get; set; }
+
+        partial void OnSerializing(object context)
+        {
+            ReceivedSerializeContext = context;
+        }
+
+        partial void OnDeserializing(object context)
+        {
+            ReceivedDeserializeContext = context;
+        }
+    }
+
+    [BitSerialize]
+    public partial class ContextFlowOuter
+    {
+        [BitField(8)]
+        public byte OuterValue { get; set; }
+
+        [BitField]
+        public ContextFlowInner Inner { get; set; } = new();
+
+        [BitIgnore]
+        public object? ReceivedSerializeContext { get; set; }
+
+        [BitIgnore]
+        public object? ReceivedDeserializeContext { get; set; }
+
+        public object? SerializeContext() => "parent-ser-ctx";
+        public object? DeserializeContext() => "parent-deser-ctx";
+
+        partial void OnSerializing(object context)
+        {
+            ReceivedSerializeContext = context;
+        }
+
+        partial void OnDeserializing(object context)
+        {
+            ReceivedDeserializeContext = context;
+        }
+    }
+
+    #endregion
+
+    #region Context Flow Tests
+
+    [Fact]
+    public void Serialize_ContextFlowsToNestedType()
+    {
+        var data = new ContextFlowOuter { OuterValue = 0xAA, Inner = new ContextFlowInner { InnerValue = 0xBB } };
+        BitSerializerMSB.Serialize(data);
+
+        data.ReceivedSerializeContext.ShouldBe("parent-ser-ctx");
+        data.Inner.ReceivedSerializeContext.ShouldBe("parent-ser-ctx");
+    }
+
+    [Fact]
+    public void Deserialize_ContextFlowsToNestedType()
+    {
+        byte[] bytes = [0xAA, 0xBB];
+        var result = BitSerializerMSB.Deserialize<ContextFlowOuter>(bytes);
+
+        result.ReceivedDeserializeContext.ShouldBe("parent-deser-ctx");
+        result.Inner.ReceivedDeserializeContext.ShouldBe("parent-deser-ctx");
+    }
+
+    [Fact]
+    public void Serialize_ContextFlowsToNestedType_RoundTrip()
+    {
+        var original = new ContextFlowOuter { OuterValue = 0xAA, Inner = new ContextFlowInner { InnerValue = 0xBB } };
+        var bytes = BitSerializerMSB.Serialize(original);
+        var result = BitSerializerMSB.Deserialize<ContextFlowOuter>(bytes);
+
+        result.OuterValue.ShouldBe(original.OuterValue);
+        result.Inner.InnerValue.ShouldBe(original.Inner.InnerValue);
+    }
+
+    [Fact]
+    public void Serialize_StandaloneInnerType_ContextIsNull()
+    {
+        var inner = new ContextFlowInner { InnerValue = 0xCC };
+        BitSerializerMSB.Serialize(inner);
+
+        inner.ReceivedSerializeContext.ShouldBeNull();
+    }
+
+    [Fact]
+    public void Deserialize_StandaloneInnerType_ContextIsNull()
+    {
+        byte[] bytes = [0xCC];
+        var result = BitSerializerMSB.Deserialize<ContextFlowInner>(bytes);
+
+        result.ReceivedDeserializeContext.ShouldBeNull();
     }
 
     #endregion

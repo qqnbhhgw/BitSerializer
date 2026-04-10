@@ -12,20 +12,26 @@ internal class TypeSerializer<T> : ITypeSerializer where T : IBitSerializable, n
     public object Deserialize(ReadOnlySpan<byte> bytes, bool isMSB)
     {
         var result = new T();
+        var ctx = result.DeserializeContext();
+        result.BeforeDeserialize(ctx, bytes);
         if (isMSB)
-            result.DeserializeMSB(bytes, 0);
+            result.DeserializeMSB(bytes, 0, ctx);
         else
-            result.DeserializeLSB(bytes, 0);
+            result.DeserializeLSB(bytes, 0, ctx);
+        result.AfterDeserialize(ctx, bytes);
         return result;
     }
 
     public void Serialize(object obj, Span<byte> bytes, bool isMSB)
     {
         var typed = (T)obj;
+        var ctx = typed.SerializeContext();
+        typed.BeforeSerialize(ctx, bytes);
         if (isMSB)
-            typed.SerializeMSB(bytes, 0);
+            typed.SerializeMSB(bytes, 0, ctx);
         else
-            typed.SerializeLSB(bytes, 0);
+            typed.SerializeLSB(bytes, 0, ctx);
+        typed.AfterSerialize(ctx, bytes);
     }
 
     public int GetBitLength(object obj) => ((T)obj).GetTotalBitLength();

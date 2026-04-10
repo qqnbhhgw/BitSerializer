@@ -7,7 +7,10 @@ public static class BitSerializerLSB
     public static T Deserialize<T>(ReadOnlySpan<byte> bytes) where T : IBitSerializable, new()
     {
         var result = new T();
-        result.DeserializeLSB(bytes, 0);
+        var ctx = result.DeserializeContext();
+        result.BeforeDeserialize(ctx, bytes);
+        result.DeserializeLSB(bytes, 0, ctx);
+        result.AfterDeserialize(ctx, bytes);
         return result;
     }
 
@@ -30,13 +33,19 @@ public static class BitSerializerLSB
     {
         int totalBits = obj.GetTotalBitLength();
         var bytes = new byte[(totalBits + 7) / 8];
-        obj.SerializeLSB(bytes, 0);
+        var ctx = obj.SerializeContext();
+        obj.BeforeSerialize(ctx, bytes);
+        obj.SerializeLSB(bytes, 0, ctx);
+        obj.AfterSerialize(ctx, bytes);
         return bytes;
     }
 
     public static void Serialize<T>(T obj, Span<byte> bytes) where T : IBitSerializable
     {
-        obj.SerializeLSB(bytes, 0);
+        var ctx = obj.SerializeContext();
+        obj.BeforeSerialize(ctx, bytes);
+        obj.SerializeLSB(bytes, 0, ctx);
+        obj.AfterSerialize(ctx, bytes);
     }
 
     public static byte[] Serialize(object obj, Type type)

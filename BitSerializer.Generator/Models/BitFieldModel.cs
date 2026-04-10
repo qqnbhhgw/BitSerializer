@@ -33,6 +33,7 @@ internal class BitFieldModel
     public bool IsPolymorphic { get; set; }
     public List<PolyMapping>? PolyMappings { get; set; }
     public string? ValueConverterTypeFullName { get; set; }
+    public bool ValueConverterHasContext { get; set; }
     public int PolymorphicBitLength { get; set; }
     public bool IsPotentiallyDynamic { get; set; }
 
