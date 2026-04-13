@@ -542,6 +542,22 @@ object result = BitSerializerMSB.Deserialize(span, typeof(Packet));   // 从 Rea
 
 > **非泛型 API** 适用于编译期无法确定类型的场景（如通过配置或反射动态确定类型），返回 `object`，需自行转换为目标类型。
 
+## 自动发布到 NuGet
+
+仓库内已提供 GitHub Actions 工作流 [`.github/workflows/publish-nuget.yml`](.github/workflows/publish-nuget.yml)，会在推送 `v*` 标签时自动构建、测试、打包并发布到 `nuget.org`。
+
+发布前需要完成一次性配置：
+
+1. 在 `nuget.org` 创建 API Key，并授予推送对应包的权限。
+2. 在 GitHub 仓库中打开 `Settings` -> `Secrets and variables` -> `Actions`。
+3. 新增仓库机密 `NUGET_API_KEY`，值填写上一步的 API Key。
+
+之后每次发布：
+
+1. 更新项目版本号，或直接使用 tag 作为发布版本。
+2. 推送形如 `v0.7.3` 的 Git tag。
+3. GitHub Actions 会自动把包发布到 `https://api.nuget.org/v3/index.json`。
+
 ## 许可证
 
 MIT License

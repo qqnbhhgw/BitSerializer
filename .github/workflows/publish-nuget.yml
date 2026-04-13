@@ -1,0 +1,52 @@
+name: Publish NuGet
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Resolve package version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(grep -oPm1 '(?<=<Version>)[^<]+' BitSerializer/BitSerializer.csproj)"
+          fi
+          echo "package_version=${VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "Using package version: ${VERSION}"
+
+      - name: Restore
+        run: dotnet restore BitSerializerTests/BitSerializerTests.csproj
+
+      - name: Build test project and dependencies
+        run: dotnet build BitSerializerTests/BitSerializerTests.csproj -c Release --no-restore -p:Version=${{ steps.version.outputs.package_version }}
+
+      - name: Test
+        run: dotnet test BitSerializerTests/BitSerializerTests.csproj -c Release --no-build --no-restore
+
+      - name: Pack generator
+        run: dotnet pack BitSerializer.Generator/BitSerializer.Generator.csproj -c Release --no-build --no-restore --output ./artifacts -p:Version=${{ steps.version.outputs.package_version }}
+
+      - name: Pack main package
+        run: dotnet pack BitSerializer/BitSerializer.csproj -c Release --no-build --no-restore --output ./artifacts -p:Version=${{ steps.version.outputs.package_version }}
+
+      - name: Publish to NuGet
+        run: dotnet nuget push "./artifacts/*.nupkg" --api-key "${{ secrets.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
