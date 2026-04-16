@@ -1,0 +1,4 @@
+interface:
+  display_name: "BinarySerializer Migration"
+  short_description: "Migrate BinarySerializer projects to BitSerializer"
+  default_prompt: "Use $binaryserializer-to-bitserializer-migration to migrate this codebase from BinarySerializer to Jlzeng.BitSerializer."
