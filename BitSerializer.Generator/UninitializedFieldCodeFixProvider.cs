@@ -29,24 +29,45 @@ public class UninitializedFieldCodeFixProvider : CodeFixProvider
         var node = root.FindToken(diagnosticSpan.Start).Parent;
         if (node is null) return;
 
-        var propDecl = node.AncestorsAndSelf().OfType<PropertyDeclarationSyntax>().FirstOrDefault();
-        if (propDecl is null) return;
-
         var semanticModel = await context.Document.GetSemanticModelAsync(context.CancellationToken).ConfigureAwait(false);
         if (semanticModel is null) return;
 
-        var propSymbol = semanticModel.GetDeclaredSymbol(propDecl, context.CancellationToken) as IPropertySymbol;
-        if (propSymbol is null) return;
+        // Case 1: property { get; set; }
+        var propDecl = node.AncestorsAndSelf().OfType<PropertyDeclarationSyntax>().FirstOrDefault();
+        if (propDecl is not null)
+        {
+            if (semanticModel.GetDeclaredSymbol(propDecl, context.CancellationToken) is not IPropertySymbol propSymbol)
+                return;
 
-        var initializer = GetDefaultInitializer(propSymbol.Type);
-        if (initializer is null) return;
+            var initializer = GetDefaultInitializer(propSymbol.Type);
+            if (initializer is null) return;
 
-        context.RegisterCodeFix(
-            CodeAction.Create(
-                title: $"Initialize with '{initializer}'",
-                createChangedDocument: ct => AddInitializerAsync(context.Document, propDecl, initializer, ct),
-                equivalenceKey: "AddDefaultInitializer"),
-            diagnostic);
+            context.RegisterCodeFix(
+                CodeAction.Create(
+                    title: $"Initialize with '{initializer}'",
+                    createChangedDocument: ct => AddPropertyInitializerAsync(context.Document, propDecl, initializer, ct),
+                    equivalenceKey: "AddDefaultInitializer"),
+                diagnostic);
+            return;
+        }
+
+        // Case 2: field declaration (public string Name;)
+        var declarator = node.AncestorsAndSelf().OfType<VariableDeclaratorSyntax>().FirstOrDefault();
+        if (declarator is not null && declarator.Parent is VariableDeclarationSyntax { Parent: FieldDeclarationSyntax })
+        {
+            if (semanticModel.GetDeclaredSymbol(declarator, context.CancellationToken) is not IFieldSymbol fieldSymbol)
+                return;
+
+            var initializer = GetDefaultInitializer(fieldSymbol.Type);
+            if (initializer is null) return;
+
+            context.RegisterCodeFix(
+                CodeAction.Create(
+                    title: $"Initialize with '{initializer}'",
+                    createChangedDocument: ct => AddFieldInitializerAsync(context.Document, declarator, initializer, ct),
+                    equivalenceKey: "AddDefaultInitializer"),
+                diagnostic);
+        }
     }
 
     private static string? GetDefaultInitializer(ITypeSymbol type)
@@ -55,14 +76,20 @@ public class UninitializedFieldCodeFixProvider : CodeFixProvider
         if (type.SpecialType == SpecialType.System_String)
             return "\"\"";
 
-        // Array -> []
-        if (type is IArrayTypeSymbol)
-            return "[]";
+        // T[] -> global::System.Array.Empty<T>()  (LangVersion-agnostic; avoids collection expression [])
+        if (type is IArrayTypeSymbol arrayType)
+        {
+            var elem = arrayType.ElementType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            return $"global::System.Array.Empty<{elem}>()";
+        }
 
-        // List<T> -> []
+        // List<T> -> new global::System.Collections.Generic.List<T>()
         if (type is INamedTypeSymbol named && named.IsGenericType &&
             named.ConstructedFrom.ToDisplayString() == "System.Collections.Generic.List<T>")
-            return "[]";
+        {
+            var elem = named.TypeArguments[0].ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            return $"new global::System.Collections.Generic.List<{elem}>()";
+        }
 
         // Other reference types: only offer fix for concrete types with accessible parameterless ctor
         if (type is INamedTypeSymbol namedType && type.IsReferenceType)
@@ -89,7 +116,7 @@ public class UninitializedFieldCodeFixProvider : CodeFixProvider
         return null;
     }
 
-    private static async Task<Document> AddInitializerAsync(
+    private static async Task<Document> AddPropertyInitializerAsync(
         Document document, PropertyDeclarationSyntax propDecl, string initializer, CancellationToken ct)
     {
         var initializerExpr = SyntaxFactory.ParseExpression(initializer)
@@ -99,15 +126,25 @@ public class UninitializedFieldCodeFixProvider : CodeFixProvider
         var equalsClause = SyntaxFactory.EqualsValueClause(initializerExpr)
             .WithLeadingTrivia(SyntaxFactory.Space);
 
-        // Replace the accessor list's trailing newline/whitespace with a single space
-        // so that the initializer stays on the same line as "{ get; set; }"
+        // Try to keep "{ get; set; } = xxx;" on one line, but ONLY collapse whitespace/newline —
+        // never drop comments or preprocessor directives that trail the close brace.
         var newPropDecl = propDecl;
         if (propDecl.AccessorList != null)
         {
             var closeBrace = propDecl.AccessorList.CloseBraceToken;
-            var newCloseBrace = closeBrace.WithTrailingTrivia(SyntaxTriviaList.Empty);
-            newPropDecl = newPropDecl.WithAccessorList(
-                propDecl.AccessorList.WithCloseBraceToken(newCloseBrace));
+            var trailing = closeBrace.TrailingTrivia;
+            bool hasSignificantTrivia = trailing.Any(t =>
+                !t.IsKind(SyntaxKind.WhitespaceTrivia) &&
+                !t.IsKind(SyntaxKind.EndOfLineTrivia));
+
+            if (!hasSignificantTrivia)
+            {
+                var newCloseBrace = closeBrace.WithTrailingTrivia(SyntaxTriviaList.Empty);
+                newPropDecl = newPropDecl.WithAccessorList(
+                    propDecl.AccessorList.WithCloseBraceToken(newCloseBrace));
+            }
+            // Else: leave trivia (comments, directives) intact — initializer may land on next line,
+            // which is ugly but preserves the user's source.
         }
 
         newPropDecl = newPropDecl
@@ -116,6 +153,24 @@ public class UninitializedFieldCodeFixProvider : CodeFixProvider
 
         var root = await document.GetSyntaxRootAsync(ct).ConfigureAwait(false);
         var newRoot = root!.ReplaceNode(propDecl, newPropDecl);
+        return document.WithSyntaxRoot(newRoot);
+    }
+
+    private static async Task<Document> AddFieldInitializerAsync(
+        Document document, VariableDeclaratorSyntax declarator, string initializer, CancellationToken ct)
+    {
+        var initializerExpr = SyntaxFactory.ParseExpression(initializer)
+            .WithoutLeadingTrivia()
+            .WithoutTrailingTrivia();
+
+        var equalsClause = SyntaxFactory.EqualsValueClause(initializerExpr)
+            .WithLeadingTrivia(SyntaxFactory.Space)
+            .WithEqualsToken(SyntaxFactory.Token(SyntaxFactory.TriviaList(), SyntaxKind.EqualsToken, SyntaxFactory.TriviaList(SyntaxFactory.Space)));
+
+        var newDeclarator = declarator.WithInitializer(equalsClause);
+
+        var root = await document.GetSyntaxRootAsync(ct).ConfigureAwait(false);
+        var newRoot = root!.ReplaceNode(declarator, newDeclarator);
         return document.WithSyntaxRoot(newRoot);
     }
 }
