@@ -164,6 +164,28 @@ internal static class DeserializerEmitter
             }
         }
 
+        // Emit CRC validation blocks for groups with ValidateOnDeserialize=true
+        foreach (var crc in model.CrcGroups)
+        {
+            if (!crc.ValidateOnDeserialize) continue;
+            var crcField = model.Fields.Find(f => f.MemberName == crc.TargetFieldName);
+            if (crcField == null) continue;
+            sb.AppendLine("        {");
+            sb.AppendLine($"            int _crcStart = (bitOffset / 8) + {crc.IncludeStartByte};");
+            sb.AppendLine($"            int _crcEnd   = (bitOffset / 8) + {crc.IncludeEndByte};");
+            sb.AppendLine($"            var _crcAlgo = new {crc.AlgorithmTypeFullName}();");
+            sb.AppendLine($"            _crcAlgo.Reset({crc.InitialValue}UL);");
+            sb.AppendLine("            _crcAlgo.Update(bytes.Slice(_crcStart, _crcEnd - _crcStart));");
+            string castType = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName;
+            sb.AppendLine($"            {castType} _crcExpected = ({castType})_crcAlgo.Result;");
+            string actualExpr = crcField.IsEnum
+                ? $"({castType})this.{crcField.MemberName}"
+                : $"this.{crcField.MemberName}";
+            sb.AppendLine($"            if ({actualExpr} != _crcExpected)");
+            sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC mismatch on '{crcField.MemberName}': expected 0x{{_crcExpected:X}} but read 0x{{{actualExpr}:X}}\");");
+            sb.AppendLine("        }");
+        }
+
         if (runtimeOffsetVar is not null)
         {
             string returnExpr = runtimeOffsetVar;
@@ -220,6 +242,53 @@ internal static class DeserializerEmitter
         string ctxArg = hasCtx ? "_elemCtx" : "context";
 
         var ibsElem = $"(global::BitSerializer.IBitSerializable)_elem";
+
+        // [BitFieldConsumeRemaining]: read until end of buffer
+        if (field.ConsumeRemaining)
+        {
+            sb.AppendLine($"        int _crStart_{field.MemberName} = {offsetExpr};");
+            sb.AppendLine($"        int _crRemainBits_{field.MemberName} = bytes.Length * 8 - _crStart_{field.MemberName};");
+            sb.AppendLine($"        int _crCount_{field.MemberName} = _crRemainBits_{field.MemberName} > 0 ? _crRemainBits_{field.MemberName} / {elemBits} : 0;");
+            if (field.IsArray)
+                sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[_crCount_{field.MemberName}];");
+            else
+                sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>(_crCount_{field.MemberName});");
+            sb.AppendLine($"        int {bitIndexVar} = _crStart_{field.MemberName};");
+            sb.AppendLine($"        for (int _i = 0; _i < _crCount_{field.MemberName}; _i++)");
+            sb.AppendLine("        {");
+            if (field.IsArray)
+                sb.AppendLine($"            {memberAccess}[_i] = {helper}.ValueLength<{elemTypeFullName}>(bytes, {bitIndexVar}, {elemBits});");
+            else
+                sb.AppendLine($"            {memberAccess}.Add({helper}.ValueLength<{elemTypeFullName}>(bytes, {bitIndexVar}, {elemBits}));");
+            sb.AppendLine($"            {bitIndexVar} += {elemBits};");
+            sb.AppendLine("        }");
+            return;
+        }
+
+        // [BitFieldCount(N, PadIfShort=true)]: read up to N, pad with default if data is short
+        if (field.PadIfShort && field.FixedCount.HasValue)
+        {
+            int byteSize = field.FixedCount.Value * elemBits / 8;
+            sb.AppendLine($"        int _pfsAvailBits_{field.MemberName} = bytes.Length * 8 - ({offsetExpr});");
+            sb.AppendLine($"        int _pfsAvailElems_{field.MemberName} = _pfsAvailBits_{field.MemberName} > 0 ? _pfsAvailBits_{field.MemberName} / {elemBits} : 0;");
+            sb.AppendLine($"        if (_pfsAvailElems_{field.MemberName} > {field.FixedCount.Value}) _pfsAvailElems_{field.MemberName} = {field.FixedCount.Value};");
+            if (field.IsArray)
+                sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[{field.FixedCount.Value}];");
+            else
+            {
+                sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({field.FixedCount.Value});");
+                sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++) {memberAccess}.Add(default({elemTypeFullName}));");
+            }
+            sb.AppendLine($"        for (int _i = 0; _i < _pfsAvailElems_{field.MemberName}; _i++)");
+            sb.AppendLine("        {");
+            if (field.IsArray)
+                sb.AppendLine($"            {memberAccess}[_i] = {helper}.ValueLength<{elemTypeFullName}>(bytes, {offsetExpr} + _i * {elemBits}, {elemBits});");
+            else
+                sb.AppendLine($"            {memberAccess}[_i] = {helper}.ValueLength<{elemTypeFullName}>(bytes, {offsetExpr} + _i * {elemBits}, {elemBits});");
+            sb.AppendLine("        }");
+            sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {field.FixedCount.Value * elemBits};");
+            return;
+        }
 
         if (field.ListElementIsManualBitSerializable)
         {

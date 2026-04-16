@@ -195,6 +195,29 @@ internal static class SerializerEmitter
             }
         }
 
+        // Emit CRC computation blocks (one per CRC group). This runs AFTER all fields are serialized,
+        // so the CRC result overwrites whatever the initial field value produced.
+        foreach (var crc in model.CrcGroups)
+        {
+            var crcField = model.Fields.Find(f => f.MemberName == crc.TargetFieldName);
+            if (crcField == null) continue;
+            string crcOffsetExpr = BuildCrcFieldOffsetExpr(crcField, runtimeOffsetVar, runtimeStaticEnd);
+            sb.AppendLine("        {");
+            sb.AppendLine($"            int _crcStart = (bitOffset / 8) + {crc.IncludeStartByte};");
+            sb.AppendLine($"            int _crcEnd   = (bitOffset / 8) + {crc.IncludeEndByte};");
+            sb.AppendLine($"            var _crcAlgo = new {crc.AlgorithmTypeFullName}();");
+            sb.AppendLine($"            _crcAlgo.Reset({crc.InitialValue}UL);");
+            sb.AppendLine("            _crcAlgo.Update(bytes.Slice(_crcStart, _crcEnd - _crcStart));");
+            string castType = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName;
+            sb.AppendLine($"            {castType} _crcVal = ({castType})_crcAlgo.Result;");
+            sb.AppendLine($"            {helper}.SetValueLength<{castType}>(bytes, {crcOffsetExpr}, {crc.CrcFieldBitLength}, _crcVal);");
+            if (!crcField.IsEnum)
+                sb.AppendLine($"            this.{crcField.MemberName} = _crcVal;");
+            else
+                sb.AppendLine($"            this.{crcField.MemberName} = ({crcField.MemberTypeFullName})_crcVal;");
+            sb.AppendLine("        }");
+        }
+
         if (runtimeOffsetVar is not null)
         {
             string returnExpr = runtimeOffsetVar;
@@ -210,6 +233,14 @@ internal static class SerializerEmitter
 
         sb.AppendLine("    }");
         return sb.ToString();
+    }
+
+    private static string BuildCrcFieldOffsetExpr(BitFieldModel crcField, string? runtimeOffsetVar, int runtimeStaticEnd)
+    {
+        if (runtimeOffsetVar is null)
+            return $"bitOffset + {crcField.BitStartIndex}";
+        int diff = crcField.BitStartIndex - runtimeStaticEnd;
+        return diff == 0 ? runtimeOffsetVar : $"{runtimeOffsetVar} + {diff}";
     }
 
     public static string EmitDelegationMethod(TypeModel model, string bitOrder)
@@ -249,6 +280,34 @@ internal static class SerializerEmitter
         string ctxArg = hasCtx ? "_elemCtx" : "context";
 
         var ibsElem = $"(global::BitSerializer.IBitSerializable){memberAccess}[_i]";
+
+        // [BitFieldConsumeRemaining]: write array.Length elements (dynamic)
+        if (field.ConsumeRemaining)
+        {
+            var lenProp = field.IsArray ? "Length" : "Count";
+            sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
+            sb.AppendLine($"        int _listCount_{field.MemberName} = {memberAccess}?.{lenProp} ?? 0;");
+            sb.AppendLine($"        for (int _i = 0; _i < _listCount_{field.MemberName}; _i++)");
+            sb.AppendLine("        {");
+            sb.AppendLine($"            {helper}.SetValueLength<{field.ListElementTypeFullName}>(bytes, {bitIndexVar}, {elemBits}, {memberAccess}[_i]);");
+            sb.AppendLine($"            {bitIndexVar} += {elemBits};");
+            sb.AppendLine("        }");
+            return;
+        }
+
+        // [BitFieldCount(N, PadIfShort=true)]: always write N elements, pad trailing with default
+        if (field.PadIfShort && field.FixedCount.HasValue)
+        {
+            var lenProp = field.IsArray ? "Length" : "Count";
+            sb.AppendLine($"        int _padLen_{field.MemberName} = {memberAccess}?.{lenProp} ?? 0;");
+            sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
+            sb.AppendLine("        {");
+            sb.AppendLine($"            {field.ListElementTypeFullName} _padVal_{field.MemberName} = _i < _padLen_{field.MemberName} ? {memberAccess}[_i] : default({field.ListElementTypeFullName});");
+            sb.AppendLine($"            {helper}.SetValueLength<{field.ListElementTypeFullName}>(bytes, {offsetExpr} + _i * {elemBits}, {elemBits}, _padVal_{field.MemberName});");
+            sb.AppendLine("        }");
+            sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {field.FixedCount.Value * elemBits};");
+            return;
+        }
 
         if (field.ListElementIsManualBitSerializable)
         {

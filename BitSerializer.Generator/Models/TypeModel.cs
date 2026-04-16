@@ -20,6 +20,43 @@ internal class ContainingTypeInfo : IEquatable<ContainingTypeInfo>
     public override int GetHashCode() => Name.GetHashCode();
 }
 
+internal class CrcGroup : IEquatable<CrcGroup>
+{
+    public string TargetFieldName { get; set; } = "";
+    public string AlgorithmTypeFullName { get; set; } = "";
+    public int BitWidth { get; set; }
+    public ulong InitialValue { get; set; }
+    public bool ValidateOnDeserialize { get; set; }
+    /// <summary>Bit offset (within this type) of the CRC result field.</summary>
+    public int CrcFieldBitOffset { get; set; }
+    /// <summary>Bit length of the CRC result field.</summary>
+    public int CrcFieldBitLength { get; set; }
+    /// <summary>Primitive numeric type name of the CRC result field (e.g., "ushort", "uint").</summary>
+    public string CrcFieldTypeName { get; set; } = "";
+    /// <summary>Byte offset of the start of the included range (within this type's serialized bytes).</summary>
+    public int IncludeStartByte { get; set; }
+    /// <summary>Byte offset one past the end of the included range.</summary>
+    public int IncludeEndByte { get; set; }
+
+    public bool Equals(CrcGroup? other)
+    {
+        if (other is null) return false;
+        return TargetFieldName == other.TargetFieldName
+            && AlgorithmTypeFullName == other.AlgorithmTypeFullName
+            && BitWidth == other.BitWidth
+            && InitialValue == other.InitialValue
+            && ValidateOnDeserialize == other.ValidateOnDeserialize
+            && CrcFieldBitOffset == other.CrcFieldBitOffset
+            && CrcFieldBitLength == other.CrcFieldBitLength
+            && CrcFieldTypeName == other.CrcFieldTypeName
+            && IncludeStartByte == other.IncludeStartByte
+            && IncludeEndByte == other.IncludeEndByte;
+    }
+
+    public override bool Equals(object? obj) => Equals(obj as CrcGroup);
+    public override int GetHashCode() => TargetFieldName.GetHashCode();
+}
+
 internal class TypeModel : IEquatable<TypeModel>
 {
     public string Namespace { get; set; } = "";
@@ -54,6 +91,11 @@ internal class TypeModel : IEquatable<TypeModel>
     /// </summary>
     public bool BaseHasDynamicLength { get; set; }
 
+    /// <summary>
+    /// CRC groups aggregated from [BitCrc] and [BitCrcInclude] attributes.
+    /// </summary>
+    public List<CrcGroup> CrcGroups { get; set; } = new();
+
     public bool Equals(TypeModel? other)
     {
         if (other is null) return false;
@@ -64,7 +106,9 @@ internal class TypeModel : IEquatable<TypeModel>
             && BaseBitLength == other.BaseBitLength
             && BaseHasDynamicLength == other.BaseHasDynamicLength
             && Fields.Count == other.Fields.Count
-            && Fields.SequenceEqual(other.Fields, BitFieldModelComparer.Instance);
+            && Fields.SequenceEqual(other.Fields, BitFieldModelComparer.Instance)
+            && CrcGroups.Count == other.CrcGroups.Count
+            && CrcGroups.SequenceEqual(other.CrcGroups);
     }
 
     public override bool Equals(object? obj) => Equals(obj as TypeModel);
@@ -113,7 +157,14 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.ListElementIsTypeParameter == y.ListElementIsTypeParameter
             && x.ListElementHasDynamicLength == y.ListElementHasDynamicLength
             && x.ListElementHasOwnContext == y.ListElementHasOwnContext
-            && x.NestedHasOwnContext == y.NestedHasOwnContext;
+            && x.NestedHasOwnContext == y.NestedHasOwnContext
+            && x.IsCrcResult == y.IsCrcResult
+            && x.CrcAlgorithmTypeFullName == y.CrcAlgorithmTypeFullName
+            && x.CrcInitialValue == y.CrcInitialValue
+            && x.CrcValidateOnDeserialize == y.CrcValidateOnDeserialize
+            && x.CrcTargetFieldName == y.CrcTargetFieldName
+            && x.PadIfShort == y.PadIfShort
+            && x.ConsumeRemaining == y.ConsumeRemaining;
     }
 
     public int GetHashCode(BitFieldModel obj) => obj.MemberName.GetHashCode();

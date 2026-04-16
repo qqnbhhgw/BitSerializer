@@ -63,4 +63,19 @@ internal class BitFieldModel
 
     // Whether a nested (non-list) type declares its own SerializeContext/DeserializeContext methods
     public bool NestedHasOwnContext { get; set; }
+
+    // CRC result field ([BitCrc]): this field will be auto-filled after serialization
+    public bool IsCrcResult { get; set; }
+    public string? CrcAlgorithmTypeFullName { get; set; }
+    public ulong CrcInitialValue { get; set; }
+    public bool CrcValidateOnDeserialize { get; set; }
+
+    // CRC include ([BitCrcInclude]): this field participates in a CRC calculation
+    public string? CrcTargetFieldName { get; set; }
+
+    // [BitFieldCount(N, PadIfShort=true)]: serialize always writes N, deserialize pads short data
+    public bool PadIfShort { get; set; }
+
+    // [BitFieldConsumeRemaining]: dynamic-length list/array consuming remaining bytes
+    public bool ConsumeRemaining { get; set; }
 }

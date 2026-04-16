@@ -115,6 +115,9 @@ internal static class TypeAnalyzer
         members.AddRange(GetSerializableMembers(symbol));
         int currentBitIndex = baseBitLength;
 
+        // Track CRC algorithm symbols per member name so we can validate after the field loop
+        var crcAlgoByField = new Dictionary<string, INamedTypeSymbol?>();
+
         foreach (var member in members)
         {
             ct.ThrowIfCancellationRequested();
@@ -293,6 +296,49 @@ internal static class TypeAnalyzer
             if (countAttr != null && countAttr.ConstructorArguments.Length > 0)
             {
                 field.FixedCount = (int)countAttr.ConstructorArguments[0].Value!;
+                foreach (var named in countAttr.NamedArguments)
+                {
+                    if (named.Key == "PadIfShort" && named.Value.Value is bool padVal)
+                        field.PadIfShort = padVal;
+                }
+            }
+
+            // Check for [BitCrc]
+            var crcAttr = GetAttribute(member, "BitSerializer.BitCrcAttribute");
+            if (crcAttr != null && crcAttr.ConstructorArguments.Length > 0)
+            {
+                field.IsCrcResult = true;
+                var algoType = crcAttr.ConstructorArguments[0].Value as INamedTypeSymbol;
+                crcAlgoByField[member.Name] = algoType;
+                field.CrcAlgorithmTypeFullName = algoType?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) ?? "";
+                foreach (var named in crcAttr.NamedArguments)
+                {
+                    if (named.Key == "InitialValue")
+                    {
+                        if (named.Value.Value is ulong u) field.CrcInitialValue = u;
+                        else if (named.Value.Value is long l) field.CrcInitialValue = unchecked((ulong)l);
+                        else if (named.Value.Value is int i) field.CrcInitialValue = unchecked((ulong)i);
+                        else if (named.Value.Value is uint ui) field.CrcInitialValue = ui;
+                    }
+                    else if (named.Key == "ValidateOnDeserialize" && named.Value.Value is bool b)
+                    {
+                        field.CrcValidateOnDeserialize = b;
+                    }
+                }
+            }
+
+            // Check for [BitCrcInclude]
+            var crcIncludeAttr = GetAttribute(member, "BitSerializer.BitCrcIncludeAttribute");
+            if (crcIncludeAttr != null && crcIncludeAttr.ConstructorArguments.Length > 0)
+            {
+                field.CrcTargetFieldName = crcIncludeAttr.ConstructorArguments[0].Value as string;
+            }
+
+            // Check for [BitFieldConsumeRemaining]
+            if (GetAttribute(member, "BitSerializer.BitFieldConsumeRemainingAttribute") != null)
+            {
+                field.ConsumeRemaining = true;
+                model.HasDynamicLength = true;
             }
 
             // Check for BitPoly
@@ -534,7 +580,264 @@ internal static class TypeAnalyzer
         }
 
         model.TotalBitLength = currentBitIndex;
+
+        // Validate PadIfShort: requires primitive element type
+        foreach (var f in model.Fields)
+        {
+            if (f.PadIfShort)
+            {
+                if (!f.IsList || f.ListElementIsNested || f.ListElementIsManualBitSerializable || f.ListElementIsTypeParameter)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.PadIfShortMustBePrimitiveElement,
+                            symbol.Locations.FirstOrDefault(),
+                            f.MemberName, symbol.Name)
+                    };
+                }
+            }
+        }
+
+        // Validate ConsumeRemaining: must be on last field, list element must be primitive
+        {
+            int lastConsumeIdx = -1;
+            for (int i = 0; i < model.Fields.Count; i++)
+            {
+                if (model.Fields[i].ConsumeRemaining) lastConsumeIdx = i;
+            }
+            if (lastConsumeIdx >= 0)
+            {
+                var f = model.Fields[lastConsumeIdx];
+                bool invalid = lastConsumeIdx != model.Fields.Count - 1
+                    || !f.IsList
+                    || f.ListElementIsNested
+                    || f.ListElementIsManualBitSerializable
+                    || f.ListElementIsTypeParameter;
+                if (invalid)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.ConsumeRemainingMustBeLast,
+                            symbol.Locations.FirstOrDefault(),
+                            f.MemberName, symbol.Name)
+                    };
+                }
+            }
+        }
+
+        // Aggregate CRC groups and validate
+        {
+            var includesByTarget = new Dictionary<string, List<BitFieldModel>>();
+            foreach (var f in model.Fields)
+            {
+                if (f.CrcTargetFieldName != null)
+                {
+                    if (!includesByTarget.TryGetValue(f.CrcTargetFieldName, out var list))
+                    {
+                        list = new List<BitFieldModel>();
+                        includesByTarget[f.CrcTargetFieldName] = list;
+                    }
+                    list.Add(f);
+                }
+            }
+
+            foreach (var crcField in model.Fields)
+            {
+                if (!crcField.IsCrcResult) continue;
+
+                // Validate CRC field byte alignment
+                if ((crcField.BitStartIndex % 8) != 0 || (crcField.BitLength % 8) != 0 || crcField.BitLength == 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.CrcFieldMustBeByteAligned,
+                            symbol.Locations.FirstOrDefault(),
+                            crcField.MemberName, symbol.Name)
+                    };
+                }
+
+                // Resolve algorithm type and validate IBitCrcAlgorithm implementation
+                crcAlgoByField.TryGetValue(crcField.MemberName, out var algoSym);
+                int algoBitWidth = 0;
+                if (algoSym == null
+                    || !algoSym.AllInterfaces.Any(i => i.ToDisplayString() == "BitSerializer.IBitCrcAlgorithm")
+                    || !algoSym.InstanceConstructors.Any(c => c.Parameters.Length == 0 && c.DeclaredAccessibility == Accessibility.Public))
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.CrcAlgorithmInvalid,
+                            symbol.Locations.FirstOrDefault(),
+                            crcField.MemberName, algoSym?.Name ?? "<unknown>")
+                    };
+                }
+                // Try to read BitWidth from a literal property getter if possible; otherwise assume matches field length
+                algoBitWidth = TryGetCrcBitWidth(algoSym) ?? crcField.BitLength;
+                if (algoBitWidth != crcField.BitLength)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.CrcFieldMustBeByteAligned,
+                            symbol.Locations.FirstOrDefault(),
+                            crcField.MemberName, symbol.Name)
+                    };
+                }
+
+                // Validate include range: contiguous + byte-aligned
+                if (!includesByTarget.TryGetValue(crcField.MemberName, out var includes) || includes.Count == 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.CrcIncludeRangeInvalid,
+                            symbol.Locations.FirstOrDefault(),
+                            crcField.MemberName, symbol.Name)
+                    };
+                }
+
+                // Sort by BitStartIndex
+                var ordered = includes.OrderBy(x => x.BitStartIndex).ToList();
+                int curBit = ordered[0].BitStartIndex;
+                if ((curBit % 8) != 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.CrcIncludeRangeInvalid,
+                            symbol.Locations.FirstOrDefault(),
+                            crcField.MemberName, symbol.Name)
+                    };
+                }
+                int rangeStartBit = curBit;
+                foreach (var inc in ordered)
+                {
+                    if (inc.BitStartIndex != curBit)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.CrcIncludeRangeInvalid,
+                                symbol.Locations.FirstOrDefault(),
+                                crcField.MemberName, symbol.Name)
+                        };
+                    }
+                    // Determine effective bit length (dynamic fields are not supported for CRC include in v1)
+                    int incBits = GetIncludeFieldStaticBits(inc);
+                    if (incBits < 0)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.CrcIncludeRangeInvalid,
+                                symbol.Locations.FirstOrDefault(),
+                                crcField.MemberName, symbol.Name)
+                        };
+                    }
+                    curBit += incBits;
+                }
+                if ((curBit % 8) != 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.CrcIncludeRangeInvalid,
+                            symbol.Locations.FirstOrDefault(),
+                            crcField.MemberName, symbol.Name)
+                    };
+                }
+
+                model.CrcGroups.Add(new CrcGroup
+                {
+                    TargetFieldName = crcField.MemberName,
+                    AlgorithmTypeFullName = crcField.CrcAlgorithmTypeFullName ?? "",
+                    BitWidth = crcField.BitLength,
+                    InitialValue = crcField.CrcInitialValue,
+                    ValidateOnDeserialize = crcField.CrcValidateOnDeserialize,
+                    CrcFieldBitOffset = crcField.BitStartIndex,
+                    CrcFieldBitLength = crcField.BitLength,
+                    CrcFieldTypeName = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName,
+                    IncludeStartByte = rangeStartBit / 8,
+                    IncludeEndByte = curBit / 8
+                });
+            }
+
+            // Validate every [BitCrcInclude] references a valid [BitCrc] result field
+            foreach (var kvp in includesByTarget)
+            {
+                var target = model.Fields.Find(f => f.MemberName == kvp.Key && f.IsCrcResult);
+                if (target == null)
+                {
+                    var firstInclude = kvp.Value[0];
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.CrcTargetFieldNotFound,
+                            symbol.Locations.FirstOrDefault(),
+                            firstInclude.MemberName, kvp.Key, symbol.Name)
+                    };
+                }
+            }
+        }
+
         return new AnalyzeResult { Model = model };
+    }
+
+    /// <summary>
+    /// Returns the effective static bit length of a field participating in a CRC include range,
+    /// or -1 if the field has dynamic or unknown length (disallowed for CRC include in v1).
+    /// </summary>
+    private static int GetIncludeFieldStaticBits(BitFieldModel f)
+    {
+        if (f.IsTerminatedString) return -1;
+        if (f.IsTypeParameter) return -1;
+        if (f.IsPotentiallyDynamic) return -1;
+        if (f.IsList)
+        {
+            if (f.ConsumeRemaining) return -1;
+            if (!f.FixedCount.HasValue) return -1;
+            if (f.ListElementHasDynamicLength) return -1;
+            if (f.ListElementBitLength == 0) return -1;
+            return f.FixedCount.Value * f.ListElementBitLength;
+        }
+        return f.BitLength;
+    }
+
+    /// <summary>
+    /// Attempts to read a constant BitWidth from the algorithm type. Returns null if non-literal.
+    /// </summary>
+    private static int? TryGetCrcBitWidth(INamedTypeSymbol algoSym)
+    {
+        // Walk declared properties named BitWidth with an expression-bodied getter returning an int literal
+        foreach (var m in algoSym.GetMembers("BitWidth"))
+        {
+            if (m is IPropertySymbol prop)
+            {
+                foreach (var sr in prop.DeclaringSyntaxReferences)
+                {
+                    var syn = sr.GetSyntax();
+                    // Look for "=> <int literal>" or "{ get { return <literal>; } }"
+                    var text = syn.ToString();
+                    // Cheap heuristic: match "=> 16" or "=> 32"
+                    var idx = text.IndexOf("=>");
+                    if (idx >= 0)
+                    {
+                        var tail = text.Substring(idx + 2).Trim().TrimEnd(';', '}').Trim();
+                        if (int.TryParse(tail, out var v)) return v;
+                    }
+                    var retIdx = text.IndexOf("return");
+                    if (retIdx >= 0)
+                    {
+                        var tail = text.Substring(retIdx + 6).Trim().TrimEnd(';', '}').Trim();
+                        if (int.TryParse(tail, out var v)) return v;
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private static IReadOnlyList<ISymbol> GetSerializableMembers(INamedTypeSymbol typeSymbol)
