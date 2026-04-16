@@ -1,6 +1,6 @@
 ---
 name: binaryserializer-to-bitserializer-migration
-description: Migrate C# code from jefffhaynes/BinarySerializer to Jlzeng.BitSerializer. Use when a repository contains BinarySerializer usage (BinarySerializer class, IBinarySerializable, FieldOrder/FieldLength/FieldBitLength/FieldCount/Subtype/SerializeWhen/FieldEndianness attributes) and needs equivalent BitSerializer models ([BitSerialize], [BitField], BitSerializerMSB/BitSerializerLSB) plus explicit fallback patterns for unsupported features.
+description: Migrate C# code from jefffhaynes/BinarySerializer to Jlzeng.BitSerializer. Use when a repository contains BinarySerializer usage (BinarySerializer class, IBinarySerializable, FieldOrder/FieldLength/FieldBitLength/FieldCount/FieldCrc16/FieldCrc32/Subtype/SerializeWhen/FieldEndianness attributes) and needs equivalent BitSerializer models ([BitSerialize], [BitField], [BitCrc]/[BitCrcInclude], [BitFieldCount(PadIfShort=true)], [BitFieldConsumeRemaining], BitSerializerMSB/BitSerializerLSB) plus explicit fallback patterns for unsupported features.
 ---
 
 # BinarySerializer -> BitSerializer Migration
@@ -46,11 +46,22 @@ For each serialized model:
 For collections:
 - Prefer `[BitFieldRelated(nameof(CountField))]` for dynamic count.
 - Use `[BitFieldCount(n)]` for fixed count.
+- Use `[BitFieldCount(n, PadIfShort = true)]` when the wire slot is fixed-size but the payload may be shorter (e.g. BTM 276-byte buffers with variable real data). Serialize writes N elements (padding with default); deserialize pads missing tail when the stream is short.
+- Use `[BitFieldConsumeRemaining]` for a trailing primitive-element array/list that should read until end-of-buffer. Must be the last field; element type must be numeric or enum.
 
 For polymorphism:
 - Keep discriminator field as a normal `[BitField(...)]`.
 - Mark payload with `[BitField] + [BitFieldRelated(nameof(Discriminator))] + [BitPoly(...)]`.
 - Provide explicit max bit length on payload field when needed.
+
+For CRC / checksum fields (replaces `[FieldCrc16]` / `[FieldCrc32]`):
+- Mark the result field with `[BitCrc(typeof(CrcCcitt))]` (or `Crc16Arc` / `Crc32`, all in `BitSerializer.CrcAlgorithms`).
+- Mark each participating field with `[BitCrcInclude(nameof(TargetCrcField))]`.
+- Source generator computes and writes the CRC after all fields are serialized, and backfills the property.
+- Optional `InitialValue = ...` and `ValidateOnDeserialize = true` for both directions.
+- Include range must be contiguous and byte-aligned at both ends; the CRC field itself must be byte-aligned. Violations surface as `BITS015`–`BITS018`.
+- For algorithms not in the box, implement `IBitCrcAlgorithm` (`BitWidth`, `Reset(initialValue)`, `Update(ReadOnlySpan<byte>)`, `Result`). Algorithm type needs a public parameterless constructor.
+- Nested CRCs (outer frame wrapping inner CRC'd content) work out of the box: inner computes first during its own serialize call, outer reads the finalized inner bytes.
 
 ## 4. Apply attribute-by-attribute migration
 
@@ -59,8 +70,10 @@ Use [references/migration-matrix.md](references/migration-matrix.md) as the sour
 Do not force one-to-one rewrites when semantics differ. Prefer:
 - Count-prefixed collections instead of sentinel termination.
 - Global MSB/LSB mode choice instead of per-field bit order/endianness.
-- `IBitFieldValueConverter` and lifecycle hooks for value transforms and checks.
-- Manual `IBitSerializable` for offsets, alignment, deferred stream sections, or conditional wire layout.
+- `[BitCrc]` + `[BitCrcInclude]` for CRC fields (no manual offsets, no `AfterSerialize` hook).
+- `[BitFieldCount(n, PadIfShort = true)]` / `[BitFieldConsumeRemaining]` for zero-padded or trailing variable-length buffers (no manual zero-fill in outer frame).
+- `IBitFieldValueConverter` and lifecycle hooks for value transforms and non-CRC side effects.
+- Manual `IBitSerializable` only for offsets, alignment, deferred stream sections, or conditional wire layout that can't be expressed declaratively.
 
 ## 5. Recreate custom serializers and converters
 
