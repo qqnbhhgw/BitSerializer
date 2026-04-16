@@ -164,4 +164,20 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor CrcFieldCannotCombineWithConverterOrRelated = new(
+        "BITS021",
+        "[BitCrc] cannot combine with [BitFieldRelated] on the same field",
+        "[BitCrc] field '{0}' in '{1}' also has [BitFieldRelated]; the CRC computation would overwrite the converter/related-field output. Remove one of the two attributes.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor CrcInTypeWithDynamicBase = new(
+        "BITS022",
+        "[BitCrc] not allowed when the [BitSerialize] base type is dynamic-length",
+        "Type '{0}' uses [BitCrc] but its [BitSerialize] base type has dynamic length (terminated string, type parameter, or dynamic list). CRC byte offsets would drift at runtime. Move the CRC into the base type, or make the base static-length.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

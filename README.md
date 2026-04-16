@@ -14,6 +14,8 @@
 - **自定义序列化类型** — 支持实现 `IBitSerializable` 接口的自定义类型，无需 `[BitSerialize]` 标记
 - **泛型类型参数** — 支持泛型类型参数字段的序列化，通过 `IBitSerializable` 接口在运行时分发
 - **集合支持** — 支持 `List<T>` / `T[]` 的序列化，元素数量可动态关联或固定指定
+- **数组短包/剩余字节** — `[BitFieldCount(N, PadIfShort=true)]` 短数据自动补零；`[BitFieldConsumeRemaining]` 读取直到数据末尾
+- **声明式 CRC** — `[BitCrc]` + `[BitCrcInclude]` 自动计算并回填 CRC 字段，内置 CRC-CCITT / CRC-16/ARC / CRC-32
 - **自动回填关联字段** — 序列化时自动将集合长度写入关联的计数字段、将运行时类型写入多态判别字段，无需手动设置
 - **多态类型** — 通过类型判别字段自动分发到具体子类
 - **值转换器** — 支持自定义序列化/反序列化时的值变换，支持上下文感知重载
@@ -288,6 +290,86 @@ public class FixedList
 }
 ```
 
+### 数组短包与消费剩余字节
+
+针对定长缓冲但实际数据可能更短的场景（如 ATP BTM 报文：固定 276 字节但空报文为 0 字节）：
+
+```csharp
+[BitSerialize]
+public partial class BtmPacket
+{
+    [BitField(8)]
+    public byte Kind { get; set; }
+
+    // 序列化：始终写入 276 字节；实际数据不足时末尾补 0
+    // 反序列化：流不足 276 字节时读取实际可用部分，剩余填 default(T)
+    [BitField]
+    [BitFieldCount(276, PadIfShort = true)]
+    public byte[] BtmBytes { get; set; } = [];
+}
+```
+
+对于尾部变长数组，使用 `[BitFieldConsumeRemaining]`（必须是末尾字段，元素必须是基本数值/枚举类型）：
+
+```csharp
+[BitSerialize]
+public partial class Frame
+{
+    [BitField(8)] public byte Marker { get; set; }
+    [BitField(16)] public ushort Kind { get; set; }
+
+    // 序列化：按 array.Length 写入实际长度
+    // 反序列化：从当前位置读到 bytes 末尾
+    [BitField]
+    [BitFieldConsumeRemaining]
+    public byte[] Trailing { get; set; } = [];
+}
+```
+
+### 声明式 CRC
+
+`[BitCrc]` 标注 CRC 结果字段，`[BitCrcInclude]` 标注参与计算的字段。源码生成器在所有字段序列化完成后自动计算 CRC 并回填结果字段，无需 `AfterSerialize` 钩子或硬编码字节偏移：
+
+```csharp
+using BitSerializer;
+using BitSerializer.CrcAlgorithms;
+
+[BitSerialize]
+public partial class Frame
+{
+    [BitField(8)]
+    public byte Start { get; set; } = 0x7E;
+
+    [BitField(8), BitCrcInclude(nameof(Crc))]
+    public byte DestAddr { get; set; }
+
+    [BitField(8), BitCrcInclude(nameof(Crc))]
+    public byte SrcAddr { get; set; }
+
+    [BitField, BitFieldCount(8, PadIfShort = true), BitCrcInclude(nameof(Crc))]
+    public byte[] Payload { get; set; } = [];
+
+    // CRC-CCITT (poly 0x1021)，序列化时自动计算并写入
+    [BitField(16), BitCrc(typeof(CrcCcitt), InitialValue = 0)]
+    public ushort Crc { get; set; }
+
+    [BitField(8)]
+    public byte End { get; set; } = 0xCF;
+}
+```
+
+- 内置算法（`BitSerializer.CrcAlgorithms` 命名空间）：`CrcCcitt`（CRC-16-CCITT, poly 0x1021）、`Crc16Arc`（IBM CRC-16, poly 0x8005 反射）、`Crc32`（IEEE 802.3, poly 0xEDB88320 反射）
+- 可选参数：`InitialValue`（初始值）、`ValidateOnDeserialize`（反序列化时校验不匹配抛 `InvalidDataException`）
+- 自定义算法：实现 `IBitCrcAlgorithm` 接口（`BitWidth` / `Reset(ulong)` / `Update(ReadOnlySpan<byte>)` / `Result`），要求公共无参构造函数
+- 多层 CRC 支持：外层 `[BitSerialize]` 类型包含内层已带 CRC 的嵌套类型时，内层先计算，外层看到的是内层 CRC 已就位的字节
+
+**约束**（编译期报错）：
+- `[BitCrcInclude]` 字段必须连续且首尾字节对齐（BITS017）
+- `[BitCrc]` 结果字段必须字节对齐（BITS018）
+- 算法类型必须实现 `IBitCrcAlgorithm` 且有公共无参构造函数（BITS016）
+- `[BitCrc]` 字段不能同时用 `[BitFieldRelated]`（避免 converter 产物被 CRC 覆盖，BITS021）
+- 动态长度 `[BitSerialize]` 基类的派生类型不能含 `[BitCrc]`（运行时偏移会漂移，BITS022）
+
 ### 多态类型
 
 通过 `BitPoly` 特性实现基于判别值的类型分发：
@@ -469,6 +551,14 @@ Source Generator 会在编译期检查常见错误并报告诊断信息：
 | `BITS012` | `[BitFixedString]` 字节长度必须为正数 |
 | `BITS013` | 泛型类型参数缺少 `new()` 或 `struct` 约束 |
 | `BITS014` | 引用类型的 `[BitField]` 成员缺少默认值（序列化前可能为 null） |
+| `BITS015` | `[BitCrcInclude]` 目标字段不存在或不是 `[BitCrc]` |
+| `BITS016` | `[BitCrc]` 算法未实现 `IBitCrcAlgorithm` 或缺公共无参构造函数 |
+| `BITS017` | `[BitCrcInclude]` 字段必须连续且首尾字节对齐 |
+| `BITS018` | `[BitCrc]` 结果字段必须字节对齐 |
+| `BITS019` | `[BitFieldConsumeRemaining]` 必须是末尾基本元素字段 |
+| `BITS020` | `[BitFieldCount(PadIfShort=true)]` 仅支持基本数值/枚举元素 |
+| `BITS021` | `[BitCrc]` 不能与 `[BitFieldRelated]` / converter 共用 |
+| `BITS022` | 动态长度 `[BitSerialize]` 基类不能含 `[BitCrc]` |
 
 例如，以下代码会触发 `BITS006` 编译错误：
 
@@ -497,6 +587,10 @@ public partial record Frame
 | `[BitFieldRelated(name)]` | 关联另一个字段（用于 List 计数或多态判别） |
 | `[BitFieldRelated(name, converterType)]` | 关联字段并指定值转换器 |
 | `[BitFieldCount(n)]` | 指定 List / Array 的固定元素数量 |
+| `[BitFieldCount(n, PadIfShort=true)]` | 定长集合，短数据自动补默认值（仅基本元素） |
+| `[BitFieldConsumeRemaining]` | 尾部变长集合，读到数据末尾（仅基本元素，必须是末尾字段） |
+| `[BitCrc(typeof(Algo), InitialValue, ValidateOnDeserialize)]` | CRC 结果字段，指定算法 |
+| `[BitCrcInclude(nameof(CrcField))]` | 标注参与 CRC 计算的字段 |
 | `[BitPoly(id, type)]` | 多态映射：当判别值为 `id` 时反序列化为 `type` |
 | `[BitFixedString(n)]` | 固定长度字符串（`n` 字节），不足补 NUL，可选 `Encoding` 参数 |
 | `[BitTerminatedString]` | NUL 终止字符串，动态长度，可选 `Encoding` 参数 |

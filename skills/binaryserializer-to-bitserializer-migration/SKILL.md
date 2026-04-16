@@ -95,3 +95,17 @@ Validate in this order:
 4. Boundary tests for dynamic lengths, polymorphism, and non-byte-aligned fields.
 
 When migration changes semantics for unsupported BinarySerializer attributes, preserve old behavior with dedicated regression tests that assert exact bytes.
+
+## 7. Audit residual manual fallbacks
+
+Run `scripts/audit-bitserializer-migration.ps1` against the migrated repository. It scans for patterns that can likely be rewritten using the declarative API but are still manually coded:
+
+- Manual CRC inside `AfterSerialize` / `BeforeSerialize` → `[BitCrc]` + `[BitCrcInclude]`
+- `UartCrc16` / `CrcCcitt` calls with hardcoded byte offsets → declarative CRC
+- `BinaryPrimitives.Write*Endian` inside lifecycle hooks (classic CRC-writeback) → declarative CRC
+- Manual zero-padding of short byte arrays → `[BitFieldCount(N, PadIfShort = true)]`
+- Read-to-end byte loops → `[BitFieldConsumeRemaining]`
+- Residual `IBitSerializable` implementations that may now be expressible declaratively
+- Leftover `using BinarySerialization;` / `[FieldCrc16]` / `[FieldCrc32]`
+
+Exit code is non-zero if any match is found, so the script is CI-friendly.

@@ -627,6 +627,35 @@ internal static class TypeAnalyzer
             }
         }
 
+        // BITS022: reject CRC in types whose [BitSerialize] base is dynamic-length.
+        // Compile-time bit offsets used by the CRC emit would drift at runtime.
+        if (model.HasBitSerializableBaseType && model.BaseHasDynamicLength
+            && model.Fields.Any(f => f.IsCrcResult))
+        {
+            return new AnalyzeResult
+            {
+                Diagnostic = Diagnostic.Create(
+                    DiagnosticDescriptors.CrcInTypeWithDynamicBase,
+                    symbol.Locations.FirstOrDefault(),
+                    symbol.Name)
+            };
+        }
+
+        // BITS021: [BitCrc] must not combine with [BitFieldRelated] (converter output gets clobbered).
+        foreach (var f in model.Fields)
+        {
+            if (f.IsCrcResult && (f.RelatedMemberName != null || f.ValueConverterTypeFullName != null))
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.CrcFieldCannotCombineWithConverterOrRelated,
+                        symbol.Locations.FirstOrDefault(),
+                        f.MemberName, symbol.Name)
+                };
+            }
+        }
+
         // Aggregate CRC groups and validate
         {
             var includesByTarget = new Dictionary<string, List<BitFieldModel>>();

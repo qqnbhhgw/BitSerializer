@@ -119,6 +119,47 @@ public partial class BitSerializerCrcTests
 
     #endregion
 
+    #region Enum CRC field
+
+    public enum CrcTag : ushort
+    {
+        None = 0,
+        Ok = 0x1234,
+        Bad = 0xDEAD,
+    }
+
+    [BitSerialize]
+    public partial class EnumCrcPacket
+    {
+        [BitField(8), BitCrcInclude(nameof(Tag))]
+        public byte A { get; set; }
+
+        [BitField(8), BitCrcInclude(nameof(Tag))]
+        public byte B { get; set; }
+
+        [BitField(16), BitCrc(typeof(CrcCcitt))]
+        public CrcTag Tag { get; set; }
+    }
+
+    [Fact]
+    public void EnumCrc_RoundTripAndBackfill()
+    {
+        var data = new EnumCrcPacket { A = 0x11, B = 0x22, Tag = CrcTag.None };
+        byte[] bytes = BitSerializerMSB.Serialize(data);
+
+        var expected = new CrcCcitt();
+        expected.Reset(0);
+        expected.Update(new byte[] { 0x11, 0x22 });
+        ((ushort)data.Tag).ShouldBe((ushort)expected.Result);
+
+        var rt = BitSerializerMSB.Deserialize<EnumCrcPacket>(bytes);
+        rt.A.ShouldBe((byte)0x11);
+        rt.B.ShouldBe((byte)0x22);
+        rt.Tag.ShouldBe(data.Tag);
+    }
+
+    #endregion
+
     #region CRC-32
 
     [BitSerialize]
