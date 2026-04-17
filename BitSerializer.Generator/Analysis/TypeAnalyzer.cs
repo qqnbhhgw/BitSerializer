@@ -712,11 +712,14 @@ internal static class TypeAnalyzer
                 };
             }
 
-            // BITS026: static-stride elements (numeric/enum, static nested) must be byte-aligned.
-            // Dynamic-length elements are validated at runtime (budget under-run / over-run).
+            // BITS026: static-stride elements (numeric/enum, static nested) must be a POSITIVE
+            // multiple of 8. A zero-width static element would make the while-loop unable to
+            // advance at runtime (0-bit [BitSerialize] types such as CTCS/ETCS placeholders).
+            // Dynamic-length elements are validated at runtime (budget under-run / over-run and
+            // the emitter's "_consumed <= 0" guard).
             bool elemIsDynamic = f.ListElementHasDynamicLength
                                   || (f.ListElementIsManualBitSerializable && f.ListElementBitLength == 0);
-            if (!elemIsDynamic && f.ListElementBitLength > 0 && (f.ListElementBitLength % 8) != 0)
+            if (!elemIsDynamic && (f.ListElementBitLength <= 0 || (f.ListElementBitLength % 8) != 0))
             {
                 return new AnalyzeResult
                 {

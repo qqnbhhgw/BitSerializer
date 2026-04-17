@@ -369,9 +369,14 @@ public partial class BitSerializerByteLengthTests
     {
         [BitField] public ushort BudgetBytes { get; set; }
 
-        // Declare an explicit slot width of 24 on the list. The element's GetTotalBitLength
-        // also happens to be 24 in this test, so backfill must produce Count*3 bytes.
-        [BitField(24)]
+        // Declare an explicit slot width of 16 on the list even though each ThreeByteElement
+        // actually serializes to 24 bits at runtime. The pre-fix backfill multiplied Count by
+        // the DECLARED width (16), so 2 elements would have backfilled BudgetBytes = 4 while
+        // the serializer wrote 6 bytes — producing a truncated wire length. The post-fix
+        // backfill sums GetTotalBitLength() per element, yielding 6 and matching the payload.
+#pragma warning disable BITS023 // explicit bit length on variable content is intentional here
+        [BitField(16)]
+#pragma warning restore BITS023
         [BitFieldRelated(nameof(BudgetBytes), RelationKind = BitRelationKind.ByteLength)]
         public List<ThreeByteElement> Items { get; set; } = new();
     }
@@ -388,8 +393,9 @@ public partial class BitSerializerByteLengthTests
             },
         };
         byte[] bytes = BitSerializerMSB.Serialize(pkt);
-        // 2 elements × 24 bits = 48 bits = 6 bytes; backfill must equal 6, not any alias of
-        // the declared slot that diverges from runtime sums.
+        // Each ThreeByteElement runs 24 bits regardless of the [BitField(16)] declaration.
+        // Runtime total: 2 * 24 = 48 bits = 6 bytes. BudgetBytes MUST equal 6 to stay
+        // consistent with the payload; pre-fix would have produced 2*16/8 = 4 here.
         pkt.BudgetBytes.ShouldBe((ushort)6);
         bytes.Length.ShouldBe(2 + 6);
 

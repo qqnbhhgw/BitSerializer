@@ -198,8 +198,8 @@ internal static class DiagnosticDescriptors
 
     public static readonly DiagnosticDescriptor ByteLengthElementNotByteAligned = new(
         "BITS026",
-        "[BitFieldRelated(RelationKind=ByteLength)] element bit width is not a multiple of 8",
-        "Member '{0}' in '{1}' uses RelationKind=ByteLength but its element bit width ({2}) is not a multiple of 8. Byte-budget driven collections require byte-aligned element sizes so that the budget can be divided into whole elements.",
+        "[BitFieldRelated(RelationKind=ByteLength)] element bit width must be a positive multiple of 8",
+        "Member '{0}' in '{1}' uses RelationKind=ByteLength but its element bit width ({2}) is not a positive multiple of 8. Byte-budget driven collections require byte-aligned elements with a non-zero size so that the budget can be divided into whole elements; zero-sized elements would cause the deserialization loop to spin forever.",
         "BitSerializer",
         DiagnosticSeverity.Error,
         true);
