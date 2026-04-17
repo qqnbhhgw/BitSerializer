@@ -78,4 +78,8 @@ internal class BitFieldModel
 
     // [BitFieldConsumeRemaining]: dynamic-length list/array consuming remaining bytes
     public bool ConsumeRemaining { get; set; }
+
+    // [BitFieldRelated(RelationKind = ...)]: Count (default) = element count; ByteLength = byte budget.
+    // Stored as int to avoid a Generator-side reference to the runtime enum; matches BitRelationKind values.
+    public int RelationKind { get; set; }
 }

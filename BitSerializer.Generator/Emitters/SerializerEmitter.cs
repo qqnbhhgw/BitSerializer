@@ -25,19 +25,27 @@ internal static class SerializerEmitter
 
             if (field.IsList && !field.FixedCount.HasValue)
             {
-                // Backfill count field from collection length (null-safe: skip if collection is null)
-                var lengthProp = field.IsArray ? "Length" : "Count";
-                sb.AppendLine($"        if (this.{field.MemberName} != null)");
-                sb.AppendLine("        {");
-                // Overflow check: skip for bit widths >= 32 since List.Count/Array.Length is int
-                if (relatedField.BitLength < 32)
+                if (field.RelationKind == 1)
                 {
-                    long maxValue = (1L << relatedField.BitLength) - 1;
-                    sb.AppendLine($"            if (this.{field.MemberName}.{lengthProp} > {maxValue})");
-                    sb.AppendLine($"                throw new global::System.InvalidOperationException($\"Collection '{field.MemberName}' has {{this.{field.MemberName}.{lengthProp}}} elements, which exceeds the maximum ({maxValue}) representable by the {relatedField.BitLength}-bit field '{relatedField.MemberName}'.\");");
+                    EmitByteLengthBackfill(sb, field, relatedField);
                 }
-                sb.AppendLine($"            this.{relatedField.MemberName} = ({relatedField.MemberTypeName})this.{field.MemberName}.{lengthProp};");
-                sb.AppendLine("        }");
+                else
+                {
+                    // Backfill count field from collection length (null-safe: skip if collection is null)
+                    var lengthProp = field.IsArray ? "Length" : "Count";
+                    sb.AppendLine($"        if (this.{field.MemberName} != null)");
+                    sb.AppendLine("        {");
+                    // Overflow check: skip for bit widths >= 32 since List.Count/Array.Length is int
+                    if (relatedField.BitLength < 32)
+                    {
+                        long maxValue = (1L << relatedField.BitLength) - 1;
+                        sb.AppendLine($"            if (this.{field.MemberName}.{lengthProp} > {maxValue})");
+                        sb.AppendLine($"                throw new global::System.InvalidOperationException($\"Collection '{field.MemberName}' has {{this.{field.MemberName}.{lengthProp}}} elements, which exceeds the maximum ({maxValue}) representable by the {relatedField.BitLength}-bit field '{relatedField.MemberName}'.\");");
+                    }
+
+                    sb.AppendLine($"            this.{relatedField.MemberName} = ({relatedField.MemberTypeName})this.{field.MemberName}.{lengthProp};");
+                    sb.AppendLine("        }");
+                }
             }
             else if (field.IsPolymorphic && field.PolyMappings is { Count: > 0 })
             {
@@ -52,6 +60,59 @@ internal static class SerializerEmitter
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Emits the byte-length backfill for a list field tagged with RelationKind=ByteLength
+    /// (Enhancement B). Computes the collection's total serialized byte count, optionally
+    /// routes the result through a length converter (Enhancement A), then writes it to the
+    /// related wire field. Null collections are treated as zero bytes.
+    /// </summary>
+    private static void EmitByteLengthBackfill(StringBuilder sb, BitFieldModel field, BitFieldModel relatedField)
+    {
+        var name = field.MemberName;
+        var lengthProp = field.IsArray ? "Length" : "Count";
+
+        // Compute total bit length of the collection. Static-stride elements multiply count by
+        // element bit width; dynamic-length elements sum GetTotalBitLength() per element.
+        bool elementIsDynamic = field.ListElementHasDynamicLength
+                                || (field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0);
+
+        sb.AppendLine($"        int _collBits_{name} = 0;");
+        sb.AppendLine($"        if (this.{name} != null)");
+        sb.AppendLine("        {");
+        if (elementIsDynamic)
+        {
+            sb.AppendLine($"            for (int _i = 0; _i < this.{name}.{lengthProp}; _i++)");
+            sb.AppendLine($"                _collBits_{name} += ((global::BitSerializer.IBitSerializable)this.{name}[_i]).GetTotalBitLength();");
+        }
+        else
+        {
+            sb.AppendLine($"            _collBits_{name} = this.{name}.{lengthProp} * {field.ListElementBitLength};");
+        }
+        sb.AppendLine("        }");
+
+        // Byte alignment check.
+        sb.AppendLine($"        if ((_collBits_{name} & 7) != 0)");
+        sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Collection '{name}' serializes to {{_collBits_{name}}} bits which is not byte-aligned; RelationKind=ByteLength requires a byte-aligned total.\");");
+        sb.AppendLine($"        int _collBytes_{name} = _collBits_{name} / 8;");
+
+        // Optional converter: domainBytes -> wireValue.
+        string wireRaw = field.ValueConverterTypeFullName != null && field.ValueConverterHasSerialize
+            ? (field.ValueConverterSerializeHasContext
+                ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object)_collBytes_{name}, context)"
+                : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object)_collBytes_{name})")
+            : $"(object)_collBytes_{name}";
+
+        // Overflow check against the related field's bit width (only when < 32 bits).
+        sb.AppendLine($"        long _wire_{name} = global::System.Convert.ToInt64({wireRaw});");
+        if (relatedField.BitLength < 32)
+        {
+            long maxValue = (1L << relatedField.BitLength) - 1;
+            sb.AppendLine($"        if (_wire_{name} < 0 || _wire_{name} > {maxValue})");
+            sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Collection '{name}' produced wire length {{_wire_{name}}} which cannot fit in the {relatedField.BitLength}-bit field '{relatedField.MemberName}'.\");");
+        }
+        sb.AppendLine($"        this.{relatedField.MemberName} = ({relatedField.MemberTypeName})_wire_{name};");
     }
 
     public static string EmitMethod(TypeModel model, string bitOrder)
@@ -82,10 +143,13 @@ internal static class SerializerEmitter
             }
         }
 
-        // Apply list-level value converters before backfill (converters may change list length)
+        // Apply list-level value converters before backfill (converters may change list length).
+        // Skip when RelationKind=ByteLength: in that mode the converter is a length converter
+        // (wireLength <-> collectionByteLength), not a list-value transform.
         foreach (var f in model.Fields)
         {
-            if (f.IsList && f.ValueConverterTypeFullName != null && f.ValueConverterHasSerialize)
+            if (f.IsList && f.ValueConverterTypeFullName != null && f.ValueConverterHasSerialize
+                && f.RelationKind != 1)
             {
                 var ma = $"this.{f.MemberName}";
                 var convertCall = f.ValueConverterSerializeHasContext
@@ -361,8 +425,10 @@ internal static class SerializerEmitter
                 }
                 else
                 {
+                    // Iterate over the actual collection length, not the (possibly converted) wire field.
+                    var lenProp = field.IsArray ? "Length" : "Count";
                     countExpr = $"_listCount_{field.MemberName}";
-                    sb.AppendLine($"        int {countExpr} = (int)this.{field.RelatedMemberName};");
+                    sb.AppendLine($"        int {countExpr} = {memberAccess}?.{lenProp} ?? 0;");
                 }
                 sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
                 sb.AppendLine($"        for (int _i = 0; _i < {countExpr}; _i++)");
@@ -406,8 +472,10 @@ internal static class SerializerEmitter
         }
         else
         {
+            // Iterate over the actual collection length, not the (possibly converted) wire field.
+            var _dynLenProp = field.IsArray ? "Length" : "Count";
             sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
-            sb.AppendLine($"        int _listCount_{field.MemberName} = (int)this.{field.RelatedMemberName};");
+            sb.AppendLine($"        int _listCount_{field.MemberName} = {memberAccess}?.{_dynLenProp} ?? 0;");
             sb.AppendLine($"        for (int _i = 0; _i < _listCount_{field.MemberName}; _i++)");
             sb.AppendLine("        {");
             if (field.ListElementHasDynamicLength)

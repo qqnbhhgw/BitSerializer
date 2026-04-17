@@ -173,7 +173,8 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.CrcValidateOnDeserialize == y.CrcValidateOnDeserialize
             && x.CrcTargetFieldName == y.CrcTargetFieldName
             && x.PadIfShort == y.PadIfShort
-            && x.ConsumeRemaining == y.ConsumeRemaining;
+            && x.ConsumeRemaining == y.ConsumeRemaining
+            && x.RelationKind == y.RelationKind;
     }
 
     public int GetHashCode(BitFieldModel obj) => obj.MemberName.GetHashCode();

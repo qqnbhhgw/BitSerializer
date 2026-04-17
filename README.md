@@ -13,7 +13,7 @@
 - **字符串支持** — 支持固定长度字符串（`[BitFixedString]`）和 NUL 终止字符串（`[BitTerminatedString]`），支持 ASCII 和 UTF-8 编码
 - **自定义序列化类型** — 支持实现 `IBitSerializable` 接口的自定义类型，无需 `[BitSerialize]` 标记
 - **泛型类型参数** — 支持泛型类型参数字段的序列化，通过 `IBitSerializable` 接口在运行时分发
-- **集合支持** — 支持 `List<T>` / `T[]` 的序列化，元素数量可动态关联或固定指定
+- **集合支持** — 支持 `List<T>` / `T[]` 的序列化，元素数量可动态关联或固定指定；也支持按**字节预算**驱动嵌套动态元素集合（`RelationKind = ByteLength`）
 - **数组短包/剩余字节** — `[BitFieldCount(N, PadIfShort=true)]` 短数据自动补零；`[BitFieldConsumeRemaining]` 读取直到数据末尾
 - **声明式 CRC** — `[BitCrc]` + `[BitCrcInclude]` 自动计算并回填 CRC 字段，内置 CRC-CCITT / CRC-16/ARC / CRC-32
 - **自动回填关联字段** — 序列化时自动将集合长度写入关联的计数字段、将运行时类型写入多态判别字段，无需手动设置
@@ -290,6 +290,49 @@ public class FixedList
 }
 ```
 
+#### 按字节预算驱动集合（`RelationKind = ByteLength`）
+
+当线上协议的关联字段承载的不是元素个数，而是 **集合占用的字节总数** 时（典型例子：应用层帧 `Length = Payload.Length + 4`，或 Gal 这类 `AppFrameLength` 为应用帧区总字节数），使用 `RelationKind = BitRelationKind.ByteLength`：
+
+```csharp
+// 线上 Length 字段 = Data.Length + 4；ValueConverterType 负责该常量换算
+[BitSerialize]
+public partial class AppFrameBase
+{
+    [BitField] public ushort Length { get; set; }
+    [BitField] public ushort AppFrameType { get; set; }
+    [BitField] public ushort Reserved { get; set; }
+
+    [BitField]
+    [BitFieldRelated(nameof(Length),
+                     ValueConverterType = typeof(AppFrameLengthConverter),
+                     RelationKind = BitRelationKind.ByteLength)]
+    public byte[] Data { get; set; } = [];
+}
+
+// AppFrames 按总字节预算读取，直到预算耗尽
+[BitSerialize]
+public partial class Gal
+{
+    [BitField] public GalHead Head { get; set; } = new();
+    [BitField] public ushort AppFrameLength { get; set; }
+
+    [BitField]
+    [BitFieldRelated(nameof(AppFrameLength),
+                     RelationKind = BitRelationKind.ByteLength)]
+    public List<AppFrameBase> AppFrames { get; set; } = [];
+}
+```
+
+行为：
+
+- **序列化**：先计算集合所有元素的实际字节总和 → 可选经过 `ValueConverterType.OnSerializeConvert` 换算为线上值 → 回填关联字段。
+- **反序列化**：从关联字段读取线上值 → 可选经过 `ValueConverterType.OnDeserializeConvert` 还原为字节预算 → 在预算内循环解析元素，直到预算耗尽。
+- 元素可以是 `byte[]`、`List<基础类型>`，也可以是嵌套 `[BitSerialize]` 类型（含动态长度元素）。
+- `ValueConverterType` 在 `ByteLength` 模式下是 **长度换算器**（而不是列表值换算器），必须同时实现 `OnSerializeConvert` 与 `OnDeserializeConvert`（BITS024）。
+- 约束：不能与 `[BitFieldCount]` / `[BitFieldConsumeRemaining]` 共用（BITS025）；静态元素位宽必须是 8 的倍数（BITS026）；只能作用在集合上（BITS027）。
+- 运行时越界：元素越过预算 / 预算剩余未消费 / 预算超出剩余字节，都会抛出 `InvalidDataException`。
+
 ### 数组短包与消费剩余字节
 
 针对定长缓冲但实际数据可能更短的场景（如 ATP BTM 报文：固定 276 字节但空报文为 0 字节）：
@@ -559,6 +602,10 @@ Source Generator 会在编译期检查常见错误并报告诊断信息：
 | `BITS020` | `[BitFieldCount(PadIfShort=true)]` 仅支持基本数值/枚举元素 |
 | `BITS021` | `[BitCrc]` 不能与 `[BitFieldRelated]` / converter 共用 |
 | `BITS022` | 动态长度 `[BitSerialize]` 基类不能含 `[BitCrc]` |
+| `BITS024` | `RelationKind=ByteLength` 下的 converter 必须同时实现序列化/反序列化方向 |
+| `BITS025` | `RelationKind=ByteLength` 不能与 `[BitFieldCount]` / `[BitFieldConsumeRemaining]` 共用 |
+| `BITS026` | `RelationKind=ByteLength` 的静态元素位宽必须是 8 的倍数 |
+| `BITS027` | `RelationKind=ByteLength` 只能作用在 List/Array 上 |
 
 例如，以下代码会触发 `BITS006` 编译错误：
 
@@ -585,7 +632,8 @@ public partial record Frame
 | `[BitSerialize]` | 标记类型参与位序列化（类型必须同时声明为 `partial`） |
 | `[BitField(n)]` | 声明字段参与序列化，`n` 为位长度（可选，不指定则自动推断） |
 | `[BitFieldRelated(name)]` | 关联另一个字段（用于 List 计数或多态判别） |
-| `[BitFieldRelated(name, converterType)]` | 关联字段并指定值转换器 |
+| `[BitFieldRelated(name, converterType)]` | 关联字段并指定值转换器（默认 `Count` 模式下为列表值转换器） |
+| `[BitFieldRelated(name, RelationKind = ByteLength)]` | 关联字段承载集合的字节预算（见[按字节预算驱动集合](#按字节预算驱动集合relationkind--bytelength)） |
 | `[BitFieldCount(n)]` | 指定 List / Array 的固定元素数量 |
 | `[BitFieldCount(n, PadIfShort=true)]` | 定长集合，短数据自动补默认值（仅基本元素） |
 | `[BitFieldConsumeRemaining]` | 尾部变长集合，读到数据末尾（仅基本元素，必须是末尾字段） |

@@ -269,16 +269,18 @@ internal static class TypeAnalyzer
                     }
                 }
 
-                // Also check named arguments (e.g. ValueConverterType = typeof(...))
-                if (valueConverterFullName == null)
+                // Also check named arguments (ValueConverterType = typeof(...), RelationKind = ...)
+                foreach (var namedArg in relatedAttr.NamedArguments)
                 {
-                    foreach (var namedArg in relatedAttr.NamedArguments)
+                    if (valueConverterFullName == null
+                        && namedArg.Key == "ValueConverterType"
+                        && namedArg.Value.Value is INamedTypeSymbol namedConverterType)
                     {
-                        if (namedArg.Key == "ValueConverterType" && namedArg.Value.Value is INamedTypeSymbol namedConverterType)
-                        {
-                            valueConverterFullName = namedConverterType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                            break;
-                        }
+                        valueConverterFullName = namedConverterType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                    }
+                    else if (namedArg.Key == "RelationKind" && namedArg.Value.Value is int relKindRaw)
+                    {
+                        field.RelationKind = relKindRaw;
                     }
                 }
             }
@@ -678,6 +680,64 @@ internal static class TypeAnalyzer
                             f.MemberName, symbol.Name)
                     };
                 }
+            }
+        }
+
+        // BITS024..027: validate RelationKind=ByteLength usage (Enhancement A + B).
+        foreach (var f in model.Fields)
+        {
+            if (f.RelationKind != 1) continue; // 1 == ByteLength
+
+            // BITS027: must be a list/array.
+            if (!f.IsList)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.ByteLengthRequiresListOrArray,
+                        symbol.Locations.FirstOrDefault(),
+                        f.MemberName, symbol.Name)
+                };
+            }
+
+            // BITS025: conflicts with FixedCount or ConsumeRemaining.
+            if (f.FixedCount.HasValue || f.ConsumeRemaining)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.ByteLengthConflictsWithFixedOrConsume,
+                        symbol.Locations.FirstOrDefault(),
+                        f.MemberName, symbol.Name)
+                };
+            }
+
+            // BITS026: static-stride elements (numeric/enum, static nested) must be byte-aligned.
+            // Dynamic-length elements are validated at runtime (budget under-run / over-run).
+            bool elemIsDynamic = f.ListElementHasDynamicLength
+                                  || (f.ListElementIsManualBitSerializable && f.ListElementBitLength == 0);
+            if (!elemIsDynamic && f.ListElementBitLength > 0 && (f.ListElementBitLength % 8) != 0)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.ByteLengthElementNotByteAligned,
+                        symbol.Locations.FirstOrDefault(),
+                        f.MemberName, symbol.Name, f.ListElementBitLength)
+                };
+            }
+
+            // BITS024: if converter is supplied it must provide both directions.
+            if (f.ValueConverterTypeFullName != null
+                && (!f.ValueConverterHasSerialize || !f.ValueConverterHasDeserialize))
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.ByteLengthConverterMissingDirection,
+                        symbol.Locations.FirstOrDefault(),
+                        f.MemberName, symbol.Name, f.ValueConverterTypeFullName)
+                };
             }
         }
 

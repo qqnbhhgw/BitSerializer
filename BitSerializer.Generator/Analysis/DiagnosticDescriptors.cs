@@ -180,6 +180,38 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor ByteLengthConverterMissingDirection = new(
+        "BITS024",
+        "[BitFieldRelated(RelationKind=ByteLength)] converter missing required method",
+        "Member '{0}' in '{1}' uses RelationKind=ByteLength with converter '{2}', but the converter does not define both OnSerializeConvert and OnDeserializeConvert. Both directions are required to translate between collection byte length and the wire length field.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor ByteLengthConflictsWithFixedOrConsume = new(
+        "BITS025",
+        "[BitFieldRelated(RelationKind=ByteLength)] conflicts with [BitFieldCount] or [BitFieldConsumeRemaining]",
+        "Member '{0}' in '{1}' declares RelationKind=ByteLength but also uses [BitFieldCount] or [BitFieldConsumeRemaining]. These drive the collection length through different mechanisms and cannot be combined.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor ByteLengthElementNotByteAligned = new(
+        "BITS026",
+        "[BitFieldRelated(RelationKind=ByteLength)] element bit width is not a multiple of 8",
+        "Member '{0}' in '{1}' uses RelationKind=ByteLength but its element bit width ({2}) is not a multiple of 8. Byte-budget driven collections require byte-aligned element sizes so that the budget can be divided into whole elements.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor ByteLengthRequiresListOrArray = new(
+        "BITS027",
+        "[BitFieldRelated(RelationKind=ByteLength)] can only be applied to a list or array",
+        "Member '{0}' in '{1}' declares RelationKind=ByteLength but is not a list or array. Byte-length driven length is only meaningful for collections.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
     public static readonly DiagnosticDescriptor ExplicitBitLengthOnVariableContent = new(
         "BITS023",
         "[BitField(N)] pins a fixed slot on content whose runtime size can vary",

@@ -274,6 +274,18 @@ internal static class DeserializerEmitter
 
         var ibsElem = $"(global::BitSerializer.IBitSerializable)_elem";
 
+        // [BitFieldRelated(..., RelationKind = ByteLength)]: byte-budget driven collection.
+        // RelationKind is stored as int (1 = ByteLength) to keep the generator runtime-independent.
+        if (field.RelationKind == 1
+            && !field.ConsumeRemaining
+            && !field.FixedCount.HasValue
+            && field.RelatedMemberName != null)
+        {
+            EmitListDeserializeByteLength(sb, field, helper, memberAccess, bitIndexVar, offsetExpr,
+                elemBits, elemTypeFullName!, hasCtx, ctxArg, deserializeMethod);
+            return;
+        }
+
         // [BitFieldConsumeRemaining]: read until end of buffer
         if (field.ConsumeRemaining)
         {
@@ -483,6 +495,106 @@ internal static class DeserializerEmitter
         }
     }
 
+    /// <summary>
+    /// Emits the byte-budget driven list/array deserialization.
+    /// The wire value from the related field is optionally routed through a length converter
+    /// (Enhancement A), then the collection is filled until the resulting byte budget is
+    /// consumed (Enhancement B). Over-run and under-run both raise InvalidDataException.
+    /// </summary>
+    private static void EmitListDeserializeByteLength(
+        StringBuilder sb, BitFieldModel field, string helper, string memberAccess,
+        string bitIndexVar, string offsetExpr,
+        int elemBits, string elemTypeFullName, bool hasCtx, string ctxArg, string deserializeMethod)
+    {
+        var name = field.MemberName;
+        var ibsElem = $"(global::BitSerializer.IBitSerializable)_elem";
+
+        // Wire value -> byte budget, optionally via converter
+        string wireExpr = $"this.{field.RelatedMemberName}";
+        string budgetExpr = field.ValueConverterTypeFullName != null && field.ValueConverterHasDeserialize
+            ? (field.ValueConverterDeserializeHasContext
+                ? $"global::System.Convert.ToInt32({field.ValueConverterTypeFullName}.OnDeserializeConvert((object){wireExpr}, context))"
+                : $"global::System.Convert.ToInt32({field.ValueConverterTypeFullName}.OnDeserializeConvert((object){wireExpr}))")
+            : $"(int){wireExpr}";
+
+        sb.AppendLine($"        int _budgetBytes_{name} = {budgetExpr};");
+        sb.AppendLine($"        if (_budgetBytes_{name} < 0) throw new global::System.IO.InvalidDataException($\"Byte-length budget for '{name}' is negative ({{_budgetBytes_{name}}}).\");");
+        sb.AppendLine($"        int _endBit_{name} = {offsetExpr} + _budgetBytes_{name} * 8;");
+        sb.AppendLine($"        if (_endBit_{name} > bytes.Length * 8) throw new global::System.IO.InvalidDataException($\"Byte-length budget for '{name}' ({{_budgetBytes_{name}}} bytes) exceeds the remaining data ({{bytes.Length - ({offsetExpr}) / 8}} bytes).\");");
+        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
+
+        // byte[] / numeric/enum element: fixed element width; budget must divide elemBits.
+        if (!field.ListElementIsNested && !field.ListElementIsManualBitSerializable)
+        {
+            sb.AppendLine($"        if ((_budgetBytes_{name} * 8) % {elemBits} != 0) throw new global::System.IO.InvalidDataException($\"Byte-length budget for '{name}' ({{_budgetBytes_{name}}} bytes) is not a multiple of the {elemBits}-bit element size.\");");
+            sb.AppendLine($"        int _elemCount_{name} = (_budgetBytes_{name} * 8) / {elemBits};");
+            if (field.IsArray)
+                sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[_elemCount_{name}];");
+            else
+                sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>(_elemCount_{name});");
+            sb.AppendLine($"        for (int _i = 0; _i < _elemCount_{name}; _i++)");
+            sb.AppendLine("        {");
+            if (field.IsArray)
+                sb.AppendLine($"            {memberAccess}[_i] = {helper}.ValueLength<{elemTypeFullName}>(bytes, {bitIndexVar}, {elemBits});");
+            else
+                sb.AppendLine($"            {memberAccess}.Add({helper}.ValueLength<{elemTypeFullName}>(bytes, {bitIndexVar}, {elemBits}));");
+            sb.AppendLine($"            {bitIndexVar} += {elemBits};");
+            sb.AppendLine("        }");
+            return;
+        }
+
+        // Nested / manual-IBitSerializable element: while-loop until budget consumed.
+        // Static-length element path uses fixed stride; dynamic-length uses Deserialize return.
+        bool elemIsDynamic = field.ListElementHasDynamicLength
+                              || (field.ListElementIsManualBitSerializable && elemBits == 0);
+        bool isArray = field.IsArray;
+
+        // Arrays with budget-driven nested elements: collect into a List first, then copy.
+        string collector = isArray ? $"_buf_{name}" : memberAccess;
+        if (isArray)
+            sb.AppendLine($"        var {collector} = new global::System.Collections.Generic.List<{elemTypeFullName}>();");
+        else
+            sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>();");
+
+        sb.AppendLine($"        while ({bitIndexVar} < _endBit_{name})");
+        sb.AppendLine("        {");
+        if (field.ListElementIsTypeParameter)
+            sb.AppendLine($"            var _elem = ({elemTypeFullName})global::System.Activator.CreateInstance(typeof({elemTypeFullName}))!;");
+        else
+            sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+
+        if (hasCtx) EmitDeserializeElementContextBefore(sb, ibsElem, bitIndexVar);
+
+        if (elemIsDynamic || field.ListElementIsManualBitSerializable)
+        {
+            // Return value drives bit advance (IBitSerializable.Deserialize returns consumed bits).
+            sb.AppendLine($"            int _consumed_{name} = ({ibsElem}).{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+            sb.AppendLine($"            if ({bitIndexVar} + _consumed_{name} > _endBit_{name}) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' overruns the {{_budgetBytes_{name}}}-byte budget.\");");
+            sb.AppendLine($"            {bitIndexVar} += _consumed_{name};");
+        }
+        else
+        {
+            // Static-length nested element: use fixed stride.
+            sb.AppendLine($"            if ({bitIndexVar} + {elemBits} > _endBit_{name}) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' overruns the {{_budgetBytes_{name}}}-byte budget.\");");
+            sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+            sb.AppendLine($"            {bitIndexVar} += {elemBits};");
+        }
+
+        if (hasCtx) EmitDeserializeElementContextAfter(sb, ibsElem);
+
+        if (isArray)
+            sb.AppendLine($"            {collector}.Add(_elem);");
+        else
+            sb.AppendLine($"            {memberAccess}.Add(_elem);");
+
+        sb.AppendLine("        }");
+
+        sb.AppendLine($"        if ({bitIndexVar} != _endBit_{name}) throw new global::System.IO.InvalidDataException($\"Byte-length budget for '{name}' left {{_endBit_{name} - {bitIndexVar}}} bit(s) of unread data.\");");
+
+        if (isArray)
+            sb.AppendLine($"        {memberAccess} = {collector}.ToArray();");
+    }
+
     private static void EmitDeserializeElementContextBefore(StringBuilder sb, string elemIbsExpr, string elemBitOffsetExpr, string indent = "            ")
     {
         sb.AppendLine($"{indent}int _elemBitOff = {elemBitOffsetExpr};");
@@ -571,6 +683,10 @@ internal static class DeserializerEmitter
     private static void EmitDeserializeConverter(StringBuilder sb, BitFieldModel field, string memberAccess)
     {
         if (field.ValueConverterTypeFullName == null || !field.ValueConverterHasDeserialize) return;
+        // RelationKind=ByteLength on a list turns the converter into a length converter, which
+        // is applied on the related wire field (not the collection value). Skip the list-value
+        // post-convert step in that mode.
+        if (field.IsList && field.RelationKind == 1) return;
         var convertCall = field.ValueConverterDeserializeHasContext
             ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess}, context)"
             : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess})";
