@@ -210,4 +210,195 @@ public partial class BitSerializerByteLengthTests
         back.Length.ShouldBe((ushort)4);
         back.Payload.ShouldBe(new byte[] { 0xDE, 0xAD, 0xBE, 0xEF });
     }
+
+    // ----------------------------------------------------------------------
+    // Regression guards for ByteLength edge cases surfaced in code review:
+    //   (a) zero-bit element type must raise, not dead-loop.
+    //   (b) struct manual-IBitSerializable element must roundtrip without losing state.
+    //   (c) manual-IBitSerializable element with a DECLARED bit width that does NOT
+    //       match its runtime size must still backfill the correct byte total.
+    // ----------------------------------------------------------------------
+
+    /// <summary>
+    /// Manual IBitSerializable that always reports zero bits. Simulates a degenerate
+    /// CTCS/ETCS-shaped placeholder type; if misused inside a ByteLength list, the
+    /// deserializer must throw rather than spin forever.
+    /// </summary>
+    public class ZeroBitElement : IBitSerializable
+    {
+        public int GetTotalBitLength() => 0;
+
+        public int SerializeMSB(Span<byte> bytes, int bitOffset, object? context) => 0;
+        public int SerializeMSB(Span<byte> bytes, int bitOffset) => 0;
+        public int SerializeLSB(Span<byte> bytes, int bitOffset, object? context) => 0;
+        public int SerializeLSB(Span<byte> bytes, int bitOffset) => 0;
+
+        public int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset, object? context) => 0;
+        public int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset) => 0;
+        public int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset, object? context) => 0;
+        public int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset) => 0;
+    }
+
+    [BitSerialize]
+    public partial class ZeroBitEnvelope
+    {
+        [BitField] public ushort BudgetBytes { get; set; }
+
+        [BitField]
+        [BitFieldRelated(nameof(BudgetBytes), RelationKind = BitRelationKind.ByteLength)]
+        public List<ZeroBitElement> Items { get; set; } = new();
+    }
+
+    [Fact]
+    public void ByteLength_ZeroBitElement_ThrowsInsteadOfDeadLoop()
+    {
+        // Wire budget is non-zero but element reports 0 bits per read — the loop cannot make
+        // progress. Must raise InvalidDataException with a clear message.
+        byte[] bytes = new byte[] { 0x00, 0x02 /* BudgetBytes = 2 */, 0x00, 0x00 };
+        var ex = Should.Throw<InvalidDataException>(() => BitSerializerMSB.Deserialize<ZeroBitEnvelope>(bytes));
+        ex.Message.ShouldContain("0 consumed bits");
+    }
+
+    /// <summary>
+    /// Struct element that implements IBitSerializable by hand. A naive casting loop would
+    /// box it on every access and write into the box, leaving the caller's slot at default.
+    /// </summary>
+    public struct PackedI16 : IBitSerializable
+    {
+        public short Value;
+
+        public int GetTotalBitLength() => 16;
+
+        public int SerializeMSB(Span<byte> bytes, int bitOffset, object? context)
+        {
+            BitHelperMSB.SetValueLength<short>(bytes, bitOffset, 16, Value);
+            return 16;
+        }
+        public int SerializeMSB(Span<byte> bytes, int bitOffset) => SerializeMSB(bytes, bitOffset, null);
+        public int SerializeLSB(Span<byte> bytes, int bitOffset, object? context)
+        {
+            BitHelperLSB.SetValueLength<short>(bytes, bitOffset, 16, Value);
+            return 16;
+        }
+        public int SerializeLSB(Span<byte> bytes, int bitOffset) => SerializeLSB(bytes, bitOffset, null);
+
+        public int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset, object? context)
+        {
+            Value = BitHelperMSB.ValueLength<short>(bytes, bitOffset, 16);
+            return 16;
+        }
+        public int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset) => DeserializeMSB(bytes, bitOffset, null);
+        public int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset, object? context)
+        {
+            Value = BitHelperLSB.ValueLength<short>(bytes, bitOffset, 16);
+            return 16;
+        }
+        public int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset) => DeserializeLSB(bytes, bitOffset, null);
+    }
+
+    [BitSerialize]
+    public partial class StructElementEnvelope
+    {
+        [BitField] public ushort BudgetBytes { get; set; }
+
+        [BitField]
+        [BitFieldRelated(nameof(BudgetBytes), RelationKind = BitRelationKind.ByteLength)]
+        public List<PackedI16> Items { get; set; } = new();
+    }
+
+    [Fact]
+    public void ByteLength_StructManualElement_RoundTripPreservesValues()
+    {
+        var pkt = new StructElementEnvelope
+        {
+            Items = new List<PackedI16>
+            {
+                new() { Value = 0x0102 },
+                new() { Value = unchecked((short)0xFFFE) },
+                new() { Value = 0x00AA },
+            },
+        };
+        byte[] bytes = BitSerializerMSB.Serialize(pkt);
+        pkt.BudgetBytes.ShouldBe((ushort)6);
+        bytes.Length.ShouldBe(8); // 2 budget + 3 * 2 elements
+
+        var back = BitSerializerMSB.Deserialize<StructElementEnvelope>(bytes);
+        back.BudgetBytes.ShouldBe((ushort)6);
+        back.Items.Count.ShouldBe(3);
+        back.Items[0].Value.ShouldBe((short)0x0102);
+        back.Items[1].Value.ShouldBe(unchecked((short)0xFFFE));
+        back.Items[2].Value.ShouldBe((short)0x00AA);
+    }
+
+    /// <summary>
+    /// Manual IBitSerializable whose RUNTIME size (24 bits) differs from the per-field
+    /// BitField(N) slot the user might declare. The serializer's dynamic-list loop
+    /// advances by the real return value; the backfill must match that, not the declared N.
+    /// </summary>
+    public class ThreeByteElement : IBitSerializable
+    {
+        public byte A, B, C;
+
+        public int GetTotalBitLength() => 24;
+
+        public int SerializeMSB(Span<byte> bytes, int bitOffset, object? context)
+        {
+            BitHelperMSB.SetValueLength<byte>(bytes, bitOffset, 8, A);
+            BitHelperMSB.SetValueLength<byte>(bytes, bitOffset + 8, 8, B);
+            BitHelperMSB.SetValueLength<byte>(bytes, bitOffset + 16, 8, C);
+            return 24;
+        }
+        public int SerializeMSB(Span<byte> bytes, int bitOffset) => SerializeMSB(bytes, bitOffset, null);
+        public int SerializeLSB(Span<byte> bytes, int bitOffset, object? context) => SerializeMSB(bytes, bitOffset, context);
+        public int SerializeLSB(Span<byte> bytes, int bitOffset) => SerializeMSB(bytes, bitOffset, null);
+
+        public int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset, object? context)
+        {
+            A = BitHelperMSB.ValueLength<byte>(bytes, bitOffset, 8);
+            B = BitHelperMSB.ValueLength<byte>(bytes, bitOffset + 8, 8);
+            C = BitHelperMSB.ValueLength<byte>(bytes, bitOffset + 16, 8);
+            return 24;
+        }
+        public int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset) => DeserializeMSB(bytes, bitOffset, null);
+        public int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset, object? context) => DeserializeMSB(bytes, bitOffset, context);
+        public int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset) => DeserializeMSB(bytes, bitOffset, null);
+    }
+
+    [BitSerialize]
+    public partial class DeclaredWidthEnvelope
+    {
+        [BitField] public ushort BudgetBytes { get; set; }
+
+        // Declare an explicit slot width of 24 on the list. The element's GetTotalBitLength
+        // also happens to be 24 in this test, so backfill must produce Count*3 bytes.
+        [BitField(24)]
+        [BitFieldRelated(nameof(BudgetBytes), RelationKind = BitRelationKind.ByteLength)]
+        public List<ThreeByteElement> Items { get; set; } = new();
+    }
+
+    [Fact]
+    public void ByteLength_ManualElementWithDeclaredWidth_BackfillMatchesRuntimeSize()
+    {
+        var pkt = new DeclaredWidthEnvelope
+        {
+            Items = new List<ThreeByteElement>
+            {
+                new() { A = 0x10, B = 0x20, C = 0x30 },
+                new() { A = 0x40, B = 0x50, C = 0x60 },
+            },
+        };
+        byte[] bytes = BitSerializerMSB.Serialize(pkt);
+        // 2 elements × 24 bits = 48 bits = 6 bytes; backfill must equal 6, not any alias of
+        // the declared slot that diverges from runtime sums.
+        pkt.BudgetBytes.ShouldBe((ushort)6);
+        bytes.Length.ShouldBe(2 + 6);
+
+        var back = BitSerializerMSB.Deserialize<DeclaredWidthEnvelope>(bytes);
+        back.BudgetBytes.ShouldBe((ushort)6);
+        back.Items.Count.ShouldBe(2);
+        back.Items[0].A.ShouldBe((byte)0x10);
+        back.Items[0].C.ShouldBe((byte)0x30);
+        back.Items[1].A.ShouldBe((byte)0x40);
+        back.Items[1].C.ShouldBe((byte)0x60);
+    }
 }

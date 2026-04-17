@@ -74,9 +74,12 @@ internal static class SerializerEmitter
         var lengthProp = field.IsArray ? "Length" : "Count";
 
         // Compute total bit length of the collection. Static-stride elements multiply count by
-        // element bit width; dynamic-length elements sum GetTotalBitLength() per element.
+        // element bit width; elements with runtime-variable size sum GetTotalBitLength() per element.
+        // Manual IBitSerializable elements always use runtime sums in the serializer's dynamic-list
+        // loop (even when an explicit bit length was declared on the field), so the prediction here
+        // must do the same — otherwise the backfilled length drifts from the bytes actually written.
         bool elementIsDynamic = field.ListElementHasDynamicLength
-                                || (field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0);
+                                || field.ListElementIsManualBitSerializable;
 
         sb.AppendLine($"        int _collBits_{name} = 0;");
         sb.AppendLine($"        if (this.{name} != null)");

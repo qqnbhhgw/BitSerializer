@@ -544,9 +544,15 @@ internal static class DeserializerEmitter
         }
 
         // Nested / manual-IBitSerializable element: while-loop until budget consumed.
-        // Static-length element path uses fixed stride; dynamic-length uses Deserialize return.
-        bool elemIsDynamic = field.ListElementHasDynamicLength
-                              || (field.ListElementIsManualBitSerializable && elemBits == 0);
+        //   - ListElementIsNested && !HasDynamicLength: static-stride generated type (class) -> fixed bits.
+        //   - ListElementHasDynamicLength: generated type (class) with dynamic length -> return value drives advance.
+        //   - ListElementIsManualBitSerializable: hand-written IBitSerializable, possibly a struct.
+        //     We MUST declare _elem as IBitSerializable (not as the concrete type) — otherwise casting a
+        //     struct to the interface inside the loop boxes a copy and the actual _elem stays at default.
+        //     The Count-driven branch upstream already takes this approach; mirror it here.
+        bool manualElem = field.ListElementIsManualBitSerializable;
+        bool nestedDynamicElem = field.ListElementHasDynamicLength;
+        bool nestedStaticElem = !manualElem && !nestedDynamicElem;
         bool isArray = field.IsArray;
 
         // Arrays with budget-driven nested elements: collect into a List first, then copy.
@@ -558,34 +564,60 @@ internal static class DeserializerEmitter
 
         sb.AppendLine($"        while ({bitIndexVar} < _endBit_{name})");
         sb.AppendLine("        {");
-        if (field.ListElementIsTypeParameter)
-            sb.AppendLine($"            var _elem = ({elemTypeFullName})global::System.Activator.CreateInstance(typeof({elemTypeFullName}))!;");
-        else
-            sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
 
-        if (hasCtx) EmitDeserializeElementContextBefore(sb, ibsElem, bitIndexVar);
-
-        if (elemIsDynamic || field.ListElementIsManualBitSerializable)
+        if (manualElem)
         {
-            // Return value drives bit advance (IBitSerializable.Deserialize returns consumed bits).
-            sb.AppendLine($"            int _consumed_{name} = ({ibsElem}).{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+            // Interface-typed local so struct elements are boxed exactly once; the
+            // Deserialize call mutates the box and we unbox back to the concrete type on Add.
+            if (field.ListElementIsTypeParameter)
+                sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = ({elemTypeFullName})global::System.Activator.CreateInstance(typeof({elemTypeFullName}))!;");
+            else
+                sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = new {elemTypeFullName}();");
+
+            if (hasCtx) EmitDeserializeElementContextBefore(sb, "_elem", bitIndexVar);
+
+            sb.AppendLine($"            int _consumed_{name} = _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+            sb.AppendLine($"            if (_consumed_{name} <= 0) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' reported 0 consumed bits; byte-length budget loop cannot advance (element type may be zero-sized or its Deserialize returned a non-positive value).\");");
             sb.AppendLine($"            if ({bitIndexVar} + _consumed_{name} > _endBit_{name}) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' overruns the {{_budgetBytes_{name}}}-byte budget.\");");
             sb.AppendLine($"            {bitIndexVar} += _consumed_{name};");
+
+            if (hasCtx) EmitDeserializeElementContextAfter(sb, "_elem");
+
+            // Unbox back to the concrete element type.
+            if (isArray)
+                sb.AppendLine($"            {collector}.Add(({elemTypeFullName})_elem);");
+            else
+                sb.AppendLine($"            {memberAccess}.Add(({elemTypeFullName})_elem);");
         }
         else
         {
-            // Static-length nested element: use fixed stride.
-            sb.AppendLine($"            if ({bitIndexVar} + {elemBits} > _endBit_{name}) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' overruns the {{_budgetBytes_{name}}}-byte budget.\");");
-            sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
-            sb.AppendLine($"            {bitIndexVar} += {elemBits};");
+            // Generated [BitSerialize] type (always a class) — concrete-typed local, no boxing concern.
+            sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+
+            if (hasCtx) EmitDeserializeElementContextBefore(sb, ibsElem, bitIndexVar);
+
+            if (nestedDynamicElem)
+            {
+                sb.AppendLine($"            int _consumed_{name} = _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+                sb.AppendLine($"            if (_consumed_{name} <= 0) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' reported 0 consumed bits; byte-length budget loop cannot advance.\");");
+                sb.AppendLine($"            if ({bitIndexVar} + _consumed_{name} > _endBit_{name}) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' overruns the {{_budgetBytes_{name}}}-byte budget.\");");
+                sb.AppendLine($"            {bitIndexVar} += _consumed_{name};");
+            }
+            else // nestedStaticElem
+            {
+                // Static-stride nested element — BITS026 has already rejected elemBits <= 0 or non-byte-aligned.
+                sb.AppendLine($"            if ({bitIndexVar} + {elemBits} > _endBit_{name}) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' overruns the {{_budgetBytes_{name}}}-byte budget.\");");
+                sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+                sb.AppendLine($"            {bitIndexVar} += {elemBits};");
+            }
+
+            if (hasCtx) EmitDeserializeElementContextAfter(sb, ibsElem);
+
+            if (isArray)
+                sb.AppendLine($"            {collector}.Add(_elem);");
+            else
+                sb.AppendLine($"            {memberAccess}.Add(_elem);");
         }
-
-        if (hasCtx) EmitDeserializeElementContextAfter(sb, ibsElem);
-
-        if (isArray)
-            sb.AppendLine($"            {collector}.Add(_elem);");
-        else
-            sb.AppendLine($"            {memberAccess}.Add(_elem);");
 
         sb.AppendLine("        }");
 
