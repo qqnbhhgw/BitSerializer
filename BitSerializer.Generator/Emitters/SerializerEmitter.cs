@@ -114,6 +114,13 @@ internal static class SerializerEmitter
                 offsetExpr = diff == 0 ? runtimeOffsetVar : $"{runtimeOffsetVar} + {diff}";
             }
 
+            // If this field is the first include of a dynamic CRC group, capture the runtime start bit.
+            foreach (var crc in model.CrcGroups)
+            {
+                if (crc.HasDynamicInclude && crc.FirstIncludeMemberName == field.MemberName)
+                    sb.AppendLine($"        int _crcStartBit_{crc.TargetFieldName} = {offsetExpr};");
+            }
+
             string? fieldEndVar = null;
 
             if (field.IsFixedString)
@@ -188,6 +195,18 @@ internal static class SerializerEmitter
                 EmitPrimitiveSerialize(sb, field, helper, memberAccess, offsetExpr);
             }
 
+            // If this field is the last include of a dynamic CRC group, capture the runtime end bit.
+            foreach (var crc in model.CrcGroups)
+            {
+                if (crc.HasDynamicInclude && crc.LastIncludeMemberName == field.MemberName)
+                {
+                    string endExpr = usesRuntimeBitLength
+                        ? fieldEndVar!
+                        : $"{offsetExpr} + {field.BitLength}";
+                    sb.AppendLine($"        int _crcEndBit_{crc.TargetFieldName} = {endExpr};");
+                }
+            }
+
             if (usesRuntimeBitLength)
             {
                 runtimeOffsetVar = fieldEndVar!;
@@ -203,8 +222,18 @@ internal static class SerializerEmitter
             if (crcField == null) continue;
             string crcOffsetExpr = BuildCrcFieldOffsetExpr(crcField, runtimeOffsetVar, runtimeStaticEnd);
             sb.AppendLine("        {");
-            sb.AppendLine($"            int _crcStart = (bitOffset / 8) + {crc.IncludeStartByte};");
-            sb.AppendLine($"            int _crcEnd   = (bitOffset / 8) + {crc.IncludeEndByte};");
+            if (crc.HasDynamicInclude)
+            {
+                sb.AppendLine($"            if ((_crcStartBit_{crc.TargetFieldName} % 8) != 0 || (_crcEndBit_{crc.TargetFieldName} % 8) != 0)");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException(\"CRC include range for '{crcField.MemberName}' is not byte-aligned at runtime (dynamic include field produced a non-integer-byte payload).\");");
+                sb.AppendLine($"            int _crcStart = _crcStartBit_{crc.TargetFieldName} / 8;");
+                sb.AppendLine($"            int _crcEnd   = _crcEndBit_{crc.TargetFieldName} / 8;");
+            }
+            else
+            {
+                sb.AppendLine($"            int _crcStart = (bitOffset / 8) + {crc.IncludeStartByte};");
+                sb.AppendLine($"            int _crcEnd   = (bitOffset / 8) + {crc.IncludeEndByte};");
+            }
             sb.AppendLine($"            var _crcAlgo = new {crc.AlgorithmTypeFullName}();");
             sb.AppendLine($"            _crcAlgo.Reset({crc.InitialValue}UL);");
             sb.AppendLine("            _crcAlgo.Update(bytes.Slice(_crcStart, _crcEnd - _crcStart));");

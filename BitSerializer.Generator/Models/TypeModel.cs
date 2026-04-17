@@ -33,10 +33,16 @@ internal class CrcGroup : IEquatable<CrcGroup>
     public int CrcFieldBitLength { get; set; }
     /// <summary>Primitive numeric type name of the CRC result field (e.g., "ushort", "uint").</summary>
     public string CrcFieldTypeName { get; set; } = "";
-    /// <summary>Byte offset of the start of the included range (within this type's serialized bytes).</summary>
+    /// <summary>Byte offset of the start of the included range (within this type's serialized bytes). Only meaningful when <see cref="HasDynamicInclude"/> is false.</summary>
     public int IncludeStartByte { get; set; }
-    /// <summary>Byte offset one past the end of the included range.</summary>
+    /// <summary>Byte offset one past the end of the included range. Only meaningful when <see cref="HasDynamicInclude"/> is false.</summary>
     public int IncludeEndByte { get; set; }
+    /// <summary>True when any include field has runtime-variable bit length (polymorphic auto-length, terminated string, dynamic list, type parameter, etc.). Emitter uses runtime bit-offset locals instead of IncludeStartByte/IncludeEndByte.</summary>
+    public bool HasDynamicInclude { get; set; }
+    /// <summary>Member name of the first include field in declaration order. Emitter uses it to mark the CRC range start.</summary>
+    public string FirstIncludeMemberName { get; set; } = "";
+    /// <summary>Member name of the last include field in declaration order. Emitter uses it to mark the CRC range end.</summary>
+    public string LastIncludeMemberName { get; set; } = "";
 
     public bool Equals(CrcGroup? other)
     {
@@ -50,7 +56,10 @@ internal class CrcGroup : IEquatable<CrcGroup>
             && CrcFieldBitLength == other.CrcFieldBitLength
             && CrcFieldTypeName == other.CrcFieldTypeName
             && IncludeStartByte == other.IncludeStartByte
-            && IncludeEndByte == other.IncludeEndByte;
+            && IncludeEndByte == other.IncludeEndByte
+            && HasDynamicInclude == other.HasDynamicInclude
+            && FirstIncludeMemberName == other.FirstIncludeMemberName
+            && LastIncludeMemberName == other.LastIncludeMemberName;
     }
 
     public override bool Equals(object? obj) => Equals(obj as CrcGroup);

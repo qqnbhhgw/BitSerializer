@@ -231,6 +231,14 @@ internal static class TypeAnalyzer
                 field.MemberTypeName = "string";
                 field.MemberTypeFullName = "string";
                 model.HasDynamicLength = true;
+
+                // Preserve [BitCrcInclude] on terminated strings so the CRC aggregator sees them.
+                var crcIncludeAttrTerm = GetAttribute(member, "BitSerializer.BitCrcIncludeAttribute");
+                if (crcIncludeAttrTerm != null && crcIncludeAttrTerm.ConstructorArguments.Length > 0)
+                {
+                    field.CrcTargetFieldName = crcIncludeAttrTerm.ConstructorArguments[0].Value as string;
+                }
+
                 model.Fields.Add(field);
                 continue;
             }
@@ -762,7 +770,7 @@ internal static class TypeAnalyzer
                     };
                 }
 
-                // Validate include range: contiguous + byte-aligned
+                // Validate include range: must have at least one include
                 if (!includesByTarget.TryGetValue(crcField.MemberName, out var includes) || includes.Count == 0)
                 {
                     return new AnalyzeResult
@@ -774,10 +782,39 @@ internal static class TypeAnalyzer
                     };
                 }
 
-                // Sort by BitStartIndex
-                var ordered = includes.OrderBy(x => x.BitStartIndex).ToList();
-                int curBit = ordered[0].BitStartIndex;
-                if ((curBit % 8) != 0)
+                // Declaration-order contiguity: the include fields must form a contiguous subsequence of model.Fields.
+                var includeSet = new HashSet<BitFieldModel>(includes);
+                int firstIdx = int.MaxValue;
+                int lastIdx = -1;
+                for (int k = 0; k < model.Fields.Count; k++)
+                {
+                    if (includeSet.Contains(model.Fields[k]))
+                    {
+                        if (k < firstIdx) firstIdx = k;
+                        if (k > lastIdx) lastIdx = k;
+                    }
+                }
+                for (int k = firstIdx; k <= lastIdx; k++)
+                {
+                    if (!includeSet.Contains(model.Fields[k]))
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.CrcIncludeRangeInvalid,
+                                symbol.Locations.FirstOrDefault(),
+                                crcField.MemberName, symbol.Name)
+                        };
+                    }
+                }
+
+                var orderedIncludes = new List<BitFieldModel>();
+                for (int k = firstIdx; k <= lastIdx; k++)
+                    orderedIncludes.Add(model.Fields[k]);
+
+                // Range start must be byte-aligned in the static nominal layout.
+                int rangeStartBit = orderedIncludes[0].BitStartIndex;
+                if ((rangeStartBit % 8) != 0)
                 {
                     return new AnalyzeResult
                     {
@@ -787,10 +824,14 @@ internal static class TypeAnalyzer
                             crcField.MemberName, symbol.Name)
                     };
                 }
-                int rangeStartBit = curBit;
-                foreach (var inc in ordered)
+
+                // Classify each include for byte alignment and tally nominal static bits for the pure-static fast path.
+                bool hasDynamicInclude = false;
+                int nominalTotalBits = 0;
+                foreach (var inc in orderedIncludes)
                 {
-                    if (inc.BitStartIndex != curBit)
+                    var cls = ClassifyIncludeAlignment(inc, symbol.ContainingAssembly);
+                    if (cls == FieldAlignmentClass.Rejected)
                     {
                         return new AnalyzeResult
                         {
@@ -800,21 +841,13 @@ internal static class TypeAnalyzer
                                 crcField.MemberName, symbol.Name)
                         };
                     }
-                    // Determine effective bit length (dynamic fields are not supported for CRC include in v1)
-                    int incBits = GetIncludeFieldStaticBits(inc);
-                    if (incBits < 0)
-                    {
-                        return new AnalyzeResult
-                        {
-                            Diagnostic = Diagnostic.Create(
-                                DiagnosticDescriptors.CrcIncludeRangeInvalid,
-                                symbol.Locations.FirstOrDefault(),
-                                crcField.MemberName, symbol.Name)
-                        };
-                    }
-                    curBit += incBits;
+                    if (IsIncludeFieldDynamic(inc))
+                        hasDynamicInclude = true;
+                    nominalTotalBits += GetIncludeFieldStaticBits(inc);
                 }
-                if ((curBit % 8) != 0)
+
+                // Pure-static group: cumulative bit span must end byte-aligned.
+                if (!hasDynamicInclude && ((rangeStartBit + nominalTotalBits) % 8) != 0)
                 {
                     return new AnalyzeResult
                     {
@@ -835,8 +868,11 @@ internal static class TypeAnalyzer
                     CrcFieldBitOffset = crcField.BitStartIndex,
                     CrcFieldBitLength = crcField.BitLength,
                     CrcFieldTypeName = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName,
-                    IncludeStartByte = rangeStartBit / 8,
-                    IncludeEndByte = curBit / 8
+                    IncludeStartByte = hasDynamicInclude ? 0 : rangeStartBit / 8,
+                    IncludeEndByte = hasDynamicInclude ? 0 : (rangeStartBit + nominalTotalBits) / 8,
+                    HasDynamicInclude = hasDynamicInclude,
+                    FirstIncludeMemberName = orderedIncludes[0].MemberName,
+                    LastIncludeMemberName = orderedIncludes[orderedIncludes.Count - 1].MemberName
                 });
             }
 
@@ -862,23 +898,127 @@ internal static class TypeAnalyzer
     }
 
     /// <summary>
-    /// Returns the effective static bit length of a field participating in a CRC include range,
-    /// or -1 if the field has dynamic or unknown length (disallowed for CRC include in v1).
+    /// Returns the nominal static bit footprint of a field participating in a CRC include range,
+    /// matching the layout calculation in <see cref="Analyze"/> (so pure-static groups can tally
+    /// IncludeStartByte/IncludeEndByte). Dynamic-length fields that do not advance the static
+    /// layout cursor return 0.
     /// </summary>
     private static int GetIncludeFieldStaticBits(BitFieldModel f)
     {
-        if (f.IsTerminatedString) return -1;
-        if (f.IsTypeParameter) return -1;
-        if (f.IsPotentiallyDynamic) return -1;
+        if (f.IsTerminatedString) return 0;
+        if (f.IsTypeParameter) return 0;
         if (f.IsList)
         {
-            if (f.ConsumeRemaining) return -1;
-            if (!f.FixedCount.HasValue) return -1;
-            if (f.ListElementHasDynamicLength) return -1;
-            if (f.ListElementBitLength == 0) return -1;
+            if (f.ConsumeRemaining) return 0;
+            if (!f.FixedCount.HasValue) return 0;
+            if (f.ListElementHasDynamicLength) return 0;
+            if (f.ListElementBitLength == 0) return 0;
             return f.FixedCount.Value * f.ListElementBitLength;
         }
+        if (f.IsPolymorphic) return f.PolymorphicBitLength > 0 ? f.PolymorphicBitLength : f.BitLength;
+        if (f.IsPotentiallyDynamic) return 0;
         return f.BitLength;
+    }
+
+    /// <summary>
+    /// Classification for runtime byte alignment of a CRC-include field.
+    /// </summary>
+    private enum FieldAlignmentClass
+    {
+        /// <summary>Runtime byte alignment is statically provable.</summary>
+        Aligned,
+        /// <summary>Provably violates byte alignment — emit BITS017 at compile time.</summary>
+        Rejected,
+        /// <summary>Can't prove at compile time; defer to an emitted runtime assertion.</summary>
+        RuntimeOnly
+    }
+
+    /// <summary>
+    /// True if the include field has runtime-variable serialized bit length.
+    /// </summary>
+    private static bool IsIncludeFieldDynamic(BitFieldModel f)
+    {
+        if (f.IsTerminatedString) return true;
+        if (f.IsTypeParameter) return true;
+        if (f.IsPotentiallyDynamic) return true;
+        if (f.IsList)
+        {
+            if (f.ConsumeRemaining) return true;
+            if (!f.FixedCount.HasValue) return true;
+            if (f.ListElementHasDynamicLength) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Decides whether a CRC-include field contributes a byte-aligned chunk of bytes at runtime.
+    /// Static cases are verified by bit-width arithmetic; polymorphic auto-length is verified by
+    /// inspecting every concrete [BitPoly] mapping; non-provable dynamic cases fall through to
+    /// runtime assertion emitted by the serializer.
+    /// </summary>
+    private static FieldAlignmentClass ClassifyIncludeAlignment(BitFieldModel f, IAssemblySymbol assembly)
+    {
+        // Pure static (non-dynamic) includes: require the nominal footprint be byte-aligned.
+        if (!IsIncludeFieldDynamic(f))
+        {
+            int effectiveBits = f.IsList && f.FixedCount.HasValue
+                ? f.FixedCount.Value * f.ListElementBitLength
+                : f.BitLength;
+            return (effectiveBits % 8 == 0) ? FieldAlignmentClass.Aligned : FieldAlignmentClass.Rejected;
+        }
+
+        // Terminated string: encoded bytes + 1-byte terminator — always byte-aligned.
+        if (f.IsTerminatedString)
+            return FieldAlignmentClass.Aligned;
+
+        // Generic type parameter: concrete T not known at compile time.
+        if (f.IsTypeParameter)
+            return FieldAlignmentClass.RuntimeOnly;
+
+        // Polymorphic (auto-length): every [BitPoly] concrete type must be byte-aligned and non-dynamic.
+        if (f.IsPolymorphic && f.PolyMappings != null && f.PolyMappings.Count > 0)
+        {
+            // Explicit-bit-length polymorphic is a fixed slot and caught by the static branch above;
+            // here we only handle the auto-length form (IsPotentiallyDynamic == true).
+            foreach (var mapping in f.PolyMappings)
+            {
+                var concrete = FindTypeByFullName(assembly, mapping.ConcreteTypeFullName);
+                if (concrete == null)
+                    return FieldAlignmentClass.RuntimeOnly;
+                if (HasDynamicLengthRecursive(concrete))
+                    return FieldAlignmentClass.Rejected;
+                if (CalculateNestedBitLength(concrete) % 8 != 0)
+                    return FieldAlignmentClass.Rejected;
+            }
+            return FieldAlignmentClass.Aligned;
+        }
+
+        // Dynamic list.
+        if (f.IsList)
+        {
+            // ConsumeRemaining fills to buffer end (byte-aligned by buffer construction).
+            if (f.ConsumeRemaining)
+                return FieldAlignmentClass.Aligned;
+            if (!f.ListElementHasDynamicLength)
+            {
+                return (f.ListElementBitLength % 8 == 0)
+                    ? FieldAlignmentClass.Aligned
+                    : FieldAlignmentClass.Rejected;
+            }
+            // Dynamic element: attempt static proof via element type inspection.
+            if (f.ListElementTypeFullName != null)
+            {
+                var elemType = FindTypeByFullName(assembly, f.ListElementTypeFullName);
+                if (elemType != null
+                    && !HasDynamicLengthRecursive(elemType)
+                    && CalculateNestedBitLength(elemType) % 8 == 0)
+                    return FieldAlignmentClass.Aligned;
+            }
+            return FieldAlignmentClass.RuntimeOnly;
+        }
+
+        // Nested [BitSerialize] with dynamic content, or manual IBitSerializable without explicit length.
+        return FieldAlignmentClass.RuntimeOnly;
     }
 
     /// <summary>

@@ -135,7 +135,7 @@ internal static class DiagnosticDescriptors
     public static readonly DiagnosticDescriptor CrcIncludeRangeInvalid = new(
         "BITS017",
         "[BitCrcInclude] range is invalid",
-        "CRC '{0}' in type '{1}' has invalid include range — included fields must be contiguous and byte-aligned at both ends",
+        "CRC '{0}' in type '{1}' has invalid include range — included fields must be declared contiguously, the range must start on a byte boundary, and every included field must be byte-aligned at runtime (for polymorphic fields every [BitPoly] concrete type must have a total bit length that is a multiple of 8 and no dynamic content; for lists the element bit width must be a multiple of 8)",
         "BitSerializer",
         DiagnosticSeverity.Error,
         true);
