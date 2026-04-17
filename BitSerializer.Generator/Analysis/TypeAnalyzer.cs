@@ -13,15 +13,27 @@ internal class AnalyzeResult : IEquatable<AnalyzeResult>
 {
     public TypeModel? Model { get; set; }
     public Diagnostic? Diagnostic { get; set; }
+    public List<Diagnostic> Warnings { get; set; } = new();
 
     public bool Equals(AnalyzeResult? other)
     {
         if (other is null) return false;
+        if (!WarningsEqual(Warnings, other.Warnings)) return false;
         if (Model is not null && other.Model is not null) return Model.Equals(other.Model);
         if (Diagnostic is not null && other.Diagnostic is not null)
             return Diagnostic.Id == other.Diagnostic.Id
                 && Diagnostic.Location == other.Diagnostic.Location;
         return false;
+    }
+
+    private static bool WarningsEqual(List<Diagnostic> a, List<Diagnostic> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (a[i].Id != b[i].Id || a[i].Location != b[i].Location) return false;
+        }
+        return true;
     }
 
     public override bool Equals(object? obj) => Equals(obj as AnalyzeResult);
@@ -117,6 +129,9 @@ internal static class TypeAnalyzer
 
         // Track CRC algorithm symbols per member name so we can validate after the field loop
         var crcAlgoByField = new Dictionary<string, INamedTypeSymbol?>();
+
+        // Collect non-fatal warnings emitted during member analysis
+        var warnings = new List<Diagnostic>();
 
         foreach (var member in members)
         {
@@ -345,6 +360,19 @@ internal static class TypeAnalyzer
             var polyAttrs = GetAttributes(member, "BitSerializer.BitPolyAttribute");
             if (polyAttrs.Count > 0)
             {
+                // BITS007: [BitPoly] requires [BitFieldRelated] so deserialization can pick
+                // the concrete type from a discriminator field.
+                if (relatedAttr == null || string.IsNullOrEmpty(relatedMemberName))
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.PolymorphicMissingRelated,
+                            member.Locations.FirstOrDefault(),
+                            member.Name)
+                    };
+                }
+
                 field.IsPolymorphic = true;
                 field.PolyMappings = new List<PolyMapping>();
                 foreach (var polyAttr in polyAttrs)
@@ -454,11 +482,16 @@ internal static class TypeAnalyzer
                 {
                     field.BitLength = explicitBitLength.Value;
                     field.PolymorphicBitLength = explicitBitLength.Value;
+                    // BITS023: explicit N is a fixed slot regardless of runtime poly type size
+                    warnings.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.ExplicitBitLengthOnVariableContent,
+                        member.Locations.FirstOrDefault(),
+                        member.Name, symbol.Name, explicitBitLength.Value,
+                        "polymorphic (the actual bit length depends on the runtime concrete type)"));
                 }
                 else
                 {
                     int maxBits = 0;
-                    bool hasDynamicPoly = false;
                     foreach (var mapping in field.PolyMappings!)
                     {
                         var polyTypeSymbol = FindTypeByFullName(symbol.ContainingAssembly, mapping.ConcreteTypeFullName);
@@ -466,17 +499,14 @@ internal static class TypeAnalyzer
                         {
                             int bits = CalculateNestedBitLength(polyTypeSymbol);
                             if (bits > maxBits) maxBits = bits;
-                            if (!hasDynamicPoly && HasDynamicLengthRecursive(polyTypeSymbol))
-                                hasDynamicPoly = true;
                         }
                     }
                     field.BitLength = maxBits;
                     field.PolymorphicBitLength = maxBits;
-                    if (hasDynamicPoly)
-                    {
-                        field.IsPotentiallyDynamic = true;
-                        model.HasDynamicLength = true;
-                    }
+                    // Auto-length polymorphic: actual bit length is determined by the runtime
+                    // concrete type, so GetTotalBitLength must dispatch dynamically.
+                    field.IsPotentiallyDynamic = true;
+                    model.HasDynamicLength = true;
                 }
 
                 currentBitIndex += field.BitLength;
@@ -509,10 +539,20 @@ internal static class TypeAnalyzer
 
                 int nestedBits = CalculateNestedBitLength(memberType);
                 field.BitLength = explicitBitLength ?? nestedBits;
-                if (!explicitBitLength.HasValue && HasDynamicLengthRecursive(memberType))
+                bool nestedIsDynamic = HasDynamicLengthRecursive(memberType);
+                if (!explicitBitLength.HasValue && nestedIsDynamic)
                 {
                     field.IsPotentiallyDynamic = true;
                     model.HasDynamicLength = true;
+                }
+                else if (explicitBitLength.HasValue && nestedIsDynamic)
+                {
+                    // BITS023: the nested type has dynamic content but is pinned to a fixed slot
+                    warnings.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.ExplicitBitLengthOnVariableContent,
+                        member.Locations.FirstOrDefault(),
+                        member.Name, symbol.Name, explicitBitLength.Value,
+                        $"a [BitSerialize] type '{memberType.Name}' with dynamic-length content"));
                 }
                 if (HasOwnContextMethods(memberType))
                     field.NestedHasOwnContext = true;
@@ -554,6 +594,12 @@ internal static class TypeAnalyzer
                 {
                     field.BitLength = explicitBitLength.Value;
                     currentBitIndex += field.BitLength;
+                    // BITS023: manual IBitSerializable write size is unknown to the generator
+                    warnings.Add(Diagnostic.Create(
+                        DiagnosticDescriptors.ExplicitBitLengthOnVariableContent,
+                        member.Locations.FirstOrDefault(),
+                        member.Name, symbol.Name, explicitBitLength.Value,
+                        $"a manual IBitSerializable type '{memberType.Name}' (its Serialize/Deserialize decides the actual bit length at runtime)"));
                 }
                 else
                 {
@@ -812,7 +858,7 @@ internal static class TypeAnalyzer
             }
         }
 
-        return new AnalyzeResult { Model = model };
+        return new AnalyzeResult { Model = model, Warnings = warnings };
     }
 
     /// <summary>
@@ -986,6 +1032,35 @@ internal static class TypeAnalyzer
 
             int? explicitBitLength = GetBitLengthFromAttribute(bitFieldAttr);
 
+            // Polymorphic fields: the declared type may be an abstract base (without [BitSerialize]),
+            // so check [BitPoly] on the member itself, independent of the declared type.
+            var memberPolyAttrs = GetAttributes(member, "BitSerializer.BitPolyAttribute");
+            if (memberPolyAttrs.Count > 0 && !IsListType(memberType, out _, out _))
+            {
+                if (explicitBitLength.HasValue)
+                {
+                    total += explicitBitLength.Value;
+                }
+                else
+                {
+                    int maxBits = 0;
+                    foreach (var polyAttr in memberPolyAttrs)
+                    {
+                        if (polyAttr.ConstructorArguments.Length >= 2)
+                        {
+                            var concreteType = polyAttr.ConstructorArguments[1].Value as INamedTypeSymbol;
+                            if (concreteType != null)
+                            {
+                                int bits = CalculateNestedBitLength(concreteType);
+                                if (bits > maxBits) maxBits = bits;
+                            }
+                        }
+                    }
+                    total += maxBits;
+                }
+                continue;
+            }
+
             if (IsListType(memberType, out var elemType, out _))
             {
                 var countAttr = GetAttribute(member, "BitSerializer.BitFieldCountAttribute");
@@ -1017,37 +1092,8 @@ internal static class TypeAnalyzer
             }
             else if (HasAttribute(memberType, "BitSerializer.BitSerializeAttribute"))
             {
-                // Check if this is a polymorphic field - use max of poly types
-                var polyAttrs = GetAttributes(member, "BitSerializer.BitPolyAttribute");
-                if (polyAttrs.Count > 0)
-                {
-                    if (explicitBitLength.HasValue)
-                    {
-                        total += explicitBitLength.Value;
-                    }
-                    else
-                    {
-                        int maxBits = 0;
-                        foreach (var polyAttr in polyAttrs)
-                        {
-                            if (polyAttr.ConstructorArguments.Length >= 2)
-                            {
-                                var concreteType = polyAttr.ConstructorArguments[1].Value as INamedTypeSymbol;
-                                if (concreteType != null)
-                                {
-                                    int bits = CalculateNestedBitLength(concreteType);
-                                    if (bits > maxBits) maxBits = bits;
-                                }
-                            }
-                        }
-                        total += maxBits;
-                    }
-                }
-                else
-                {
-                    int nested = CalculateNestedBitLength(memberType);
-                    total += explicitBitLength ?? nested;
-                }
+                int nested = CalculateNestedBitLength(memberType);
+                total += explicitBitLength ?? nested;
             }
             else if (ImplementsBitSerializable(memberType))
             {
@@ -1188,6 +1234,10 @@ internal static class TypeAnalyzer
             var polyAttrs = GetAttributes(member, "BitSerializer.BitPolyAttribute");
             if (polyAttrs.Count > 0)
             {
+                // Auto-length polymorphic: the runtime type determines the bit length,
+                // so the containing type always has a dynamic length.
+                int? explBits = GetBitLengthFromAttribute(bitFieldAttr);
+                if (!explBits.HasValue) return true;
                 foreach (var polyAttr in polyAttrs)
                 {
                     if (polyAttr.ConstructorArguments.Length >= 2)

@@ -180,4 +180,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor ExplicitBitLengthOnVariableContent = new(
+        "BITS023",
+        "[BitField(N)] pins a fixed slot on content whose runtime size can vary",
+        "Member '{0}' in '{1}' is declared with an explicit bit length of {2}, but its runtime content is {3}. The slot stays exactly {2} bits regardless of the actual object, so the serialized byte[] will contain trailing zero padding when the object is smaller, and will corrupt subsequent fields if the object is larger. Remove the explicit bit length to let GetTotalBitLength use the runtime size, or keep it only if you truly want a fixed slot.",
+        "BitSerializer",
+        DiagnosticSeverity.Warning,
+        true);
+
 }

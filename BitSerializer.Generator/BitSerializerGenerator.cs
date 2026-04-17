@@ -24,6 +24,10 @@ public class BitSerializerGenerator : IIncrementalGenerator
         context.RegisterSourceOutput(allResults, (spc, result) =>
         {
             if (result is null) return;
+            foreach (var warning in result.Warnings)
+            {
+                spc.ReportDiagnostic(warning);
+            }
             if (result.Diagnostic is not null)
             {
                 spc.ReportDiagnostic(result.Diagnostic);
