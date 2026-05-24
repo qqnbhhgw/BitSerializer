@@ -291,15 +291,25 @@ internal static class SerializerEmitter
             sb.AppendLine("        {");
             if (crc.IsWholeBuffer)
             {
-                // WholeBuffer mode: CRC covers (bitOffset/8 + SkipHead) .. (bitOffset/8 + totalBytes - SkipTail).
+                // WholeBuffer mode: CRC covers (bitOffset/8 + SkipHead) .. (endBit/8 - SkipTail).
                 // The CRC field's own slot is expected to live inside the SkipTail region so the CRC does
-                // not read its uninitialized self back. Runtime guard rejects negative ranges (SkipTail too
-                // large) or zero-length ranges (degenerate config).
-                string totalBytesExpr = BuildTotalBytesExpr(model, runtimeOffsetVar, runtimeStaticEnd);
+                // not read its uninitialized self back.
+                //
+                // Two byte-alignment guards (review P1): division-by-8 silently truncates partial bytes,
+                // so we reject (a) non-byte-aligned bitOffset (e.g. caller nested this type after a 1-bit
+                // field) and (b) non-byte-aligned end bit (e.g. dynamic content produced an odd bit count).
+                // Without these guards, Slice() would include neighbor bytes from outside the type, or
+                // drop the trailing partial byte, producing silently wrong CRC values.
+                string endBitExpr = BuildEndBitExpr(model, runtimeOffsetVar, runtimeStaticEnd);
+                sb.AppendLine($"            if ((bitOffset & 7) != 0)");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer requires byte-aligned bitOffset; got {{bitOffset}} (bitOffset & 7 = {{bitOffset & 7}}).\");");
+                sb.AppendLine($"            int _crcEndBit_{crc.TargetFieldName}_wb = {endBitExpr};");
+                sb.AppendLine($"            if ((_crcEndBit_{crc.TargetFieldName}_wb & 7) != 0)");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer requires the type's serialized total bit length to be byte-aligned; got {{_crcEndBit_{crc.TargetFieldName}_wb - bitOffset}} bits ({{(_crcEndBit_{crc.TargetFieldName}_wb - bitOffset) & 7}} bits past the last byte boundary).\");");
                 sb.AppendLine($"            int _crcStart = (bitOffset / 8) + {crc.SkipHeadBytes};");
-                sb.AppendLine($"            int _crcEnd   = (bitOffset / 8) + {totalBytesExpr} - {crc.SkipTailBytes};");
+                sb.AppendLine($"            int _crcEnd   = (_crcEndBit_{crc.TargetFieldName}_wb / 8) - {crc.SkipTailBytes};");
                 sb.AppendLine($"            if (_crcEnd < _crcStart)");
-                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer range is empty: SkipHeadBytes ({crc.SkipHeadBytes}) + SkipTailBytes ({crc.SkipTailBytes}) ≥ total written bytes ({{((bitOffset / 8) + {totalBytesExpr}) - (bitOffset / 8)}}).\");");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer range is empty: SkipHeadBytes ({crc.SkipHeadBytes}) + SkipTailBytes ({crc.SkipTailBytes}) ≥ total written bytes ({{(_crcEndBit_{crc.TargetFieldName}_wb - bitOffset) / 8}}).\");");
             }
             else if (crc.HasDynamicInclude)
             {
@@ -352,19 +362,19 @@ internal static class SerializerEmitter
     }
 
     /// <summary>
-    /// Builds an expression evaluating to the number of bytes this type has written to the buffer
-    /// starting at <c>bitOffset</c>. Used by WholeBuffer CRC mode to compute the end of its slice.
-    /// Mirrors the return-value calculation at the end of EmitMethod.
+    /// Builds an expression evaluating to the bit-offset one-past-the-end of this type's serialized
+    /// payload (in absolute bits, i.e. relative to the buffer start, NOT relative to bitOffset).
+    /// Mirrors the return-value calculation at the end of EmitMethod. WholeBuffer CRC mode uses this
+    /// so it can byte-align-check before dividing by 8 (review P1).
     /// </summary>
-    private static string BuildTotalBytesExpr(TypeModel model, string? runtimeOffsetVar, int runtimeStaticEnd)
+    private static string BuildEndBitExpr(TypeModel model, string? runtimeOffsetVar, int runtimeStaticEnd)
     {
         if (runtimeOffsetVar is null)
         {
-            return (model.TotalBitLength / 8).ToString();
+            return $"(bitOffset + {model.TotalBitLength})";
         }
         int trailingBits = model.TotalBitLength - runtimeStaticEnd;
-        string endBitExpr = trailingBits > 0 ? $"({runtimeOffsetVar} + {trailingBits})" : runtimeOffsetVar;
-        return $"(({endBitExpr} - bitOffset) / 8)";
+        return trailingBits > 0 ? $"({runtimeOffsetVar} + {trailingBits})" : runtimeOffsetVar;
     }
 
     public static string EmitDelegationMethod(TypeModel model, string bitOrder)

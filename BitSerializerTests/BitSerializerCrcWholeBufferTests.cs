@@ -111,6 +111,35 @@ public partial class BitSerializerCrcWholeBufferTests
         public ushort Crc { get; set; }
     }
 
+    /// <summary>
+    /// 嵌套场景（review P1）：外层 1-bit 字段使内层 WholeBuffer 子帧从 bitOffset=1 开始。
+    /// 没有字节对齐守卫的话，(bitOffset / 8) 会截断到上一个字节，导致 CRC 范围错位。
+    /// 守卫应在序列化时抛 InvalidDataException 而非默默算错。
+    /// </summary>
+    [BitSerialize]
+    public partial class InnerWholeBufferFrame
+    {
+        [BitField(8)] public byte Header { get; set; }
+        [BitField(16)] public ushort Payload { get; set; }
+        [BitField(16), BitCrc(typeof(CrcCcitt), WholeBuffer = true, SkipTailBytes = 2)]
+        public ushort Crc { get; set; }
+    }
+
+    [BitSerialize]
+    public partial class OuterWith1BitPrefix
+    {
+        [BitField(1)] public byte Flag { get; set; }
+        [BitField(7)] public byte Padding { get; set; } // 让 Inner 从 bit 8 开始（字节对齐）
+        [BitField] public InnerWholeBufferFrame Inner { get; set; } = new();
+    }
+
+    [BitSerialize]
+    public partial class OuterWith1BitMisalignment
+    {
+        [BitField(1)] public byte Flag { get; set; } // 1 bit → Inner 从 bit 1 开始（不字节对齐）
+        [BitField] public InnerWholeBufferFrame Inner { get; set; } = new();
+    }
+
     #endregion
 
     #region Basic WholeBuffer
@@ -318,6 +347,42 @@ public partial class BitSerializerCrcWholeBufferTests
         // totalBytes = 1 + 2 = 3; SkipHead=10, SkipTail=2; effective end = 3-2 = 1, start = 0+10 = 10 → end < start.
         var data = new DegenerateSkipPacket { Header = 0xAB };
         Should.Throw<System.IO.InvalidDataException>(() => BitSerializerMSB.Serialize(data));
+    }
+
+    #endregion
+
+    #region Byte alignment guards (review P1)
+
+    [Fact]
+    public void Nested_With_ByteAligned_BitOffset_Works()
+    {
+        // Outer: 1-bit Flag + 7-bit Padding = 8 bits → Inner starts at bit 8 (byte boundary).
+        var data = new OuterWith1BitPrefix
+        {
+            Flag = 1,
+            Padding = 0x42,
+            Inner = new InnerWholeBufferFrame { Header = 0xAB, Payload = 0x1234 },
+        };
+        var bytes = BitSerializerMSB.Serialize(data);
+        var result = BitSerializerMSB.Deserialize<OuterWith1BitPrefix>(bytes);
+        result.Flag.ShouldBe((byte)1);
+        result.Padding.ShouldBe((byte)0x42);
+        result.Inner.Header.ShouldBe((byte)0xAB);
+        result.Inner.Payload.ShouldBe((ushort)0x1234);
+    }
+
+    [Fact]
+    public void Nested_With_NonByteAligned_BitOffset_ThrowsAtRuntime()
+    {
+        // Outer: 1-bit Flag → Inner starts at bit 1 (NOT byte-aligned).
+        // Without the guard, WholeBuffer would silently compute the wrong CRC slice.
+        var data = new OuterWith1BitMisalignment
+        {
+            Flag = 1,
+            Inner = new InnerWholeBufferFrame { Header = 0xAB, Payload = 0x1234 },
+        };
+        var ex = Should.Throw<System.IO.InvalidDataException>(() => BitSerializerMSB.Serialize(data));
+        ex.Message.ShouldContain("byte-aligned bitOffset");
     }
 
     #endregion
