@@ -373,6 +373,14 @@ internal static class TypeAnalyzer
             // Get explicit bit length from [BitField]
             int? explicitBitLength = GetBitLengthFromAttribute(bitFieldAttr!);
 
+            // Read [BitField(Endian = ...)] named argument (0=Inherit, 1=Big, 2=Little).
+            // Stored as int to match BitFieldModel.Endian; runtime BitEndian enum maps to the same values.
+            foreach (var named in bitFieldAttr!.NamedArguments)
+            {
+                if (named.Key == "Endian" && named.Value.Value is int endianRaw)
+                    field.Endian = endianRaw;
+            }
+
             // Check for BitFieldRelated
             var relatedAttr = GetAttribute(member, "BitSerializer.BitFieldRelatedAttribute");
             string? relatedMemberName = null;
@@ -775,6 +783,39 @@ internal static class TypeAnalyzer
         }
 
         model.TotalBitLength = currentBitIndex;
+
+        // BITS028: validate [BitField(Endian = ...)] usage.
+        // Field-level endianness only makes sense for byte-aligned scalars (numeric/enum) with
+        // byte-multiple width — endianness is a byte-order concept, not meaningful for sub-byte
+        // bit ranges, lists, strings, or nested composite types.
+        foreach (var f in model.Fields)
+        {
+            if (f.Endian == 0) continue; // Inherit — no override, nothing to validate.
+
+            bool isScalar = f.IsNumericOrEnum
+                            && !f.IsList
+                            && !f.IsFixedString
+                            && !f.IsTerminatedString
+                            && !f.IsNestedType
+                            && !f.IsPolymorphic
+                            && !f.IsTypeParameter;
+            bool byteAlignedOffset = (f.BitStartIndex % 8) == 0;
+            bool byteMultipleWidth = f.BitLength == 8 || f.BitLength == 16 || f.BitLength == 32 || f.BitLength == 64;
+
+            if (!isScalar || !byteAlignedOffset || !byteMultipleWidth)
+            {
+                string endianName = f.Endian == 1 ? "Big" : f.Endian == 2 ? "Little" : f.Endian.ToString();
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.FieldEndianRequiresByteAlignedScalar,
+                        symbol.Locations.FirstOrDefault(),
+                        f.MemberName, symbol.Name, endianName,
+                        f.BitStartIndex, f.BitLength,
+                        f.IsList, f.IsFixedString || f.IsTerminatedString, f.IsNestedType || f.IsPolymorphic)
+                };
+            }
+        }
 
         // Validate PadIfShort: requires primitive element type
         foreach (var f in model.Fields)

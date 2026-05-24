@@ -92,4 +92,9 @@ internal class BitFieldModel
     // [BitFieldRelated(RelationKind = ...)]: Count (default) = element count; ByteLength = byte budget.
     // Stored as int to avoid a Generator-side reference to the runtime enum; matches BitRelationKind values.
     public int RelationKind { get; set; }
+
+    // [BitField(Endian = ...)]: 0=Inherit (follow outer method), 1=Big (force MSB), 2=Little (force LSB).
+    // Stored as int to avoid a Generator-side reference to the runtime BitEndian enum.
+    // Only meaningful for numeric/enum fields that are byte-aligned with bit width ∈ {8,16,32,64}.
+    public int Endian { get; set; }
 }

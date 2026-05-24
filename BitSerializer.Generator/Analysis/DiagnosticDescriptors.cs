@@ -220,6 +220,14 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Warning,
         true);
 
+    public static readonly DiagnosticDescriptor FieldEndianRequiresByteAlignedScalar = new(
+        "BITS028",
+        "[BitField(Endian = ...)] requires a byte-aligned scalar field",
+        "Member '{0}' in '{1}' specifies Endian = {2}, but field-level endianness only applies to numeric/enum scalars with byte-aligned offset (BitStartIndex % 8 == 0) and byte-multiple width (BitLength ∈ {{8,16,32,64}}). This field has BitStartIndex = {3}, BitLength = {4}, IsList = {5}, IsString = {6}, IsNested = {7}. Remove the Endian argument, or restructure the field so it lands on a byte boundary with a byte-multiple width.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
     public static readonly DiagnosticDescriptor CrcWholeBufferConflictsWithInclude = new(
         "BITS029",
         "[BitCrc(WholeBuffer = true)] cannot combine with [BitCrcInclude]",

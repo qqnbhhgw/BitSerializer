@@ -190,7 +190,8 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.CrcTargetFieldName == y.CrcTargetFieldName
             && x.PadIfShort == y.PadIfShort
             && x.ConsumeRemaining == y.ConsumeRemaining
-            && x.RelationKind == y.RelationKind;
+            && x.RelationKind == y.RelationKind
+            && x.Endian == y.Endian;
     }
 
     public int GetHashCode(BitFieldModel obj) => obj.MemberName.GetHashCode();

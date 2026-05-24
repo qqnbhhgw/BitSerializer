@@ -167,8 +167,10 @@ internal static class DeserializerEmitter
             }
             else if (field.IsNumericOrEnum)
             {
-                // Primitive converter is handled inside EmitPrimitiveDeserialize
-                EmitPrimitiveDeserialize(sb, field, helper, memberAccess, offsetExpr);
+                // Primitive converter is handled inside EmitPrimitiveDeserialize.
+                // [BitField(Endian = ...)] override mirrors the serializer side.
+                var fieldHelper = ResolveFieldHelper(helper, field.Endian);
+                EmitPrimitiveDeserialize(sb, field, fieldHelper, memberAccess, offsetExpr);
             }
 
             // If this field is the last include of a dynamic CRC group that validates on deserialize,
@@ -803,6 +805,20 @@ internal static class DeserializerEmitter
         }
         int trailingBits = model.TotalBitLength - runtimeStaticEnd;
         return trailingBits > 0 ? $"({runtimeOffsetVar} + {trailingBits})" : runtimeOffsetVar;
+    }
+
+    /// <summary>
+    /// Mirror of SerializerEmitter.ResolveFieldHelper — keep both in sync.
+    /// 0=Inherit (outer), 1=Big (MSB), 2=Little (LSB).
+    /// </summary>
+    private static string ResolveFieldHelper(string outerHelper, int fieldEndian)
+    {
+        return fieldEndian switch
+        {
+            1 => "global::BitSerializer.BitHelperMSB",
+            2 => "global::BitSerializer.BitHelperLSB",
+            _ => outerHelper,
+        };
     }
 
     private static bool UsesRuntimeBitLength(BitFieldModel field)
