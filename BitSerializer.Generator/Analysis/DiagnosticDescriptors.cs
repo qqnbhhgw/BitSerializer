@@ -436,4 +436,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor ByteLengthFixedSlotOnDynamicNested = new(
+        "BITS055",
+        "[BitFieldRelated(ByteLength)] on a fixed-slot dynamic nested carrier never round-trips",
+        "Member '{0}' in '{1}' is a {2} carrier using [BitFieldRelated(nameof({3}), RelationKind=ByteLength)], but it pins the nested type to a fixed {4}-bit slot via an explicit [BitField({4})]. Serialize back-fills '{3}' from the static slot size ({4}/8 = {5} bytes), then writes the nested object whose runtime size may be smaller or larger. The T4 nested deserializer validates `consumedBits == declaredBytes * 8` and will throw on round-trip whenever the runtime size differs. Remove the explicit [BitField({4})] so the back-fill uses GetTotalBitLength() instead, or replace the dynamic nested type with a fixed-size one",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

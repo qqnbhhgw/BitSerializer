@@ -203,6 +203,7 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.ConstantValueVerify == y.ConstantValueVerify
             && x.ConstantValueIsUnsignedOverflow == y.ConstantValueIsUnsignedOverflow
             && x.NestedHasEndianOverride == y.NestedHasEndianOverride
+            && x.NestedTypeHasDynamicContent == y.NestedTypeHasDynamicContent
             && x.NestedEndianKind == y.NestedEndianKind
             && x.NestedEndianTypeFullName == y.NestedEndianTypeFullName
             && PolyMappingsEqual(x.PolyMappings, y.PolyMappings);

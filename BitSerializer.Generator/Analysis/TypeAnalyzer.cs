@@ -955,6 +955,12 @@ internal static class TypeAnalyzer
                 int nestedBits = CalculateNestedBitLength(memberType);
                 field.BitLength = explicitBitLength ?? nestedBits;
                 bool nestedIsDynamic = HasDynamicLengthRecursive(memberType);
+                // Capture regardless of explicit-BitLength override so BITS055 can later reject the
+                // "dynamic nested + fixed slot + ByteLength carrier" combination that BITS023
+                // currently only warns about (round-trip can't work — backfill writes N/8 but the
+                // nested type emits its own runtime size, then the T4 nested deserializer's
+                // consumedBits-vs-budget verify fires).
+                field.NestedTypeHasDynamicContent = nestedIsDynamic;
                 if (!explicitBitLength.HasValue && nestedIsDynamic)
                 {
                     field.IsPotentiallyDynamic = true;
@@ -1012,6 +1018,11 @@ internal static class TypeAnalyzer
                 field.MemberTypeName = memberType.Name;
                 field.MemberTypeFullName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
+                // Manual impls are *always* runtime-decided (their Serialize/Deserialize chooses
+                // how many bits to write), so the dynamic-content flag is unconditionally true —
+                // BITS055 uses this to reject ByteLength carriers that lock such a member into a
+                // fixed slot.
+                field.NestedTypeHasDynamicContent = true;
                 if (explicitBitLength.HasValue)
                 {
                     field.BitLength = explicitBitLength.Value;
@@ -1402,6 +1413,36 @@ internal static class TypeAnalyzer
                             DiagnosticDescriptors.ByteLengthNestedNotByteAligned,
                             symbol.Locations.FirstOrDefault(),
                             f.MemberName, symbol.Name, f.BitLength)
+                    };
+                }
+
+                // Codex review round-6 P2 (BITS055): explicit [BitField(N)] on a dynamic nested
+                // carrier that ALSO uses RelationKind=ByteLength can never round-trip. The serializer
+                // back-fills the length from the static slot size (N/8), then the nested type writes
+                // its runtime size (possibly different). The T4 nested deserializer
+                // (EmitNestedByteLengthVerify) asserts `consumedBits == declaredBytes * 8` and throws
+                // InvalidDataException on any mismatch. BITS023 currently emits a *warning* about
+                // pinning a dynamic nested type to a fixed slot — when that slot is the byte budget
+                // for a peer length field, escalate to a hard error.
+                //
+                // Detection: NestedTypeHasDynamicContent==true (set by the field analysis branches
+                // unconditionally regardless of explicit-BitLength override) AND the field's runtime
+                // size is *not* tracked dynamically (i.e. !IsPotentiallyDynamic — explicit-BitLength
+                // suppressed the dynamic flag). Type parameters always go through GetTotalBitLength
+                // so they don't hit this corruption path.
+                if (!f.IsTypeParameter && !f.IsPotentiallyDynamic
+                    && f.NestedTypeHasDynamicContent && f.BitLength > 0)
+                {
+                    string carrierKind = f.IsManualBitSerializable
+                        ? "manual IBitSerializable"
+                        : "nested [BitSerialize]";
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.ByteLengthFixedSlotOnDynamicNested,
+                            symbol.Locations.FirstOrDefault(),
+                            f.MemberName, symbol.Name, carrierKind,
+                            f.RelatedMemberName ?? "", f.BitLength, f.BitLength / 8)
                     };
                 }
             }

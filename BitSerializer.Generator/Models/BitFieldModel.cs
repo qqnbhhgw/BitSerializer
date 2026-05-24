@@ -137,6 +137,15 @@ internal class BitFieldModel
     /// </summary>
     public bool ConstantValueIsUnsignedOverflow { get; set; }
 
+    // True when this is a nested [BitSerialize] / manual IBitSerializable carrier whose underlying
+    // type has dynamic-length content (terminated string, polymorphic auto-length, dynamic list, …),
+    // even if the field overrides BitLength via explicit `[BitField(N)]`. BITS023 warns about this
+    // pinning at the field level; BITS055 uses this flag to *reject* the same pattern when the
+    // field is also a ByteLength carrier (auto-backfill would write N/8 instead of the runtime
+    // size, while the nested deserializer's consumedBits-vs-budget assertion would fail at
+    // round-trip).
+    public bool NestedTypeHasDynamicContent { get; set; }
+
     // True if the field's nested type (direct nested OR list element type) transitively contains
     // a [BitField(Endian = ...)] override. Computed during this field's analysis using the actual
     // ITypeSymbol, so types in referenced assemblies are seen too — review round-12 P1 closed the
