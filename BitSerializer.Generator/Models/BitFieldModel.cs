@@ -70,6 +70,11 @@ internal class BitFieldModel
     public ulong CrcInitialValue { get; set; }
     public bool CrcValidateOnDeserialize { get; set; }
 
+    // [BitCrc] WholeBuffer mode: CRC covers the entire type buffer, no [BitCrcInclude] required.
+    public bool CrcWholeBuffer { get; set; }
+    public int CrcSkipHeadBytes { get; set; }
+    public int CrcSkipTailBytes { get; set; }
+
     // CRC include ([BitCrcInclude]): this field participates in a CRC calculation
     public string? CrcTargetFieldName { get; set; }
 

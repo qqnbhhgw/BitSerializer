@@ -220,4 +220,36 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Warning,
         true);
 
+    public static readonly DiagnosticDescriptor CrcWholeBufferConflictsWithInclude = new(
+        "BITS029",
+        "[BitCrc(WholeBuffer = true)] cannot combine with [BitCrcInclude]",
+        "[BitCrc(WholeBuffer = true)] on '{0}' in '{1}' is in WholeBuffer mode, but type '{1}' also has {2} field(s) marked with [BitCrcInclude] targeting this CRC. The two modes are mutually exclusive: WholeBuffer covers the entire type buffer (skipping SkipHead/SkipTail bytes), while [BitCrcInclude] declares an explicit range. Remove either WholeBuffer or the [BitCrcInclude] markers.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor CrcWholeBufferSkipNegative = new(
+        "BITS030",
+        "[BitCrc] SkipHeadBytes / SkipTailBytes must be non-negative",
+        "[BitCrc] on '{0}' in '{1}' has SkipHeadBytes = {2}, SkipTailBytes = {3}. Both must be ≥ 0. Also note: SkipTailBytes should cover at least the CRC field's own byte width plus any trailing frame fields — otherwise the CRC will read its own value back, producing unstable output.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor CrcWholeBufferDoesNotCoverCrcField = new(
+        "BITS034",
+        "[BitCrc(WholeBuffer = true)] SkipHead/SkipTail must cover the CRC field bytes",
+        "[BitCrc(WholeBuffer = true)] on '{0}' in '{1}' has SkipHeadBytes = {2}, SkipTailBytes = {3}, but the CRC field occupies bytes [{4}, {5}) in the static {6}-byte layout. The CRC slot must fall entirely inside either [0, SkipHeadBytes) or [totalBytes - SkipTailBytes, totalBytes) so the CRC computation does not read the field's own (uninitialized or stale) bytes. SkipTailBytes must be ≥ {7} for a tail-positioned CRC, or SkipHeadBytes ≥ {5} for a head-positioned CRC",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor CrcWholeBufferTrailingDynamicField = new(
+        "BITS035",
+        "[BitCrc(WholeBuffer = true)] CRC slot is not provably excluded at runtime",
+        "[BitCrc(WholeBuffer = true)] on '{0}' in '{1}' relies on a static SkipHead/SkipTail check, but member '{2}' has runtime-variable bit length (dynamic list, terminated string, type parameter, auto-length polymorphic, or fixed-count list of manual IBitSerializable elements without an explicit element bit width) and would shift the CRC slot off the protected side at runtime. To make a WholeBuffer layout sound, either (a) place all dynamic fields AFTER the CRC with SkipHeadBytes large enough to cover the CRC slot, or (b) place all dynamic fields BEFORE the CRC with SkipTailBytes large enough to cover the CRC slot and any trailing static fields. Mixed leading and trailing dynamic content around the CRC is not supported — switch to IncludeRange ([BitCrcInclude]) mode for those layouts",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

@@ -349,6 +349,18 @@ internal static class TypeAnalyzer
                     {
                         field.CrcValidateOnDeserialize = b;
                     }
+                    else if (named.Key == "WholeBuffer" && named.Value.Value is bool wb)
+                    {
+                        field.CrcWholeBuffer = wb;
+                    }
+                    else if (named.Key == "SkipHeadBytes" && named.Value.Value is int sh)
+                    {
+                        field.CrcSkipHeadBytes = sh;
+                    }
+                    else if (named.Key == "SkipTailBytes" && named.Value.Value is int st)
+                    {
+                        field.CrcSkipTailBytes = st;
+                    }
                 }
             }
 
@@ -833,6 +845,122 @@ internal static class TypeAnalyzer
                     };
                 }
 
+                // WholeBuffer mode: CRC covers the entire type buffer (totalBytes - SkipHead - SkipTail).
+                // Bypasses all [BitCrcInclude] aggregation and BITS017 alignment checks — the user opts
+                // into runtime byte alignment by virtue of choosing this mode for protocols whose CRC is
+                // computed across dynamic/polymorphic content (e.g. DMI's UartCrc16(bytes, 1, len-4)).
+                if (crcField.CrcWholeBuffer)
+                {
+                    // BITS029: WholeBuffer is mutually exclusive with [BitCrcInclude].
+                    if (includesByTarget.TryGetValue(crcField.MemberName, out var conflictingIncludes)
+                        && conflictingIncludes.Count > 0)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.CrcWholeBufferConflictsWithInclude,
+                                symbol.Locations.FirstOrDefault(),
+                                crcField.MemberName, symbol.Name, conflictingIncludes.Count)
+                        };
+                    }
+                    // BITS030: skip offsets must be non-negative.
+                    if (crcField.CrcSkipHeadBytes < 0 || crcField.CrcSkipTailBytes < 0)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.CrcWholeBufferSkipNegative,
+                                symbol.Locations.FirstOrDefault(),
+                                crcField.MemberName, symbol.Name,
+                                crcField.CrcSkipHeadBytes, crcField.CrcSkipTailBytes)
+                        };
+                    }
+
+                    // BITS034: CRC field's static byte slot must be fully inside SkipHead or SkipTail.
+                    // Otherwise CRC.Update() reads the CRC field's own bytes (uninitialized or stale)
+                    // and produces protocol-invalid output (review P2 — codex flagged 16-bit CRC + SkipTail=1).
+                    int crcSlotStartByte = crcField.BitStartIndex / 8;
+                    int crcSlotEndByteExcl = (crcField.BitStartIndex + crcField.BitLength) / 8;
+                    int staticTotalBytes = model.TotalBitLength / 8;
+                    int bytesFromCrcStartToStaticEnd = (model.TotalBitLength - crcField.BitStartIndex) / 8;
+
+                    bool crcStaticallyInHead = crcSlotEndByteExcl <= crcField.CrcSkipHeadBytes;
+                    bool crcStaticallyInTail = crcField.CrcSkipTailBytes >= bytesFromCrcStartToStaticEnd;
+
+                    if (!crcStaticallyInHead && !crcStaticallyInTail)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.CrcWholeBufferDoesNotCoverCrcField,
+                                symbol.Locations.FirstOrDefault(),
+                                crcField.MemberName, symbol.Name,
+                                crcField.CrcSkipHeadBytes, crcField.CrcSkipTailBytes,
+                                crcSlotStartByte, crcSlotEndByteExcl,
+                                staticTotalBytes,
+                                bytesFromCrcStartToStaticEnd)
+                        };
+                    }
+
+                    // BITS035: BITS034's "CRC slot inside SkipHead/SkipTail" check is purely static.
+                    // It only stays sound at runtime if no dynamic field can shift the slot off its
+                    // assumed side (review round-7 P1):
+                    //  - head mode: any LEADING dynamic field shifts the CRC slot past SkipHeadBytes
+                    //  - tail mode: any TRAILING dynamic field extends the buffer end, so SkipTailBytes
+                    //    no longer covers the CRC slot
+                    // We accept the layout only when at least one side is both statically covered AND
+                    // free of the dynamic content that would invalidate that side's static reasoning.
+                    int crcIdx = model.Fields.IndexOf(crcField);
+                    string? leadingDynamicCulprit = null;
+                    for (int k = 0; k < crcIdx; k++)
+                    {
+                        if (IsIncludeFieldDynamic(model.Fields[k]))
+                        {
+                            leadingDynamicCulprit = model.Fields[k].MemberName;
+                            break;
+                        }
+                    }
+                    string? trailingDynamicCulprit = null;
+                    for (int k = crcIdx + 1; k < model.Fields.Count; k++)
+                    {
+                        if (IsIncludeFieldDynamic(model.Fields[k]))
+                        {
+                            trailingDynamicCulprit = model.Fields[k].MemberName;
+                            break;
+                        }
+                    }
+                    bool headModeSound = crcStaticallyInHead && leadingDynamicCulprit == null;
+                    bool tailModeSound = crcStaticallyInTail && trailingDynamicCulprit == null;
+                    if (!headModeSound && !tailModeSound)
+                    {
+                        // Report whichever side the user appeared to intend.
+                        string culprit = crcStaticallyInHead ? leadingDynamicCulprit! : trailingDynamicCulprit!;
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.CrcWholeBufferTrailingDynamicField,
+                                symbol.Locations.FirstOrDefault(),
+                                crcField.MemberName, symbol.Name, culprit)
+                        };
+                    }
+
+                    model.CrcGroups.Add(new CrcGroup
+                    {
+                        TargetFieldName = crcField.MemberName,
+                        AlgorithmTypeFullName = crcField.CrcAlgorithmTypeFullName ?? "",
+                        BitWidth = crcField.BitLength,
+                        InitialValue = crcField.CrcInitialValue,
+                        ValidateOnDeserialize = crcField.CrcValidateOnDeserialize,
+                        CrcFieldBitOffset = crcField.BitStartIndex,
+                        CrcFieldBitLength = crcField.BitLength,
+                        CrcFieldTypeName = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName,
+                        IsWholeBuffer = true,
+                        SkipHeadBytes = crcField.CrcSkipHeadBytes,
+                        SkipTailBytes = crcField.CrcSkipTailBytes,
+                    });
+                    continue;
+                }
+
                 // Validate include range: must have at least one include
                 if (!includesByTarget.TryGetValue(crcField.MemberName, out var includes) || includes.Count == 0)
                 {
@@ -1009,6 +1137,13 @@ internal static class TypeAnalyzer
             if (f.ConsumeRemaining) return true;
             if (!f.FixedCount.HasValue) return true;
             if (f.ListElementHasDynamicLength) return true;
+            // Review round-4 follow-up P1: fixed-count list whose element is a manual IBitSerializable
+            // without an explicit [BitField(N)] element bit width — SerializerEmitter falls back to the
+            // runtime-offset path (EmitListSerialize "Dynamic: use runtime offset tracking via interface
+            // dispatch"), so the trailing fields' real start can drift. WholeBuffer CRC relies on this
+            // predicate to detect "dynamic-after-CRC" (BITS035), so the omission would let such a list
+            // sit after the CRC and silently corrupt the CRC range.
+            if (f.ListElementIsManualBitSerializable && f.ListElementBitLength == 0) return true;
         }
         return false;
     }
@@ -1062,13 +1197,21 @@ internal static class TypeAnalyzer
             // ConsumeRemaining fills to buffer end (byte-aligned by buffer construction).
             if (f.ConsumeRemaining)
                 return FieldAlignmentClass.Aligned;
-            if (!f.ListElementHasDynamicLength)
+            // Manual IBitSerializable without explicit element bit length: stride is decided by user
+            // code at runtime. ListElementBitLength=0 here means "unknown", not "zero"; and the manual
+            // impl can write arbitrary bits, so element-type inspection isn't safe either.
+            bool elemIsManualUnknownWidth = f.ListElementIsManualBitSerializable && f.ListElementBitLength == 0;
+            if (!f.ListElementHasDynamicLength && !elemIsManualUnknownWidth)
             {
                 return (f.ListElementBitLength % 8 == 0)
                     ? FieldAlignmentClass.Aligned
                     : FieldAlignmentClass.Rejected;
             }
-            // Dynamic element: attempt static proof via element type inspection.
+            if (elemIsManualUnknownWidth)
+            {
+                return FieldAlignmentClass.RuntimeOnly;
+            }
+            // Dynamic [BitSerialize] element: attempt static proof via element type inspection.
             if (f.ListElementTypeFullName != null)
             {
                 var elemType = FindTypeByFullName(assembly, f.ListElementTypeFullName);

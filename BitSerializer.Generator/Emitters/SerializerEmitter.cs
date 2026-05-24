@@ -188,6 +188,13 @@ internal static class SerializerEmitter
                     sb.AppendLine($"        int _crcStartBit_{crc.TargetFieldName} = {offsetExpr};");
             }
 
+            // If this field is itself a CRC result slot, capture its runtime bit offset so the CRC
+            // computation block at the end of the method can back-fill the computed value to the actual
+            // runtime position (review round-7 P1). Static derivation from runtimeOffsetVar /
+            // BitStartIndex breaks down when dynamic content sits both before and after the CRC.
+            if (field.IsCrcResult)
+                sb.AppendLine($"        int _crcFieldBitOff_{field.MemberName} = {offsetExpr};");
+
             string? fieldEndVar = null;
 
             if (field.IsFixedString)
@@ -287,9 +294,36 @@ internal static class SerializerEmitter
         {
             var crcField = model.Fields.Find(f => f.MemberName == crc.TargetFieldName);
             if (crcField == null) continue;
-            string crcOffsetExpr = BuildCrcFieldOffsetExpr(crcField, runtimeOffsetVar, runtimeStaticEnd);
+            // Use the runtime offset captured when the CRC field was serialized — handles all layouts
+            // (CRC at head, in middle, at tail; with leading or trailing dynamic fields).
+            string crcOffsetExpr = $"_crcFieldBitOff_{crcField.MemberName}";
             sb.AppendLine("        {");
-            if (crc.HasDynamicInclude)
+            if (crc.IsWholeBuffer)
+            {
+                // WholeBuffer mode: CRC covers (bitOffset/8 + SkipHead) .. (endBit/8 - SkipTail).
+                // The CRC field's own slot is expected to live inside the SkipTail region so the CRC does
+                // not read its uninitialized self back.
+                //
+                // Two byte-alignment guards (review P1): division-by-8 silently truncates partial bytes,
+                // so we reject (a) non-byte-aligned bitOffset (e.g. caller nested this type after a 1-bit
+                // field) and (b) non-byte-aligned end bit (e.g. dynamic content produced an odd bit count).
+                // Without these guards, Slice() would include neighbor bytes from outside the type, or
+                // drop the trailing partial byte, producing silently wrong CRC values.
+                string endBitExpr = BuildEndBitExpr(model, runtimeOffsetVar, runtimeStaticEnd);
+                sb.AppendLine($"            if ((bitOffset & 7) != 0)");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer requires byte-aligned bitOffset; got {{bitOffset}} (bitOffset & 7 = {{bitOffset & 7}}).\");");
+                sb.AppendLine($"            int _crcEndBit_{crc.TargetFieldName}_wb = {endBitExpr};");
+                sb.AppendLine($"            if ((_crcEndBit_{crc.TargetFieldName}_wb & 7) != 0)");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer requires the type's serialized total bit length to be byte-aligned; got {{_crcEndBit_{crc.TargetFieldName}_wb - bitOffset}} bits ({{(_crcEndBit_{crc.TargetFieldName}_wb - bitOffset) & 7}} bits past the last byte boundary).\");");
+                sb.AppendLine($"            int _crcStart = (bitOffset / 8) + {crc.SkipHeadBytes};");
+                sb.AppendLine($"            int _crcEnd   = (_crcEndBit_{crc.TargetFieldName}_wb / 8) - {crc.SkipTailBytes};");
+                // Reject empty CRC range too (review P2). _crcEnd == _crcStart means SkipHead+SkipTail ==
+                // totalBytes — Update() over an empty span returns the algorithm's initial value, which is
+                // a silent misconfiguration. _crcEnd < _crcStart is the negative case (SkipTail too large).
+                sb.AppendLine($"            if (_crcEnd <= _crcStart)");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer range is empty or negative: SkipHeadBytes ({crc.SkipHeadBytes}) + SkipTailBytes ({crc.SkipTailBytes}) ≥ total written bytes ({{(_crcEndBit_{crc.TargetFieldName}_wb - bitOffset) / 8}}).\");");
+            }
+            else if (crc.HasDynamicInclude)
             {
                 sb.AppendLine($"            if ((_crcStartBit_{crc.TargetFieldName} % 8) != 0 || (_crcEndBit_{crc.TargetFieldName} % 8) != 0)");
                 sb.AppendLine($"                throw new global::System.IO.InvalidDataException(\"CRC include range for '{crcField.MemberName}' is not byte-aligned at runtime (dynamic include field produced a non-integer-byte payload).\");");
@@ -331,12 +365,20 @@ internal static class SerializerEmitter
         return sb.ToString();
     }
 
-    private static string BuildCrcFieldOffsetExpr(BitFieldModel crcField, string? runtimeOffsetVar, int runtimeStaticEnd)
+    /// <summary>
+    /// Builds an expression evaluating to the bit-offset one-past-the-end of this type's serialized
+    /// payload (in absolute bits, i.e. relative to the buffer start, NOT relative to bitOffset).
+    /// Mirrors the return-value calculation at the end of EmitMethod. WholeBuffer CRC mode uses this
+    /// so it can byte-align-check before dividing by 8 (review P1).
+    /// </summary>
+    private static string BuildEndBitExpr(TypeModel model, string? runtimeOffsetVar, int runtimeStaticEnd)
     {
         if (runtimeOffsetVar is null)
-            return $"bitOffset + {crcField.BitStartIndex}";
-        int diff = crcField.BitStartIndex - runtimeStaticEnd;
-        return diff == 0 ? runtimeOffsetVar : $"{runtimeOffsetVar} + {diff}";
+        {
+            return $"(bitOffset + {model.TotalBitLength})";
+        }
+        int trailingBits = model.TotalBitLength - runtimeStaticEnd;
+        return trailingBits > 0 ? $"({runtimeOffsetVar} + {trailingBits})" : runtimeOffsetVar;
     }
 
     public static string EmitDelegationMethod(TypeModel model, string bitOrder)

@@ -192,7 +192,25 @@ internal static class DeserializerEmitter
             var crcField = model.Fields.Find(f => f.MemberName == crc.TargetFieldName);
             if (crcField == null) continue;
             sb.AppendLine("        {");
-            if (crc.HasDynamicInclude)
+            if (crc.IsWholeBuffer)
+            {
+                // WholeBuffer mode mirrors SerializerEmitter — span the whole type buffer minus skip ranges.
+                // Same byte-alignment guards as the serializer (review P1): without them, division-by-8
+                // truncation would silently include neighbor bytes or drop a trailing partial byte,
+                // producing a CRC mismatch that doesn't surface the real cause.
+                string endBitExpr = BuildEndBitExpr(model, runtimeOffsetVar, runtimeStaticEnd);
+                sb.AppendLine($"            if ((bitOffset & 7) != 0)");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer requires byte-aligned bitOffset on Deserialize; got {{bitOffset}} (bitOffset & 7 = {{bitOffset & 7}}).\");");
+                sb.AppendLine($"            int _crcEndBit_{crc.TargetFieldName}_wb = {endBitExpr};");
+                sb.AppendLine($"            if ((_crcEndBit_{crc.TargetFieldName}_wb & 7) != 0)");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer requires the type's read total bit length to be byte-aligned on Deserialize; got {{_crcEndBit_{crc.TargetFieldName}_wb - bitOffset}} bits ({{(_crcEndBit_{crc.TargetFieldName}_wb - bitOffset) & 7}} bits past the last byte boundary).\");");
+                sb.AppendLine($"            int _crcStart = (bitOffset / 8) + {crc.SkipHeadBytes};");
+                sb.AppendLine($"            int _crcEnd   = (_crcEndBit_{crc.TargetFieldName}_wb / 8) - {crc.SkipTailBytes};");
+                // Reject empty CRC range too (review P2) — mirror serializer side for ValidateOnDeserialize.
+                sb.AppendLine($"            if (_crcEnd <= _crcStart)");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer range is empty or negative on Deserialize: SkipHeadBytes ({crc.SkipHeadBytes}) + SkipTailBytes ({crc.SkipTailBytes}) ≥ total read bytes ({{(_crcEndBit_{crc.TargetFieldName}_wb - bitOffset) / 8}}).\");");
+            }
+            else if (crc.HasDynamicInclude)
             {
                 sb.AppendLine($"            if ((_crcStartBit_{crc.TargetFieldName} % 8) != 0 || (_crcEndBit_{crc.TargetFieldName} % 8) != 0)");
                 sb.AppendLine($"                throw new global::System.IO.InvalidDataException(\"CRC include range for '{crcField.MemberName}' is not byte-aligned at runtime on Deserialize (dynamic include field produced a non-integer-byte payload).\");");
@@ -723,6 +741,19 @@ internal static class DeserializerEmitter
             ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess}, context)"
             : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess})";
         sb.AppendLine($"        {memberAccess} = ({field.MemberTypeFullName}){convertCall};");
+    }
+
+    /// <summary>
+    /// Mirror of SerializerEmitter.BuildEndBitExpr — keep both in sync.
+    /// </summary>
+    private static string BuildEndBitExpr(TypeModel model, string? runtimeOffsetVar, int runtimeStaticEnd)
+    {
+        if (runtimeOffsetVar is null)
+        {
+            return $"(bitOffset + {model.TotalBitLength})";
+        }
+        int trailingBits = model.TotalBitLength - runtimeStaticEnd;
+        return trailingBits > 0 ? $"({runtimeOffsetVar} + {trailingBits})" : runtimeOffsetVar;
     }
 
     private static bool UsesRuntimeBitLength(BitFieldModel field)
