@@ -260,6 +260,14 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor FieldEndianAfterDynamicContent = new(
+        "BITS033",
+        "[BitField(Endian = ...)] cannot follow a dynamic-length member",
+        "Member '{0}' in '{1}' specifies Endian = {2}, but a preceding member ('{3}') has runtime-variable bit length (dynamic list, terminated string, type parameter, auto-length polymorphic, or dynamic [BitSerialize] base). The runtime bit offset of '{0}' can drift to a non-byte boundary depending on the previous content, in which case switching to BitHelperMSB/LSB would no longer represent a byte-order flip and could corrupt values. Place the Endian-overridden field before any dynamic-length member, or remove the Endian argument",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
     public static readonly DiagnosticDescriptor CrcWholeBufferDoesNotCoverCrcField = new(
         "BITS034",
         "[BitCrc(WholeBuffer = true)] SkipHead/SkipTail must cover the CRC field bytes",

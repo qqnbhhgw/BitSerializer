@@ -784,12 +784,17 @@ internal static class TypeAnalyzer
 
         model.TotalBitLength = currentBitIndex;
 
-        // BITS028: validate [BitField(Endian = ...)] usage.
-        // Field-level endianness only makes sense for byte-aligned scalars (numeric/enum) with
-        // byte-multiple width — endianness is a byte-order concept, not meaningful for sub-byte
-        // bit ranges, lists, strings, or nested composite types.
-        foreach (var f in model.Fields)
+        // BITS028 / BITS033: validate [BitField(Endian = ...)] usage.
+        // BITS028 = static layout problem (sub-byte width, non-byte-aligned compile-time start, etc.)
+        // BITS033 = runtime layout drift: a preceding dynamic-length member (terminated string,
+        //   dynamic list, type parameter, auto-length polymorphic, or [BitSerialize] dynamic base)
+        //   makes the actual bit offset depend on runtime content. The compile-time BitStartIndex
+        //   may be byte-aligned for the cumulative static layout, but the *real* offset can drift
+        //   to a non-byte boundary, in which case switching helpers no longer flips bytes — it
+        //   corrupts data.
+        for (int idx = 0; idx < model.Fields.Count; idx++)
         {
+            var f = model.Fields[idx];
             if (f.Endian == 0) continue; // Inherit — no override, nothing to validate.
 
             bool isScalar = f.IsNumericOrEnum
@@ -813,6 +818,34 @@ internal static class TypeAnalyzer
                         f.MemberName, symbol.Name, endianName,
                         f.BitStartIndex, f.BitLength,
                         f.IsList, f.IsFixedString || f.IsTerminatedString, f.IsNestedType || f.IsPolymorphic)
+                };
+            }
+
+            // BITS033: look at every preceding member for runtime-variable length.
+            // Base-type dynamic length is equivalent: the type starts after a runtime-sized base.
+            string? dynamicCulpritName = null;
+            if (model.BaseHasDynamicLength)
+                dynamicCulpritName = "base type";
+            else
+            {
+                for (int j = 0; j < idx; j++)
+                {
+                    if (IsIncludeFieldDynamic(model.Fields[j]))
+                    {
+                        dynamicCulpritName = model.Fields[j].MemberName;
+                        break;
+                    }
+                }
+            }
+            if (dynamicCulpritName != null)
+            {
+                string endianName = f.Endian == 1 ? "Big" : f.Endian == 2 ? "Little" : f.Endian.ToString();
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.FieldEndianAfterDynamicContent,
+                        symbol.Locations.FirstOrDefault(),
+                        f.MemberName, symbol.Name, endianName, dynamicCulpritName)
                 };
             }
         }

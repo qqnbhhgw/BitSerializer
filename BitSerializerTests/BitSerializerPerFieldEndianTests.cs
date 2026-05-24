@@ -227,6 +227,43 @@ public partial class BitSerializerPerFieldEndianTests
         roundTripped.Kind.ShouldBe(SegmentKind.Switch);
     }
 
+    #region BITS033 negative — Endian field BEFORE dynamic content is allowed (review P1)
+
+    /// <summary>
+    /// 校正用例：Endian-标注字段在动态字段（List）之前 → 运行时 offset 不漂移 → BITS033 不该误报。
+    /// 如果 BITS033 检查写错（例如对所有有动态字段的类型一律拒绝 Endian），这个测试会编译失败。
+    /// </summary>
+    [BitSerialize]
+    public partial class LittleEndianBeforeDynamicList
+    {
+        [BitField(8)] public byte Header { get; set; }
+        [BitField(16, Endian = BitEndian.Little)] public ushort Value { get; set; } // 偏移恒为 8 bit，字节对齐
+        [BitField(8)] public byte Count { get; set; }
+        [BitField(8), BitFieldRelated(nameof(Count))]
+        public List<byte> Items { get; set; } = new();
+    }
+
+    [Fact]
+    public void Endian_Field_Before_Dynamic_List_Compiles_And_Round_Trips()
+    {
+        var original = new LittleEndianBeforeDynamicList
+        {
+            Header = 0xAB,
+            Value = 0x1234,
+            Items = new List<byte> { 0x11, 0x22, 0x33 },
+        };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+
+        // Layout: Header=AB | Value LE=34 12 | Count=03 | Items=11 22 33
+        bytes.ShouldBe(new byte[] { 0xAB, 0x34, 0x12, 0x03, 0x11, 0x22, 0x33 });
+
+        var result = BitSerializerMSB.Deserialize<LittleEndianBeforeDynamicList>(bytes);
+        result.Value.ShouldBe((ushort)0x1234);
+        result.Items.Count.ShouldBe(3);
+    }
+
+    #endregion
+
     #region CRC field endian override (PR review P1)
 
     /// <summary>
