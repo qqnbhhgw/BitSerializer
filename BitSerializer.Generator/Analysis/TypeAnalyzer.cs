@@ -349,6 +349,18 @@ internal static class TypeAnalyzer
                     {
                         field.CrcValidateOnDeserialize = b;
                     }
+                    else if (named.Key == "WholeBuffer" && named.Value.Value is bool wb)
+                    {
+                        field.CrcWholeBuffer = wb;
+                    }
+                    else if (named.Key == "SkipHeadBytes" && named.Value.Value is int sh)
+                    {
+                        field.CrcSkipHeadBytes = sh;
+                    }
+                    else if (named.Key == "SkipTailBytes" && named.Value.Value is int st)
+                    {
+                        field.CrcSkipTailBytes = st;
+                    }
                 }
             }
 
@@ -831,6 +843,54 @@ internal static class TypeAnalyzer
                             symbol.Locations.FirstOrDefault(),
                             crcField.MemberName, symbol.Name)
                     };
+                }
+
+                // WholeBuffer mode: CRC covers the entire type buffer (totalBytes - SkipHead - SkipTail).
+                // Bypasses all [BitCrcInclude] aggregation and BITS017 alignment checks — the user opts
+                // into runtime byte alignment by virtue of choosing this mode for protocols whose CRC is
+                // computed across dynamic/polymorphic content (e.g. DMI's UartCrc16(bytes, 1, len-4)).
+                if (crcField.CrcWholeBuffer)
+                {
+                    // BITS029: WholeBuffer is mutually exclusive with [BitCrcInclude].
+                    if (includesByTarget.TryGetValue(crcField.MemberName, out var conflictingIncludes)
+                        && conflictingIncludes.Count > 0)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.CrcWholeBufferConflictsWithInclude,
+                                symbol.Locations.FirstOrDefault(),
+                                crcField.MemberName, symbol.Name, conflictingIncludes.Count)
+                        };
+                    }
+                    // BITS030: skip offsets must be non-negative.
+                    if (crcField.CrcSkipHeadBytes < 0 || crcField.CrcSkipTailBytes < 0)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.CrcWholeBufferSkipNegative,
+                                symbol.Locations.FirstOrDefault(),
+                                crcField.MemberName, symbol.Name,
+                                crcField.CrcSkipHeadBytes, crcField.CrcSkipTailBytes)
+                        };
+                    }
+
+                    model.CrcGroups.Add(new CrcGroup
+                    {
+                        TargetFieldName = crcField.MemberName,
+                        AlgorithmTypeFullName = crcField.CrcAlgorithmTypeFullName ?? "",
+                        BitWidth = crcField.BitLength,
+                        InitialValue = crcField.CrcInitialValue,
+                        ValidateOnDeserialize = crcField.CrcValidateOnDeserialize,
+                        CrcFieldBitOffset = crcField.BitStartIndex,
+                        CrcFieldBitLength = crcField.BitLength,
+                        CrcFieldTypeName = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName,
+                        IsWholeBuffer = true,
+                        SkipHeadBytes = crcField.CrcSkipHeadBytes,
+                        SkipTailBytes = crcField.CrcSkipTailBytes,
+                    });
+                    continue;
                 }
 
                 // Validate include range: must have at least one include

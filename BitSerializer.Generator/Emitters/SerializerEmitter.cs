@@ -289,7 +289,19 @@ internal static class SerializerEmitter
             if (crcField == null) continue;
             string crcOffsetExpr = BuildCrcFieldOffsetExpr(crcField, runtimeOffsetVar, runtimeStaticEnd);
             sb.AppendLine("        {");
-            if (crc.HasDynamicInclude)
+            if (crc.IsWholeBuffer)
+            {
+                // WholeBuffer mode: CRC covers (bitOffset/8 + SkipHead) .. (bitOffset/8 + totalBytes - SkipTail).
+                // The CRC field's own slot is expected to live inside the SkipTail region so the CRC does
+                // not read its uninitialized self back. Runtime guard rejects negative ranges (SkipTail too
+                // large) or zero-length ranges (degenerate config).
+                string totalBytesExpr = BuildTotalBytesExpr(model, runtimeOffsetVar, runtimeStaticEnd);
+                sb.AppendLine($"            int _crcStart = (bitOffset / 8) + {crc.SkipHeadBytes};");
+                sb.AppendLine($"            int _crcEnd   = (bitOffset / 8) + {totalBytesExpr} - {crc.SkipTailBytes};");
+                sb.AppendLine($"            if (_crcEnd < _crcStart)");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer range is empty: SkipHeadBytes ({crc.SkipHeadBytes}) + SkipTailBytes ({crc.SkipTailBytes}) ≥ total written bytes ({{((bitOffset / 8) + {totalBytesExpr}) - (bitOffset / 8)}}).\");");
+            }
+            else if (crc.HasDynamicInclude)
             {
                 sb.AppendLine($"            if ((_crcStartBit_{crc.TargetFieldName} % 8) != 0 || (_crcEndBit_{crc.TargetFieldName} % 8) != 0)");
                 sb.AppendLine($"                throw new global::System.IO.InvalidDataException(\"CRC include range for '{crcField.MemberName}' is not byte-aligned at runtime (dynamic include field produced a non-integer-byte payload).\");");
@@ -337,6 +349,22 @@ internal static class SerializerEmitter
             return $"bitOffset + {crcField.BitStartIndex}";
         int diff = crcField.BitStartIndex - runtimeStaticEnd;
         return diff == 0 ? runtimeOffsetVar : $"{runtimeOffsetVar} + {diff}";
+    }
+
+    /// <summary>
+    /// Builds an expression evaluating to the number of bytes this type has written to the buffer
+    /// starting at <c>bitOffset</c>. Used by WholeBuffer CRC mode to compute the end of its slice.
+    /// Mirrors the return-value calculation at the end of EmitMethod.
+    /// </summary>
+    private static string BuildTotalBytesExpr(TypeModel model, string? runtimeOffsetVar, int runtimeStaticEnd)
+    {
+        if (runtimeOffsetVar is null)
+        {
+            return (model.TotalBitLength / 8).ToString();
+        }
+        int trailingBits = model.TotalBitLength - runtimeStaticEnd;
+        string endBitExpr = trailingBits > 0 ? $"({runtimeOffsetVar} + {trailingBits})" : runtimeOffsetVar;
+        return $"(({endBitExpr} - bitOffset) / 8)";
     }
 
     public static string EmitDelegationMethod(TypeModel model, string bitOrder)

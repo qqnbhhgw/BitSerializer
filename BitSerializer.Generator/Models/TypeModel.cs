@@ -44,6 +44,13 @@ internal class CrcGroup : IEquatable<CrcGroup>
     /// <summary>Member name of the last include field in declaration order. Emitter uses it to mark the CRC range end.</summary>
     public string LastIncludeMemberName { get; set; } = "";
 
+    /// <summary>WholeBuffer mode: CRC covers the entire type buffer (totalBytes - SkipHead - SkipTail). No [BitCrcInclude] aggregation.</summary>
+    public bool IsWholeBuffer { get; set; }
+    /// <summary>WholeBuffer mode: bytes to skip at the start of the type's serialized buffer (e.g. frame start delimiter).</summary>
+    public int SkipHeadBytes { get; set; }
+    /// <summary>WholeBuffer mode: bytes to skip at the end of the type's serialized buffer (must cover the CRC field itself plus any trailing fields like frame end delimiter).</summary>
+    public int SkipTailBytes { get; set; }
+
     public bool Equals(CrcGroup? other)
     {
         if (other is null) return false;
@@ -59,7 +66,10 @@ internal class CrcGroup : IEquatable<CrcGroup>
             && IncludeEndByte == other.IncludeEndByte
             && HasDynamicInclude == other.HasDynamicInclude
             && FirstIncludeMemberName == other.FirstIncludeMemberName
-            && LastIncludeMemberName == other.LastIncludeMemberName;
+            && LastIncludeMemberName == other.LastIncludeMemberName
+            && IsWholeBuffer == other.IsWholeBuffer
+            && SkipHeadBytes == other.SkipHeadBytes
+            && SkipTailBytes == other.SkipTailBytes;
     }
 
     public override bool Equals(object? obj) => Equals(obj as CrcGroup);

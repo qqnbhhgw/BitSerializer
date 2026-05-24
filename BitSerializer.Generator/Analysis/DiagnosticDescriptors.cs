@@ -220,4 +220,20 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Warning,
         true);
 
+    public static readonly DiagnosticDescriptor CrcWholeBufferConflictsWithInclude = new(
+        "BITS029",
+        "[BitCrc(WholeBuffer = true)] cannot combine with [BitCrcInclude]",
+        "[BitCrc(WholeBuffer = true)] on '{0}' in '{1}' is in WholeBuffer mode, but type '{1}' also has {2} field(s) marked with [BitCrcInclude] targeting this CRC. The two modes are mutually exclusive: WholeBuffer covers the entire type buffer (skipping SkipHead/SkipTail bytes), while [BitCrcInclude] declares an explicit range. Remove either WholeBuffer or the [BitCrcInclude] markers.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor CrcWholeBufferSkipNegative = new(
+        "BITS030",
+        "[BitCrc] SkipHeadBytes / SkipTailBytes must be non-negative",
+        "[BitCrc] on '{0}' in '{1}' has SkipHeadBytes = {2}, SkipTailBytes = {3}. Both must be ≥ 0. Also note: SkipTailBytes should cover at least the CRC field's own byte width plus any trailing frame fields — otherwise the CRC will read its own value back, producing unstable output.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

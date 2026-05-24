@@ -192,7 +192,16 @@ internal static class DeserializerEmitter
             var crcField = model.Fields.Find(f => f.MemberName == crc.TargetFieldName);
             if (crcField == null) continue;
             sb.AppendLine("        {");
-            if (crc.HasDynamicInclude)
+            if (crc.IsWholeBuffer)
+            {
+                // WholeBuffer mode mirrors SerializerEmitter — span the whole type buffer minus skip ranges.
+                string totalBytesExpr = BuildTotalBytesExpr(model, runtimeOffsetVar, runtimeStaticEnd);
+                sb.AppendLine($"            int _crcStart = (bitOffset / 8) + {crc.SkipHeadBytes};");
+                sb.AppendLine($"            int _crcEnd   = (bitOffset / 8) + {totalBytesExpr} - {crc.SkipTailBytes};");
+                sb.AppendLine($"            if (_crcEnd < _crcStart)");
+                sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"CRC '{crcField.MemberName}' WholeBuffer range is empty on Deserialize: SkipHeadBytes ({crc.SkipHeadBytes}) + SkipTailBytes ({crc.SkipTailBytes}) ≥ total read bytes ({{((bitOffset / 8) + {totalBytesExpr}) - (bitOffset / 8)}}).\");");
+            }
+            else if (crc.HasDynamicInclude)
             {
                 sb.AppendLine($"            if ((_crcStartBit_{crc.TargetFieldName} % 8) != 0 || (_crcEndBit_{crc.TargetFieldName} % 8) != 0)");
                 sb.AppendLine($"                throw new global::System.IO.InvalidDataException(\"CRC include range for '{crcField.MemberName}' is not byte-aligned at runtime on Deserialize (dynamic include field produced a non-integer-byte payload).\");");
@@ -723,6 +732,20 @@ internal static class DeserializerEmitter
             ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess}, context)"
             : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess})";
         sb.AppendLine($"        {memberAccess} = ({field.MemberTypeFullName}){convertCall};");
+    }
+
+    /// <summary>
+    /// Mirror of SerializerEmitter.BuildTotalBytesExpr — keep both in sync.
+    /// </summary>
+    private static string BuildTotalBytesExpr(TypeModel model, string? runtimeOffsetVar, int runtimeStaticEnd)
+    {
+        if (runtimeOffsetVar is null)
+        {
+            return (model.TotalBitLength / 8).ToString();
+        }
+        int trailingBits = model.TotalBitLength - runtimeStaticEnd;
+        string endBitExpr = trailingBits > 0 ? $"({runtimeOffsetVar} + {trailingBits})" : runtimeOffsetVar;
+        return $"(({endBitExpr} - bitOffset) / 8)";
     }
 
     private static bool UsesRuntimeBitLength(BitFieldModel field)
