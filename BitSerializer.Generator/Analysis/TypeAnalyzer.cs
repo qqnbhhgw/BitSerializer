@@ -1357,8 +1357,9 @@ internal static class TypeAnalyzer
             // dispatch"), so the trailing fields' real start can drift. WholeBuffer CRC relies on this
             // predicate to detect "dynamic-after-CRC" (BITS035), so the omission would let such a list
             // sit after the CRC and silently corrupt the CRC range. The same predicate gates the
-            // LengthPrefixString byte-alignment classifier (BITS038/BITS039), so keeping it correct
-            // here also keeps the dynamic-offset drift detection sound.
+            // LengthPrefixString byte-alignment classifier (BITS038/BITS039) and the BITS033
+            // per-field Endian drift detector, so keeping it correct here also keeps both downstream
+            // diagnostics sound.
             if (f.ListElementIsManualBitSerializable && f.ListElementBitLength == 0) return true;
         }
         return false;
@@ -1429,6 +1430,7 @@ internal static class TypeAnalyzer
             }
             if (elemIsManualUnknownWidth)
             {
+                // Can't statically prove alignment for manual IBitSerializable — defer to runtime.
                 return FieldAlignmentClass.RuntimeOnly;
             }
             // Dynamic [BitSerialize] element: attempt static proof via element type inspection.
