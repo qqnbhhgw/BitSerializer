@@ -77,6 +77,12 @@ internal static class DeserializerEmitter
                 EmitLengthPrefixStringDeserialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
                 EmitDeserializeConverter(sb, field, memberAccess);
             }
+            else if (field.IsLengthFieldString)
+            {
+                fieldEndVar = $"_bitIndex_{field.MemberName}";
+                EmitLengthFieldStringDeserialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
+                EmitDeserializeConverter(sb, field, memberAccess);
+            }
             else if (field.IsList)
             {
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
@@ -100,7 +106,15 @@ internal static class DeserializerEmitter
             {
                 sb.AppendLine($"        {memberAccess} = ({field.MemberTypeName})global::System.Activator.CreateInstance(typeof({field.MemberTypeName}))!;");
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
-                sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + ((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr}, context);");
+                if (field.RelationKind == 1 && field.RelatedMemberName != null)
+                {
+                    string typeParamCall = $"((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr}, context)";
+                    EmitNestedByteLengthRead(sb, field, helper, memberAccess, fieldEndVar, offsetExpr, methodName, typeParamCall);
+                }
+                else
+                {
+                    sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + ((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr}, context);");
+                }
                 EmitDeserializeConverter(sb, field, memberAccess);
             }
             else if (field.IsNestedType)
@@ -120,7 +134,12 @@ internal static class DeserializerEmitter
                         sb.AppendLine($"        {localVar}.BeforeDeserialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
                         ctxArg = $"_nestedCtx_{field.MemberName}";
                     }
-                    if (usesRuntimeBitLength)
+                    if (field.RelationKind == 1 && field.RelatedMemberName != null)
+                    {
+                        fieldEndVar = $"_bitIndex_{field.MemberName}";
+                        EmitNestedByteLengthReadInterface(sb, field, fieldEndVar, offsetExpr, methodName, localVar, ctxArg);
+                    }
+                    else if (usesRuntimeBitLength)
                     {
                         fieldEndVar = $"_bitIndex_{field.MemberName}";
                         sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {localVar}.{methodName}(bytes, {offsetExpr}, {ctxArg});");
@@ -149,7 +168,12 @@ internal static class DeserializerEmitter
                     }
                     string callExpr = $"{memberAccess}.{methodName}(bytes, {offsetExpr}, {ctxArg})";
 
-                    if (usesRuntimeBitLength)
+                    if (field.RelationKind == 1 && field.RelatedMemberName != null)
+                    {
+                        fieldEndVar = $"_bitIndex_{field.MemberName}";
+                        EmitNestedByteLengthRead(sb, field, helper, memberAccess, fieldEndVar, offsetExpr, methodName, callExpr);
+                    }
+                    else if (usesRuntimeBitLength)
                     {
                         fieldEndVar = $"_bitIndex_{field.MemberName}";
                         sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {callExpr};");
@@ -270,6 +294,25 @@ internal static class DeserializerEmitter
     private static void EmitPrimitiveDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string offsetExpr)
     {
         var typeName = field.IsEnum ? field.EnumUnderlyingTypeName! : field.MemberTypeName;
+
+        // [BitFieldValue(constant, Verify=true)]: read the value, optionally throw on mismatch, then
+        // set the property (so callers see the actual wire value for diagnostics).
+        if (field.HasConstantValue)
+        {
+            string name = field.MemberName;
+            string expected = $"unchecked(({typeName}){field.ConstantValue}L)";
+            sb.AppendLine($"        {typeName} _fixedVal_{name} = {helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength});");
+            if (field.ConstantValueVerify)
+            {
+                sb.AppendLine($"        if (_fixedVal_{name} != {expected})");
+                sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Field '{name}' expected pinned constant 0x{{({expected}):X}} but read 0x{{_fixedVal_{name}:X}}\");");
+            }
+            string assignExpr = field.IsEnum
+                ? $"({field.MemberTypeFullName})_fixedVal_{name}"
+                : $"_fixedVal_{name}";
+            sb.AppendLine($"        {memberAccess} = {assignExpr};");
+            return;
+        }
 
         if (field.ValueConverterTypeFullName != null && field.ValueConverterHasDeserialize)
         {
@@ -709,7 +752,7 @@ internal static class DeserializerEmitter
         sb.AppendLine($"            for (int _si = 0; _si < {byteLen}; _si++)");
         sb.AppendLine($"                _strBytes_{name}[_si] = {helper}.ValueLength<byte>(bytes, {offsetExpr} + _si * 8, 8);");
         sb.AppendLine($"            int _strEnd_{name} = {byteLen};");
-        sb.AppendLine($"            while (_strEnd_{name} > 0 && _strBytes_{name}[_strEnd_{name} - 1] == 0) _strEnd_{name}--;");
+        sb.AppendLine($"            while (_strEnd_{name} > 0 && _strBytes_{name}[_strEnd_{name} - 1] == {field.FixedStringPadding}) _strEnd_{name}--;");
         sb.AppendLine($"            {memberAccess} = {encoding}.GetString(_strBytes_{name}, 0, _strEnd_{name});");
         sb.AppendLine("        }");
     }
@@ -774,6 +817,92 @@ internal static class DeserializerEmitter
         sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {lengthBits} + _strLen_{name} * 8;");
     }
 
+    /// <summary>
+    /// T4: deserialize a nested-type field whose byte budget comes from a related length field.
+    /// Reads the length, optionally routes it through a deserialize converter (wire → bytes),
+    /// validates against the remaining buffer, then calls the regular nested deserialize and
+    /// verifies the actual bits consumed match the declared byte count exactly.
+    /// </summary>
+    private static void EmitNestedByteLengthRead(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr, string methodName, string nestedCallExpr)
+    {
+        EmitNestedByteLengthSetup(sb, field, offsetExpr);
+        sb.AppendLine($"        int _ncons_{field.MemberName} = {nestedCallExpr};");
+        EmitNestedByteLengthVerify(sb, field, bitIndexVar, offsetExpr);
+    }
+
+    /// <summary>Manual IBitSerializable variant of <see cref="EmitNestedByteLengthRead"/>.</summary>
+    private static void EmitNestedByteLengthReadInterface(StringBuilder sb, BitFieldModel field, string bitIndexVar, string offsetExpr, string methodName, string interfaceLocal, string ctxArg)
+    {
+        EmitNestedByteLengthSetup(sb, field, offsetExpr);
+        sb.AppendLine($"        int _ncons_{field.MemberName} = {interfaceLocal}.{methodName}(bytes, {offsetExpr}, {ctxArg});");
+        EmitNestedByteLengthVerify(sb, field, bitIndexVar, offsetExpr);
+    }
+
+    private static void EmitNestedByteLengthSetup(StringBuilder sb, BitFieldModel field, string offsetExpr)
+    {
+        var name = field.MemberName;
+
+        // Mirror of the list ByteLength path: read the wire length, optionally convert wire → bytes,
+        // bounds-check against the remaining buffer before invoking the nested deserializer.
+        sb.AppendLine($"        long _nwireRaw_{name} = global::System.Convert.ToInt64(this.{field.RelatedMemberName});");
+        string bytesExpr = field.ValueConverterTypeFullName != null && field.ValueConverterHasDeserialize
+            ? (field.ValueConverterDeserializeHasContext
+                ? $"global::System.Convert.ToInt64({field.ValueConverterTypeFullName}.OnDeserializeConvert((object)_nwireRaw_{name}, context))"
+                : $"global::System.Convert.ToInt64({field.ValueConverterTypeFullName}.OnDeserializeConvert((object)_nwireRaw_{name}))")
+            : $"_nwireRaw_{name}";
+        sb.AppendLine($"        long _nbudgetBytes_{name} = {bytesExpr};");
+        sb.AppendLine($"        long _nbudgetRemBits_{name} = (long)bytes.Length * 8 - ({offsetExpr});");
+        sb.AppendLine($"        if (_nbudgetBytes_{name} < 0 || _nbudgetBytes_{name} * 8 > _nbudgetRemBits_{name})");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Nested '{name}' declares {{_nbudgetBytes_{name}}} bytes (from field '{field.RelatedMemberName}'), but only {{_nbudgetRemBits_{name} / 8}} bytes remain in the buffer.\");");
+    }
+
+    private static void EmitNestedByteLengthVerify(StringBuilder sb, BitFieldModel field, string bitIndexVar, string offsetExpr)
+    {
+        var name = field.MemberName;
+        sb.AppendLine($"        if ((long)_ncons_{name} != _nbudgetBytes_{name} * 8)");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Nested '{name}' consumed {{_ncons_{name}}} bits but the length field '{field.RelatedMemberName}' declared {{_nbudgetBytes_{name} * 8}} bits. The nested type's serialized layout must match the declared byte budget exactly.\");");
+        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + _ncons_{name};");
+    }
+
+    /// <summary>
+    /// Reads a [BitLengthFieldString] payload. The byte count was already deserialized into
+    /// this.&lt;LengthFieldMemberName&gt; by an earlier field (BITS047 guarantees declaration order).
+    /// Mirror of EmitLengthPrefixStringDeserialize minus the inline-prefix read and the prefix-bits
+    /// arithmetic; uses _lfsRem to bounds-check the declared length against remaining buffer.
+    /// </summary>
+    private static void EmitLengthFieldStringDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
+    {
+        var encoding = GetEncodingExpression(field.StringEncodingName);
+        var name = field.MemberName;
+
+        // Mirror of EmitLengthPrefixStringDeserialize round-11 P1: refuse to read a byte stream
+        // across a sub-byte absolute offset.
+        sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-field string '{name}' requires a byte-aligned absolute bit offset on Deserialize, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary.\");");
+
+        // Read length from the peer field. Widen to long so unsigned 32-bit values don't go negative
+        // and the buffer-size arithmetic doesn't overflow.
+        sb.AppendLine($"        long _lfsLenRaw_{name} = (long)this.{field.LengthFieldMemberName};");
+        sb.AppendLine($"        long _lfsRemBits_{name} = (long)bytes.Length * 8 - ({offsetExpr});");
+        sb.AppendLine($"        if (_lfsLenRaw_{name} < 0 || _lfsLenRaw_{name} * 8 > _lfsRemBits_{name})");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-field string '{name}' declares {{_lfsLenRaw_{name}}} bytes (from field '{field.LengthFieldMemberName}'), but only {{_lfsRemBits_{name} / 8}} bytes remain in the buffer.\");");
+
+        // Symmetric MaxBytes enforcement: the serializer caps the encoded payload at MaxBytes; any
+        // wire value > MaxBytes is a violation, reject before allocating.
+        if (field.LengthFieldMaxBytes > 0)
+        {
+            sb.AppendLine($"        if (_lfsLenRaw_{name} > {field.LengthFieldMaxBytes})");
+            sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-field string '{name}' declares {{_lfsLenRaw_{name}}} bytes, exceeding the declared MaxBytes = {field.LengthFieldMaxBytes} cap.\");");
+        }
+
+        sb.AppendLine($"        int _lfsLen_{name} = (int)_lfsLenRaw_{name};");
+        sb.AppendLine($"        byte[] _lfsBytes_{name} = new byte[_lfsLen_{name}];");
+        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _lfsLen_{name}; _si_{name}++)");
+        sb.AppendLine($"            _lfsBytes_{name}[_si_{name}] = {helper}.ValueLength<byte>(bytes, {offsetExpr} + _si_{name} * 8, 8);");
+        sb.AppendLine($"        {memberAccess} = {encoding}.GetString(_lfsBytes_{name});");
+        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + _lfsLen_{name} * 8;");
+    }
+
     private static string GetEncodingExpression(string encodingName)
     {
         return encodingName == "UTF8"
@@ -827,6 +956,7 @@ internal static class DeserializerEmitter
                || field.IsPotentiallyDynamic
                || field.IsTerminatedString
                || field.IsLengthPrefixString
+               || field.IsLengthFieldString
                || (field.IsList && !field.FixedCount.HasValue)
                || (field.IsList && field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0)
                || (field.IsList && field.ListElementHasDynamicLength);
@@ -840,6 +970,11 @@ internal static class DeserializerEmitter
         }
 
         if (field.IsLengthPrefixString)
+        {
+            return field.BitStartIndex;
+        }
+
+        if (field.IsLengthFieldString)
         {
             return field.BitStartIndex;
         }

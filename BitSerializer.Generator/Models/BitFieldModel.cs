@@ -52,10 +52,25 @@ internal class BitFieldModel
     public bool IsTerminatedString { get; set; }
     public string StringEncodingName { get; set; } = "ASCII";
 
+    // [BitFixedString(..., Padding = 0xNN)]: padding byte for short serialize / trim on deserialize.
+    public byte FixedStringPadding { get; set; }
+
     // [BitLengthPrefixString]: encoded as <LengthBits>-bit byte-count + raw encoded bytes (no terminator)
     public bool IsLengthPrefixString { get; set; }
     public int LengthPrefixBits { get; set; }
     public int LengthPrefixMaxBytes { get; set; } // 0 = unlimited
+
+    // [BitLengthFieldString(nameof(NameLength))]: string whose byte count lives in a SEPARATE
+    // numeric field declared earlier in the type. Serializer auto-backfills the referenced field
+    // with the encoded byte count; deserializer reads the count from `this.<LengthFieldMemberName>`
+    // (already populated by an earlier field) and reads that many bytes.
+    public bool IsLengthFieldString { get; set; }
+    public string? LengthFieldMemberName { get; set; }
+    public int LengthFieldMaxBytes { get; set; } // 0 = unlimited
+    /// <summary>Cached bit width of the referenced length field; needed by the serializer's overflow check.</summary>
+    public int LengthFieldBitWidth { get; set; }
+    /// <summary>Cached primitive type name of the referenced length field (e.g. "byte", "ushort"). Used for casts.</summary>
+    public string LengthFieldTypeName { get; set; } = "";
 
     // Manual IBitSerializable support (without [BitSerialize])
     public bool IsManualBitSerializable { get; set; }
@@ -103,6 +118,15 @@ internal class BitFieldModel
     // Stored as int to avoid a Generator-side reference to the runtime BitEndian enum.
     // Only meaningful for numeric/enum fields that are byte-aligned with bit width ∈ {8,16,32,64}.
     public int Endian { get; set; }
+
+    // [BitFieldValue(constant, Verify=true)]: pin a constant value to a numeric/enum scalar field.
+    // Serializer writes the constant to wire (and back to the property); deserializer reads + optionally
+    // verifies. Only meaningful for numeric/enum scalars (BITS042). Stored as long to fit any integer
+    // type up to ulong (which is rejected if it exceeds long.MaxValue; in practice protocol magic numbers
+    // never need values > 2^63).
+    public bool HasConstantValue { get; set; }
+    public long ConstantValue { get; set; }
+    public bool ConstantValueVerify { get; set; } = true;
 
     // True if the field's nested type (direct nested OR list element type) transitively contains
     // a [BitField(Endian = ...)] override. Computed during this field's analysis using the actual

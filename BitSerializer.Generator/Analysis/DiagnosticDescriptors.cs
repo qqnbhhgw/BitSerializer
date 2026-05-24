@@ -332,4 +332,92 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor FieldValueRequiresNumericScalar = new(
+        "BITS042",
+        "[BitFieldValue] requires a numeric / enum scalar field",
+        "Member '{0}' in '{1}' carries [BitFieldValue(...)] but is not a numeric / enum scalar (IsList = {2}, IsString = {3}, IsNested = {4}, IsPolymorphic = {5}, IsTypeParameter = {6}). Pinning a constant value only makes sense on a wire-level integer/enum slot. Move the attribute to a numeric / enum scalar field, or remove it",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor FieldValueOverflowsBitLength = new(
+        "BITS043",
+        "[BitFieldValue] constant does not fit in the field's bit length",
+        "Member '{0}' in '{1}' is declared with BitLength = {2}, but [BitFieldValue({3})] requires {4} bits to represent (range: {5}..{6}). Increase BitLength, pick a smaller constant, or remove the attribute",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor FieldValueConflictsWithOtherFeatures = new(
+        "BITS044",
+        "[BitFieldValue] cannot combine with [BitCrc] / [BitFieldRelated] / [BitFieldCount] / [BitPoly]",
+        "Member '{0}' in '{1}' carries [BitFieldValue] together with {2}. These features would each overwrite the wire bytes the constant is supposed to pin, producing silently wrong output. Remove either [BitFieldValue] or the conflicting attribute",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor FieldValueInvalidType = new(
+        "BITS045",
+        "[BitFieldValue] only accepts integer literals or enum members",
+        "Member '{0}' in '{1}' has [BitFieldValue({2})], but only integer literals (byte/sbyte/short/ushort/int/uint/long/ulong) and enum members are accepted as the pinned constant. Floats / strings / Type / arrays are not meaningful as wire-level integer values",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor LengthFieldStringMustBeString = new(
+        "BITS046",
+        "[BitLengthFieldString] on non-string member",
+        "[BitLengthFieldString] can only be applied to string members, but '{0}' in '{1}' is not a string. To carry a separately-declared length for a non-string payload, use [BitFieldRelated(nameof(<lengthField>))] on a List/byte[] instead",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor LengthFieldStringMissingTarget = new(
+        "BITS047",
+        "[BitLengthFieldString] target field not found or not a valid length scalar",
+        "[BitLengthFieldString] on '{0}' in '{1}' references '{2}', which is not declared earlier in this type as a byte-aligned numeric scalar (allowed types: byte / sbyte / short / ushort / int / uint, bit width must be one of 8/16/32). Move the length field above the string field, and ensure its type is a byte-aligned integer",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor LengthFieldStringNotByteAligned = new(
+        "BITS048",
+        "[BitLengthFieldString] field must start on a byte boundary",
+        "[BitLengthFieldString] on '{0}' in '{1}' has BitStartIndex = {2}, which is not a multiple of 8. A length-field string is a raw byte stream and must start on a byte boundary to keep wire compatibility with byte-oriented readers. Reorder fields, or pad preceding sub-byte fields",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor LengthFieldStringAfterDynamicContent = new(
+        "BITS049",
+        "[BitLengthFieldString] cannot follow a member whose runtime size may not be byte-aligned",
+        "[BitLengthFieldString] on '{0}' in '{1}' is preceded by '{2}' which has runtime-variable bit length and is not provably byte-aligned. The static BITS048 check assumes the field starts on a byte boundary, but at runtime '{2}' can shift the offset by a non-byte multiple, breaking wire compatibility. Move the length-field string before any non-byte-aligned dynamic content",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor LengthFieldStringNegativeMaxBytes = new(
+        "BITS050",
+        "[BitLengthFieldString] MaxBytes must be non-negative",
+        "[BitLengthFieldString] on '{0}' in '{1}' has MaxBytes = {2}; values < 0 are not allowed. Use 0 to mean unlimited (only the length field's bit width caps the byte count), or a positive value to cap encoded byte count",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor ByteLengthNestedNotByteAligned = new(
+        "BITS051",
+        "[BitFieldRelated(RelationKind=ByteLength)] nested type's static bit length must be a multiple of 8",
+        "Member '{0}' in '{1}' is a static-length nested [BitSerialize] type with BitLength = {2}, which is not a multiple of 8. RelationKind=ByteLength expresses the carrier as a byte count, so the nested type's serialized footprint must be a whole number of bytes. Add or remove fields so the type's TotalBitLength becomes byte-aligned, or use a dynamic-length nested type (whose runtime byte count the generator can compute via GetTotalBitLength)",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor ByteLengthNestedLengthFieldOrdering = new(
+        "BITS052",
+        "[BitFieldRelated(RelationKind=ByteLength)] on a nested type requires the length field to be declared earlier",
+        "Member '{0}' in '{1}' is a nested [BitSerialize] type using RelationKind=ByteLength, but the related length field '{2}' is not declared before it. The deserializer must know how many bytes to read for the nested payload before deserializing it, so the length field must appear earlier in declaration order. Move the length field above the nested carrier",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

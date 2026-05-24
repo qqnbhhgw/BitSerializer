@@ -169,11 +169,17 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.IsPotentiallyDynamic == y.IsPotentiallyDynamic
             && x.IsFixedString == y.IsFixedString
             && x.FixedStringByteLength == y.FixedStringByteLength
+            && x.FixedStringPadding == y.FixedStringPadding
             && x.IsTerminatedString == y.IsTerminatedString
             && x.StringEncodingName == y.StringEncodingName
             && x.IsLengthPrefixString == y.IsLengthPrefixString
             && x.LengthPrefixBits == y.LengthPrefixBits
             && x.LengthPrefixMaxBytes == y.LengthPrefixMaxBytes
+            && x.IsLengthFieldString == y.IsLengthFieldString
+            && x.LengthFieldMemberName == y.LengthFieldMemberName
+            && x.LengthFieldMaxBytes == y.LengthFieldMaxBytes
+            && x.LengthFieldBitWidth == y.LengthFieldBitWidth
+            && x.LengthFieldTypeName == y.LengthFieldTypeName
             && x.IsManualBitSerializable == y.IsManualBitSerializable
             && x.ListElementIsManualBitSerializable == y.ListElementIsManualBitSerializable
             && x.ListElementIsTypeParameter == y.ListElementIsTypeParameter
@@ -192,6 +198,9 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.ConsumeRemaining == y.ConsumeRemaining
             && x.RelationKind == y.RelationKind
             && x.Endian == y.Endian
+            && x.HasConstantValue == y.HasConstantValue
+            && x.ConstantValue == y.ConstantValue
+            && x.ConstantValueVerify == y.ConstantValueVerify
             && x.NestedHasEndianOverride == y.NestedHasEndianOverride
             && x.NestedEndianKind == y.NestedEndianKind
             && x.NestedEndianTypeFullName == y.NestedEndianTypeFullName

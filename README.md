@@ -10,13 +10,15 @@
 - **自动推断位长** — 未指定位长时，自动根据类型推断（`byte` = 8, `ushort` = 16, `int` = 32 ...）
 - **嵌套类型** — 支持嵌套复合类型的递归序列化
 - **继承链支持** — 支持多层继承，包括通过未标记 `[BitSerialize]` 的中间抽象类型（如泛型基类）正确序列化
-- **字符串支持** — 支持固定长度字符串（`[BitFixedString]`）、NUL 终止字符串（`[BitTerminatedString]`）和长度前缀字符串（`[BitLengthPrefixString]`，length-prefix 8/16/32 bit），支持 ASCII 和 UTF-8 编码
+- **字符串支持** — 支持固定长度字符串（`[BitFixedString]`，可自定义 padding 字节）、NUL 终止字符串（`[BitTerminatedString]`）、长度前缀字符串（`[BitLengthPrefixString]`，length-prefix 8/16/32 bit）和**字段引用长度字符串**（`[BitLengthFieldString(nameof(NameLength))]`，长度由另一字段承载），支持 ASCII 和 UTF-8 编码
 - **自定义序列化类型** — 支持实现 `IBitSerializable` 接口的自定义类型，无需 `[BitSerialize]` 标记
 - **泛型类型参数** — 支持泛型类型参数字段的序列化，通过 `IBitSerializable` 接口在运行时分发
 - **集合支持** — 支持 `List<T>` / `T[]` 的序列化，元素数量可动态关联或固定指定；也支持按**字节预算**驱动嵌套动态元素集合（`RelationKind = ByteLength`）
 - **数组短包/剩余字节** — `[BitFieldCount(N, PadIfShort=true)]` 短数据自动补零；`[BitFieldConsumeRemaining]` 读取直到数据末尾
 - **声明式 CRC** — `[BitCrc]` + `[BitCrcInclude]` 自动计算并回填 CRC 字段，内置 CRC-CCITT / CRC-16/ARC / CRC-32；`[BitCrc(WholeBuffer = true)]` 一键覆盖整 buffer 并用 `SkipHeadBytes` / `SkipTailBytes` 排除帧头/帧尾
 - **字段级大小端覆盖** — `[BitField(Endian = BitEndian.Big/Little)]` 让单个数值字段独立选择字节序，方便跨混合大小端的真实协议
+- **常量字段钉死与校验** — `[BitFieldValue(0x7E)]` 序列化时强制写入魔数、反序列化时自动校验，把帧头/帧尾/协议版本验证从 FluentValidation 前移到解码失败点
+- **嵌套类型按字节预算** — `[BitFieldRelated(nameof(Length), RelationKind = ByteLength)]` 既适用于 List 也适用于嵌套 `[BitSerialize]` 类型，序列化时自动按 nested 类型的实际字节数回填长度字段，反序列化时按 wire 长度严格校验
 - **自动回填关联字段** — 序列化时自动将集合长度写入关联的计数字段、将运行时类型写入多态判别字段，无需手动设置
 - **多态类型** — 通过类型判别字段自动分发到具体子类
 - **值转换器** — 支持自定义序列化/反序列化时的值变换，支持上下文感知重载
@@ -506,6 +508,102 @@ public partial class HybridFrame
 - 不能用越界 cast（如 `(BitEndian)5`）绕过枚举范围（BITS037）
 - 嵌套类型如果内部含 `[BitField(Endian = ...)]` 字段，外层把它放到非字节对齐位置 / 跟动态字段后会被编译期拒绝（BITS040 / BITS041），跨 assembly 也能正确检测
 
+### 常量字段钉死（`[BitFieldValue(...)]`）
+
+协议帧普遍有 FrameStart=0x7E / FrameEnd=0xCF / ProtocolVersion=1 这类魔数字段——序列化时要强制写入、反序列化时要校验。`[BitFieldValue]` 把这套逻辑前移到字段声明：
+
+```csharp
+[BitSerialize]
+public partial class Frame
+{
+    [BitField(8), BitFieldValue(0x7E)] public byte Start { get; set; }
+    [BitField(16)] public ushort Payload { get; set; }
+    [BitField(8), BitFieldValue(0xCF)] public byte End { get; set; }
+}
+
+// 序列化：无视用户给的值，强制写入常量，并把属性也回写为该常量
+var src = new Frame { Start = 0x00, Payload = 0x1234, End = 0x00 };
+byte[] bytes = BitSerializerMSB.Serialize(src);
+// bytes[0] = 0x7E, bytes[3] = 0xCF；src.Start / src.End 也被改写为常量
+
+// 反序列化：Verify=true（默认）时与常量不一致抛 InvalidDataException
+var bad = new byte[] { 0xFF, 0x12, 0x34, 0xCF };
+BitSerializerMSB.Deserialize<Frame>(bad);   // 抛 InvalidDataException
+
+// 枚举字面量也接受
+public enum FrameKind : byte { Heartbeat = 1, Data = 2 }
+[BitField(8), BitFieldValue(FrameKind.Data)] public FrameKind Kind { get; set; }
+```
+
+- 仅适用于数值/枚举标量（BITS042）；常量必须能放进字段的 BitLength（BITS043）
+- 不能与 `[BitCrc]` / `[BitFieldRelated]` / `[BitFieldCount]` / `[BitPoly]` 共用（BITS044），这些机制会覆写 wire 字节
+- 仅接受整数字面量和枚举成员，不接受 float / string / Type / 数组（BITS045）
+- `Verify = false` 关闭反序列化校验（只是把读到的值赋回属性），适合"协议给什么就吃什么、再由调用方决定怎么处理"的场景
+
+### 嵌套类型按字节预算（`RelationKind = ByteLength` on nested type）
+
+以前 `RelationKind = ByteLength` 只能作用在 List/Array 上，嵌套类型不能用。v0.11.0 起放开了限制——嵌套 `[BitSerialize]` 类型也能像 list 一样按字节数自动回填、按字节预算严格校验：
+
+```csharp
+[BitSerialize]
+public partial class FrameContent
+{
+    [BitField(8)] public byte A { get; set; }
+    [BitField(8)] public byte B { get; set; }
+    [BitField(16)] public ushort C { get; set; }
+}
+
+[BitSerialize]
+public partial class Frame
+{
+    [BitField(8)] public byte Sync { get; set; }
+    // Length 必须先于 Content 声明（BITS052）
+    [BitField(16)] public ushort Length { get; set; }
+    // Content 是嵌套 [BitSerialize] 类型；Length 自动 = Content 序列化字节数
+    [BitField, BitFieldRelated(nameof(Length), RelationKind = BitRelationKind.ByteLength)]
+    public FrameContent Content { get; set; } = new();
+    [BitField(8)] public byte End { get; set; }
+}
+
+// 序列化：Length 自动回填为 4（Content 占 4 字节）
+var src = new Frame { Sync = 0x7E, Content = new() { A = 1, B = 2, C = 3 }, End = 0xCF };
+byte[] bytes = BitSerializerMSB.Serialize(src);  // Length 自动写入
+
+// 反序列化：从 Length 读字节数 → 反序列化 Content → 验证 Content 消耗的 bit 数 == Length × 8
+// 如果不一致（如帧错乱）抛 InvalidDataException
+```
+
+- 长度字段必须 **先于** 嵌套字段声明（BITS052），反序列化才能先知道字节预算
+- 嵌套类型的静态位长必须是 8 的倍数（BITS051）；动态长度嵌套类型在运行时校验
+- 支持可选 `ValueConverterType` 在线上长度与字节数之间换算（与 list ByteLength 一致），converter 必须同时实现序列化/反序列化方向（BITS024）
+- 同时适用于：静态嵌套 `[BitSerialize]`、动态嵌套 `[BitSerialize]`、`IBitSerializable` 类型、泛型类型参数
+
+### 字段引用长度字符串（`[BitLengthFieldString]`）
+
+区别于 `[BitLengthPrefixString]`（长度内联在字符串前）——这里字符串的字节数来自 **另一个独立声明的字段**。典型 DMI 协议：站名 / 提示文本的长度字段位置和字符串位置由协议固定，无法自描述。
+
+```csharp
+[BitSerialize]
+public partial class StationFrame
+{
+    [BitField(8)] public byte Header { get; set; }
+    [BitField(8)] public byte NameLength { get; set; }      // 长度字段
+    [BitLengthFieldString(nameof(NameLength), Encoding = BitStringEncoding.UTF8)]
+    public string Name { get; set; } = "";
+    [BitField(8)] public byte Footer { get; set; }
+}
+
+// 序列化：NameLength 自动 = UTF8 字节数；序列化后 src.NameLength 同步更新
+var src = new StationFrame { Header = 0xAB, Name = "Tokyo", Footer = 0xCD };
+byte[] bytes = BitSerializerMSB.Serialize(src);
+// bytes = [0xAB, 5, 'T','o','k','y','o', 0xCD]，src.NameLength 已自动设为 5
+```
+
+- 引用字段必须是 byte/sbyte/short/ushort/int/uint，BitLength ∈ {8, 16, 32}（BITS047）
+- 引用字段必须 **先于** 字符串字段声明（BITS047）
+- 字符串字段必须从字节边界开始（BITS048）且不能跟在运行时偏移可能漂移的字段后（BITS049）
+- 可选 `MaxBytes` 限制编码字节上限（≥ 0，BITS050），UTF-8 截断自动避开多字节字符中间
+
 ### 多态类型
 
 通过 `BitPoly` 特性实现基于判别值的类型分发：
@@ -714,6 +812,17 @@ Source Generator 会在编译期检查常见错误并报告诊断信息：
 | `BITS039` | `[BitLengthPrefixString]` 不能跟在运行时偏移可能漂移的动态字段之后 |
 | `BITS040` | 嵌入的类型含 `[BitField(Endian = ...)]` 时父字段必须落在字节对齐位置 |
 | `BITS041` | 嵌入的类型含 `[BitField(Endian = ...)]` 时父字段不能跟在运行时漂移的动态字段后 |
+| `BITS042` | `[BitFieldValue]` 仅适用于数值/枚举标量 |
+| `BITS043` | `[BitFieldValue]` 常量超出字段 BitLength 可表示范围 |
+| `BITS044` | `[BitFieldValue]` 不能与 `[BitCrc]` / `[BitFieldRelated]` / `[BitFieldCount]` / `[BitPoly]` 共用 |
+| `BITS045` | `[BitFieldValue]` 仅接受整数字面量或枚举成员（不接受 float / string / Type / 数组） |
+| `BITS046` | `[BitLengthFieldString]` 仅能用于 `string` 类型 |
+| `BITS047` | `[BitLengthFieldString]` 引用的长度字段未找到，或不是先于本字段声明的 byte/ushort/uint 标量 |
+| `BITS048` | `[BitLengthFieldString]` 字段必须从字节边界开始 |
+| `BITS049` | `[BitLengthFieldString]` 不能跟在运行时偏移可能漂移的动态字段之后 |
+| `BITS050` | `[BitLengthFieldString]` 的 `MaxBytes` 必须 ≥ 0（`0` = 不限） |
+| `BITS051` | `[BitFieldRelated(ByteLength)]` 嵌套类型的静态位长必须是 8 的倍数 |
+| `BITS052` | `[BitFieldRelated(ByteLength)]` 嵌套类型的长度字段必须先于嵌套字段声明 |
 
 例如，以下代码会触发 `BITS006` 编译错误：
 
@@ -740,6 +849,7 @@ public partial record Frame
 | `[BitSerialize]` | 标记类型参与位序列化（类型必须同时声明为 `partial`） |
 | `[BitField(n)]` | 声明字段参与序列化，`n` 为位长度（可选，不指定则自动推断） |
 | `[BitField(n, Endian = BitEndian.Big/Little)]` | 字段级大小端覆盖（仅字节对齐 + 字节倍数宽度的标量），`Inherit`（默认）跟随外层序列化器 |
+| `[BitFieldValue(const, Verify = true)]` | 钉死常量值：序列化时强制写入、反序列化时校验不一致抛 `InvalidDataException` |
 | `[BitFieldRelated(name)]` | 关联另一个字段（用于 List 计数或多态判别） |
 | `[BitFieldRelated(name, converterType)]` | 关联字段并指定值转换器（默认 `Count` 模式下为列表值转换器） |
 | `[BitFieldRelated(name, RelationKind = ByteLength)]` | 关联字段承载集合的字节预算（见[按字节预算驱动集合](#按字节预算驱动集合relationkind--bytelength)） |
@@ -751,15 +861,17 @@ public partial record Frame
 | `[BitCrcInclude(nameof(CrcField))]` | 标注参与 CRC 计算的字段（与 `WholeBuffer = true` 互斥） |
 | `[BitPoly(id, type)]` | 多态映射：当判别值为 `id` 时反序列化为 `type` |
 | `[BitFixedString(n)]` | 固定长度字符串（`n` 字节），不足补 NUL，可选 `Encoding` 参数 |
+| `[BitFixedString(n, Padding = 0x20)]` | 自定义填充字节（如 ASCII 空格 0x20），反序列化时同步 trim |
 | `[BitTerminatedString]` | NUL 终止字符串，动态长度，可选 `Encoding` 参数 |
 | `[BitLengthPrefixString(lengthBits)]` | 长度前缀字符串（`lengthBits` ∈ {8, 16, 32}），可选 `Encoding` / `MaxBytes` 参数 |
+| `[BitLengthFieldString(nameof(LengthField))]` | 长度由另一字段承载的字符串，可选 `Encoding` / `MaxBytes`；序列化时自动反向回填长度字段 |
 | `[BitIgnore]` | 忽略该字段，不参与序列化/反序列化 |
 
 ## 支持的数据类型
 
 - 整数类型：`byte`, `sbyte`, `short`, `ushort`, `int`, `uint`, `long`, `ulong`
 - 枚举类型（任意底层整数类型）
-- 字符串：固定长度（`[BitFixedString]`）、NUL 终止（`[BitTerminatedString]`）、长度前缀（`[BitLengthPrefixString]`）
+- 字符串：固定长度（`[BitFixedString]`）、NUL 终止（`[BitTerminatedString]`）、长度前缀（`[BitLengthPrefixString]`）、字段引用长度（`[BitLengthFieldString]`）
 - 嵌套的 BitField 类型（class / struct / record）
 - 自定义 `IBitSerializable` 类型
 - `List<T>` / `T[]`（T 为上述支持的类型）

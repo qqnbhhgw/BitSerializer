@@ -257,6 +257,35 @@ public class BitSerializerGenerator : IIncrementalGenerator
                 }
                 dynamicParts.Add($"{field.LengthPrefixBits} + {lpsBytesVar} * 8");
             }
+            else if (field.IsLengthFieldString)
+            {
+                // Mirror of the LengthPrefixString branch above, minus the inline-prefix bits — the
+                // length lives in a peer field whose own BitLength already contributes to staticBits.
+                // Same UTF-8 boundary rollback semantics apply.
+                var encoding = GetEncodingExpression(field.StringEncodingName);
+                var lfsBytesVar = $"_lfsBytesT_{field.MemberName}";
+                if (field.LengthFieldMaxBytes > 0 && field.StringEncodingName == "UTF8")
+                {
+                    var rawBytesVar = $"_lfsRawT_{field.MemberName}";
+                    preStatements.Add($"        byte[] {rawBytesVar} = {encoding}.GetBytes(this.{field.MemberName} ?? \"\");");
+                    preStatements.Add($"        int {lfsBytesVar} = global::System.Math.Min({rawBytesVar}.Length, {field.LengthFieldMaxBytes});");
+                    preStatements.Add($"        if ({lfsBytesVar} < {rawBytesVar}.Length)");
+                    preStatements.Add("        {");
+                    preStatements.Add($"            int _lcsLT_{field.MemberName} = {lfsBytesVar} - 1;");
+                    preStatements.Add($"            while (_lcsLT_{field.MemberName} > 0 && ({rawBytesVar}[_lcsLT_{field.MemberName}] & 0xC0) == 0x80) _lcsLT_{field.MemberName}--;");
+                    preStatements.Add($"            byte _leadLT_{field.MemberName} = {rawBytesVar}[_lcsLT_{field.MemberName}];");
+                    preStatements.Add($"            int _seqLenLT_{field.MemberName} = _leadLT_{field.MemberName} < 0x80 ? 1 : (_leadLT_{field.MemberName} & 0xE0) == 0xC0 ? 2 : (_leadLT_{field.MemberName} & 0xF0) == 0xE0 ? 3 : (_leadLT_{field.MemberName} & 0xF8) == 0xF0 ? 4 : 1;");
+                    preStatements.Add($"            if (_lcsLT_{field.MemberName} + _seqLenLT_{field.MemberName} > {lfsBytesVar}) {lfsBytesVar} = _lcsLT_{field.MemberName};");
+                    preStatements.Add("        }");
+                }
+                else
+                {
+                    preStatements.Add($"        int {lfsBytesVar} = {encoding}.GetByteCount(this.{field.MemberName} ?? \"\");");
+                    if (field.LengthFieldMaxBytes > 0)
+                        preStatements.Add($"        if ({lfsBytesVar} > {field.LengthFieldMaxBytes}) {lfsBytesVar} = {field.LengthFieldMaxBytes};");
+                }
+                dynamicParts.Add($"{lfsBytesVar} * 8");
+            }
             else if (field.IsPotentiallyDynamic)
             {
                 dynamicParts.Add($"((global::BitSerializer.IBitSerializable)this.{field.MemberName}).GetTotalBitLength()");

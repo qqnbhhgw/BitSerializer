@@ -16,12 +16,31 @@ internal static class SerializerEmitter
     {
         foreach (var field in fields)
         {
+            // [BitLengthFieldString]: backfill the byte count into a peer length field. Mirrors the
+            // list ByteLength backfill but the "collection bit length" is the string's encoded byte
+            // count (with UTF-8 boundary rollback when MaxBytes truncates inside a multi-byte char).
+            if (field.IsLengthFieldString && field.LengthFieldMemberName != null)
+            {
+                var lenField = fields.Find(f => f.MemberName == field.LengthFieldMemberName);
+                if (lenField != null) EmitLengthFieldStringBackfill(sb, field, lenField);
+                continue;
+            }
+
             if (field.RelatedMemberName == null)
                 continue;
 
             var relatedField = fields.Find(f => f.MemberName == field.RelatedMemberName);
             if (relatedField == null)
                 continue;
+
+            // T4: ByteLength on a nested [BitSerialize] / IBitSerializable / type-parameter carrier
+            // — compute the nested type's serialized byte count and backfill the related length
+            // field. Bytes are written by the regular nested-emit path; only the backfill differs.
+            if ((field.IsNestedType || field.IsTypeParameter) && field.RelationKind == 1)
+            {
+                EmitNestedByteLengthBackfill(sb, field, relatedField);
+                continue;
+            }
 
             if (field.IsList && !field.FixedCount.HasValue)
             {
@@ -60,6 +79,111 @@ internal static class SerializerEmitter
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Emits the byte-count backfill for a [BitLengthFieldString] field. The byte count goes into
+    /// the referenced length field; the actual string bytes are written later by EmitLengthFieldStringSerialize.
+    /// Mirrors EmitByteLengthBackfill structurally but the "collection" is a string encoded via Encoding.
+    /// Caches the computed length on a local (_lfsLen_<field>) so the serializer body can reuse it
+    /// without re-encoding.
+    /// </summary>
+    private static void EmitLengthFieldStringBackfill(StringBuilder sb, BitFieldModel field, BitFieldModel lenField)
+    {
+        var encoding = field.StringEncodingName == "UTF8"
+            ? "global::System.Text.Encoding.UTF8"
+            : "global::System.Text.Encoding.ASCII";
+        var name = field.MemberName;
+        long lengthMax = field.LengthFieldBitWidth == 32 ? uint.MaxValue : (1L << field.LengthFieldBitWidth) - 1;
+
+        // Encode once; the serializer body reuses _lfsBytes_/_lfsLen_ to avoid re-encoding.
+        sb.AppendLine($"        byte[] _lfsBytes_{name} = {encoding}.GetBytes(this.{name} ?? \"\");");
+
+        // Truncate to MaxBytes (with UTF-8 boundary safety). Identical algorithm to the
+        // [BitLengthPrefixString] path; see EmitLengthPrefixStringSerialize for rationale.
+        if (field.LengthFieldMaxBytes > 0)
+        {
+            sb.AppendLine($"        int _lfsLen_{name} = global::System.Math.Min(_lfsBytes_{name}.Length, {field.LengthFieldMaxBytes});");
+            if (field.StringEncodingName == "UTF8")
+            {
+                sb.AppendLine($"        if (_lfsLen_{name} < _lfsBytes_{name}.Length)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            int _lcs_{name} = _lfsLen_{name} - 1;");
+                sb.AppendLine($"            while (_lcs_{name} > 0 && (_lfsBytes_{name}[_lcs_{name}] & 0xC0) == 0x80) _lcs_{name}--;");
+                sb.AppendLine($"            byte _lead_{name} = _lfsBytes_{name}[_lcs_{name}];");
+                sb.AppendLine($"            int _seqLen_{name} = _lead_{name} < 0x80 ? 1 : (_lead_{name} & 0xE0) == 0xC0 ? 2 : (_lead_{name} & 0xF0) == 0xE0 ? 3 : (_lead_{name} & 0xF8) == 0xF0 ? 4 : 1;");
+                sb.AppendLine($"            if (_lcs_{name} + _seqLen_{name} > _lfsLen_{name}) _lfsLen_{name} = _lcs_{name};");
+                sb.AppendLine("        }");
+            }
+        }
+        else
+        {
+            sb.AppendLine($"        int _lfsLen_{name} = _lfsBytes_{name}.Length;");
+        }
+
+        // Overflow against the length field's bit width (skip 32-bit: a managed string can never
+        // overflow uint range).
+        if (field.LengthFieldBitWidth < 32)
+        {
+            sb.AppendLine($"        if (_lfsLen_{name} > {lengthMax})");
+            sb.AppendLine($"            throw new global::System.InvalidOperationException($\"String '{name}' encoded byte length {{_lfsLen_{name}}} exceeds the maximum ({lengthMax}) representable by the {field.LengthFieldBitWidth}-bit length field '{lenField.MemberName}'.\");");
+        }
+
+        // Backfill.
+        sb.AppendLine($"        this.{lenField.MemberName} = ({lenField.MemberTypeName})_lfsLen_{name};");
+    }
+
+    /// <summary>
+    /// T4: emits the byte-count backfill for a nested-type field tagged with RelationKind=ByteLength.
+    /// Mirrors the list ByteLength path but the "byte count" comes from the nested type's
+    /// GetTotalBitLength() (or compile-time BitLength for fixed-size nested types) instead of a
+    /// per-element multiply. Null nested values are treated as zero bytes.
+    /// </summary>
+    private static void EmitNestedByteLengthBackfill(StringBuilder sb, BitFieldModel field, BitFieldModel relatedField)
+    {
+        var name = field.MemberName;
+
+        // Compute total bits. Static-length nested types use the compile-time BitLength so we
+        // don't pay for an interface call. Dynamic / type-parameter / manual carriers go through
+        // IBitSerializable.GetTotalBitLength.
+        bool isStatic = !field.IsPotentiallyDynamic
+                        && !field.IsTypeParameter
+                        && field.BitLength > 0;
+
+        sb.AppendLine($"        int _nbits_{name} = 0;");
+        sb.AppendLine($"        if (this.{name} != null)");
+        sb.AppendLine("        {");
+        if (isStatic)
+        {
+            sb.AppendLine($"            _nbits_{name} = {field.BitLength};");
+        }
+        else
+        {
+            sb.AppendLine($"            _nbits_{name} = ((global::BitSerializer.IBitSerializable)this.{name}).GetTotalBitLength();");
+        }
+        sb.AppendLine("        }");
+
+        // Runtime byte-alignment guard. Mirror of the list path — BITS051 catches the static case
+        // at compile time but dynamic nested types must be checked at runtime.
+        sb.AppendLine($"        if ((_nbits_{name} & 7) != 0)");
+        sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Nested '{name}' serializes to {{_nbits_{name}}} bits which is not byte-aligned; RelationKind=ByteLength requires the nested type's runtime size to be a whole number of bytes.\");");
+        sb.AppendLine($"        int _nbytes_{name} = _nbits_{name} / 8;");
+
+        // Optional converter: domainBytes -> wireValue (e.g. wire stores byte_count + 4).
+        string wireRaw = field.ValueConverterTypeFullName != null && field.ValueConverterHasSerialize
+            ? (field.ValueConverterSerializeHasContext
+                ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object)_nbytes_{name}, context)"
+                : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object)_nbytes_{name})")
+            : $"(object)_nbytes_{name}";
+
+        sb.AppendLine($"        long _nwire_{name} = global::System.Convert.ToInt64({wireRaw});");
+        if (relatedField.BitLength < 32)
+        {
+            long maxValue = (1L << relatedField.BitLength) - 1;
+            sb.AppendLine($"        if (_nwire_{name} < 0 || _nwire_{name} > {maxValue})");
+            sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Nested '{name}' produced wire length {{_nwire_{name}}} which cannot fit in the {relatedField.BitLength}-bit field '{relatedField.MemberName}'.\");");
+        }
+        sb.AppendLine($"        this.{relatedField.MemberName} = ({relatedField.MemberTypeName})_nwire_{name};");
     }
 
     /// <summary>
@@ -213,6 +337,12 @@ internal static class SerializerEmitter
                 EmitSerializeConverter(sb, field, memberAccess);
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
                 EmitLengthPrefixStringSerialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
+            }
+            else if (field.IsLengthFieldString)
+            {
+                EmitSerializeConverter(sb, field, memberAccess);
+                fieldEndVar = $"_bitIndex_{field.MemberName}";
+                EmitLengthFieldStringSerialize(sb, field, helper, fieldEndVar, offsetExpr);
             }
             else if (field.IsList)
             {
@@ -403,6 +533,21 @@ internal static class SerializerEmitter
     private static void EmitPrimitiveSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string offsetExpr)
     {
         var typeName = field.IsEnum ? field.EnumUnderlyingTypeName! : field.MemberTypeName;
+
+        // [BitFieldValue(constant)]: write the constant directly and force-set the property so the
+        // in-memory object reflects the wire bytes. BITS044 already rejects co-occurrence with
+        // [BitCrc] / [BitFieldRelated] / [BitFieldCount] / converter, so we can skip those branches.
+        if (field.HasConstantValue)
+        {
+            string literal = $"unchecked(({typeName}){field.ConstantValue}L)";
+            sb.AppendLine($"        {helper}.SetValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength}, {literal});");
+            // Update the property so subsequent reads of the in-memory object see the pinned value.
+            string assignedLiteral = field.IsEnum
+                ? $"({field.MemberTypeFullName})unchecked(({typeName}){field.ConstantValue}L)"
+                : $"unchecked(({field.MemberTypeFullName}){field.ConstantValue}L)";
+            sb.AppendLine($"        {memberAccess} = {assignedLiteral};");
+            return;
+        }
 
         if (field.ValueConverterTypeFullName != null && field.ValueConverterHasSerialize)
         {
@@ -631,7 +776,7 @@ internal static class SerializerEmitter
         sb.AppendLine($"            for (int _si = 0; _si < _strLen_{name}; _si++)");
         sb.AppendLine($"                {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si * 8, 8, _strBytes_{name}[_si]);");
         sb.AppendLine($"            for (int _si = _strLen_{name}; _si < {byteLen}; _si++)");
-        sb.AppendLine($"                {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si * 8, 8, 0);");
+        sb.AppendLine($"                {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si * 8, 8, {field.FixedStringPadding});");
         sb.AppendLine("        }");
     }
 
@@ -709,6 +854,28 @@ internal static class SerializerEmitter
         sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {lengthBits} + _strLen_{name} * 8;");
     }
 
+    /// <summary>
+    /// Emits the bytes-only side of a [BitLengthFieldString] field. The encoded byte count and
+    /// the cached payload (_lfsBytes_<name>, _lfsLen_<name>) come from EmitLengthFieldStringBackfill,
+    /// which ran in EmitAutoBackfill before any field serialization started — so we just spool the
+    /// bytes here without re-encoding. Mirror of EmitLengthPrefixStringSerialize minus the prefix
+    /// write (the prefix lives in a peer field that gets its normal primitive emit).
+    /// </summary>
+    private static void EmitLengthFieldStringSerialize(StringBuilder sb, BitFieldModel field, string helper, string bitIndexVar, string offsetExpr)
+    {
+        var name = field.MemberName;
+
+        // Mirror of EmitLengthPrefixStringSerialize round-11 P1 runtime guard: the string body is a
+        // byte stream, so a sub-byte absolute offset (caused by a parent type writing this one at a
+        // non-byte bitOffset) would corrupt wire compatibility regardless of what BITS048 checked.
+        sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-field string '{name}' requires a byte-aligned absolute bit offset, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary (the containing type was nested at a non-byte bitOffset).\");");
+
+        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _lfsLen_{name}; _si_{name}++)");
+        sb.AppendLine($"            {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si_{name} * 8, 8, _lfsBytes_{name}[_si_{name}]);");
+        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + _lfsLen_{name} * 8;");
+    }
+
     private static string GetEncodingExpression(string encodingName)
     {
         return encodingName == "UTF8"
@@ -747,6 +914,7 @@ internal static class SerializerEmitter
                || field.IsPotentiallyDynamic
                || field.IsTerminatedString
                || field.IsLengthPrefixString
+               || field.IsLengthFieldString
                || (field.IsList && !field.FixedCount.HasValue)
                || (field.IsList && field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0)
                || (field.IsList && field.ListElementHasDynamicLength);
@@ -760,6 +928,11 @@ internal static class SerializerEmitter
         }
 
         if (field.IsLengthPrefixString)
+        {
+            return field.BitStartIndex;
+        }
+
+        if (field.IsLengthFieldString)
         {
             return field.BitStartIndex;
         }
