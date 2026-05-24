@@ -276,4 +276,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor LengthPrefixStringNotByteAligned = new(
+        "BITS038",
+        "[BitLengthPrefixString] field must start on a byte boundary",
+        "[BitLengthPrefixString] on '{0}' in '{1}' has BitStartIndex = {2}, which is not a multiple of 8. A length-prefix string is fundamentally a byte stream (length prefix + raw encoded bytes), so writing it across a sub-byte boundary would corrupt wire compatibility with any reader that parses byte-aligned prefix + payload. Reorder fields so this attribute lands on a byte boundary, or pad preceding sub-byte fields",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

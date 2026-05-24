@@ -750,6 +750,15 @@ internal static class DeserializerEmitter
         sb.AppendLine($"        long _strRemBits_{name} = (long)bytes.Length * 8 - ({offsetExpr} + {lengthBits});");
         sb.AppendLine($"        if (_strLenRaw_{name} < 0 || _strLenRaw_{name} * 8 > _strRemBits_{name})");
         sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' declares {{_strLenRaw_{name}}} bytes, but only {{_strRemBits_{name} / 8}} bytes remain in the buffer after the {lengthBits}-bit length prefix.\");");
+        // Review round-9 P1: enforce MaxBytes on deserialize too. Serializer caps the encoded payload
+        // at MaxBytes, so any wire value larger than MaxBytes violates the declared field contract —
+        // accepting it would force allocations bigger than this model can ever produce. Reject before
+        // allocating.
+        if (field.LengthPrefixMaxBytes > 0)
+        {
+            sb.AppendLine($"        if (_strLenRaw_{name} > {field.LengthPrefixMaxBytes})");
+            sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' declares {{_strLenRaw_{name}}} bytes, exceeding the declared MaxBytes = {field.LengthPrefixMaxBytes} cap.\");");
+        }
         sb.AppendLine($"        int _strLen_{name} = (int)_strLenRaw_{name};");
         sb.AppendLine($"        byte[] _strBytes_{name} = new byte[_strLen_{name}];");
         sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _strLen_{name}; _si_{name}++)");

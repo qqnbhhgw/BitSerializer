@@ -225,6 +225,27 @@ public partial class BitSerializerLengthPrefixStringTests
     }
 
     [Fact]
+    public void Deserialize_PrefixExceedsMaxBytes_Throws()
+    {
+        // Review round-9 P1: a crafted wire with length prefix > MaxBytes must be rejected,
+        // even if buffer has enough bytes (the field contract caps the byte count to MaxBytes).
+        // Utf8WithMaxBytes has MaxBytes = 4. Craft 6-byte payload + 2-byte length prefix saying 6.
+        byte[] adversarial = new byte[] { 0x00, 0x06, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46 };
+        var ex = Should.Throw<System.IO.InvalidDataException>(() =>
+            BitSerializerMSB.Deserialize<Utf8WithMaxBytes>(adversarial));
+        ex.Message.ShouldContain("MaxBytes");
+    }
+
+    [Fact]
+    public void Deserialize_PrefixAtMaxBytes_Accepted()
+    {
+        // Boundary: prefix == MaxBytes is the cap, must be accepted.
+        byte[] atCap = new byte[] { 0x00, 0x04, 0x41, 0x42, 0x43, 0x44 };
+        var result = BitSerializerMSB.Deserialize<Utf8WithMaxBytes>(atCap);
+        result.Bounded.ShouldBe("ABCD");
+    }
+
+    [Fact]
     public void GetTotalBitLength_MatchesActualBytes()
     {
         var data = new Utf8With16BitLength

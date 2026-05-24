@@ -261,6 +261,20 @@ internal static class TypeAnalyzer
                     };
                 }
 
+                // BITS038 (review round-9 P2): a length-prefix string is a byte stream (prefix + raw
+                // bytes), so writing it across a sub-byte boundary breaks wire compatibility with any
+                // byte-aligned reader. Require the field to start on a byte boundary.
+                if ((currentBitIndex % 8) != 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.LengthPrefixStringNotByteAligned,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, currentBitIndex)
+                    };
+                }
+
                 field.IsLengthPrefixString = true;
                 field.LengthPrefixBits = lengthBits;
                 field.LengthPrefixMaxBytes = maxBytes;
