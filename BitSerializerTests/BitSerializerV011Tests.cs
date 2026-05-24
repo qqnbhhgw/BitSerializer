@@ -305,4 +305,128 @@ public partial class BitSerializerV011Tests
     }
 
     #endregion
+
+    #region Issue: derived getter + empty setter wire-value cache
+
+    /// <summary>
+    /// 下游 Issue 复现：BinarySerialization 惯例 "派生 getter + 空 setter" 上的 Length 字段。
+    /// 之前反序列化时 generator 写 `this.Length = wire` 是 no-op，然后读 `this.Length` 又回 getter
+    /// （返回 Bytes.Length = 0），导致 Bytes 总是空。修复后 wire 值缓存到 `_wire_<name>` 本地变量，
+    /// 不依赖属性 setter 副作用。
+    /// </summary>
+    [BitSerialize]
+    public partial class DerivedLengthRepro
+    {
+        [BitField(8)]
+        public byte Length
+        {
+            get => (byte)(Bytes?.Length ?? 0);  // 派生 — 反映 Bytes 当前状态
+            set { }                             // no-op — 不持久化 wire 值
+        }
+
+        [BitField]
+        [BitFieldRelated(nameof(Length), RelationKind = BitRelationKind.ByteLength)]
+        public byte[] Bytes { get; set; } = System.Array.Empty<byte>();
+    }
+
+    [Fact]
+    public void Issue_DerivedGetterEmptySetter_DeserializeStillFillsBytes()
+    {
+        // Wire: Length=3, Bytes=[0xAA, 0xBB, 0xCC]
+        var bytes = new byte[] { 0x03, 0xAA, 0xBB, 0xCC };
+        var dst = BitSerializerMSB.Deserialize<DerivedLengthRepro>(bytes);
+        // 修复前：Bytes 是空数组（setter 是 no-op，read-back 时 getter 返回 0）
+        // 修复后：Bytes 正确填充 3 字节
+        dst.Bytes.Length.ShouldBe(3);
+        dst.Bytes[0].ShouldBe((byte)0xAA);
+        dst.Bytes[1].ShouldBe((byte)0xBB);
+        dst.Bytes[2].ShouldBe((byte)0xCC);
+        // Length getter 现在也返回 3（因为 Bytes 已经填充）
+        dst.Length.ShouldBe((byte)3);
+    }
+
+    [Fact]
+    public void Issue_DerivedGetterEmptySetter_SerializeStillCorrect()
+    {
+        // 序列化方向之前就是对的（getter 返回真实长度），这里只是回归保护
+        var src = new DerivedLengthRepro { Bytes = new byte[] { 0x11, 0x22, 0x33, 0x44, 0x55 } };
+        var bytes = BitSerializerMSB.Serialize(src);
+        bytes[0].ShouldBe((byte)5);
+        bytes.Length.ShouldBe(6);
+    }
+
+    /// <summary>
+    /// 同一缺陷的 LengthFieldString 形态：长度字段使用派生 getter + 空 setter。
+    /// </summary>
+    [BitSerialize]
+    public partial class DerivedLengthStringRepro
+    {
+        [BitField(8)]
+        public byte NameLength
+        {
+            get => (byte)System.Text.Encoding.UTF8.GetByteCount(Name ?? "");
+            set { }
+        }
+
+        [BitLengthFieldString(nameof(NameLength), Encoding = BitStringEncoding.UTF8)]
+        public string Name { get; set; } = "";
+    }
+
+    [Fact]
+    public void Issue_DerivedGetterEmptySetter_LengthFieldString_Roundtrip()
+    {
+        var src = new DerivedLengthStringRepro { Name = "Hello" };
+        var bytes = BitSerializerMSB.Serialize(src);
+        bytes[0].ShouldBe((byte)5);
+        var dst = BitSerializerMSB.Deserialize<DerivedLengthStringRepro>(bytes);
+        dst.Name.ShouldBe("Hello");
+    }
+
+    /// <summary>
+    /// 同一缺陷的多态判别字段形态：discriminator 使用派生 getter + 空 setter。
+    /// </summary>
+    public abstract class PolyDerivedBase { }
+
+    [BitSerialize]
+    public partial class PolyDerivedA : PolyDerivedBase
+    {
+        [BitField(8)] public byte ValueA { get; set; }
+    }
+
+    [BitSerialize]
+    public partial class PolyDerivedB : PolyDerivedBase
+    {
+        [BitField(16)] public ushort ValueB { get; set; }
+    }
+
+    [BitSerialize]
+    public partial class DerivedDiscriminatorRepro
+    {
+        [BitField(8)]
+        public byte Kind
+        {
+            get => Payload is PolyDerivedB ? (byte)2 : (byte)1;
+            set { }
+        }
+
+        [BitField(16)]
+        [BitFieldRelated(nameof(Kind))]
+        [BitPoly(1, typeof(PolyDerivedA))]
+        [BitPoly(2, typeof(PolyDerivedB))]
+        public PolyDerivedBase Payload { get; set; } = new PolyDerivedA();
+    }
+
+    [Fact]
+    public void Issue_DerivedGetterEmptySetter_PolymorphicDiscriminator()
+    {
+        // Wire: Kind=2 → PolyDerivedB, ValueB=0x1234
+        var bytes = new byte[] { 0x02, 0x12, 0x34 };
+        var dst = BitSerializerMSB.Deserialize<DerivedDiscriminatorRepro>(bytes);
+        // 修复前：switch 读 `this.Kind` 派生自 Payload，Payload 初始是 PolyDerivedA 所以总是走 case 1
+        // 修复后：switch 读缓存的 _wire_Kind = 2，正确选 PolyDerivedB
+        dst.Payload.ShouldBeOfType<PolyDerivedB>();
+        ((PolyDerivedB)dst.Payload).ValueB.ShouldBe((ushort)0x1234);
+    }
+
+    #endregion
 }

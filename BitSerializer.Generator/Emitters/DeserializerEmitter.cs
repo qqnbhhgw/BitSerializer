@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Text;
 using BitSerializer.Generator.Models;
 
@@ -15,6 +16,16 @@ internal static class DeserializerEmitter
         sb.AppendLine($"    public {newKeyword}int {methodName}(global::System.ReadOnlySpan<byte> bytes, int bitOffset, object? context)");
         sb.AppendLine("    {");
         sb.AppendLine("        OnDeserializing(context);");
+
+        // Issue: fields with "derived getter + empty setter" don't keep the wire value, so any later
+        // field that reads `this.<related>` to know its own size/discriminator/budget sees a stale
+        // computed value instead of what was actually on the wire. Fix: for every field that is
+        // referenced by a downstream field (list count / list ByteLength / nested ByteLength /
+        // length-field string / polymorphic discriminator), also stash the just-deserialized value
+        // into a `_wire_<name>` local at method scope. Dependent emit sites prefer that local over
+        // `this.<name>`. The local survives the no-op setter and is independent of the property's
+        // getter side effects.
+        var wireCachedFieldNames = ComputeReferencedFieldNames(model);
 
         string? runtimeOffsetVar = null;
         int runtimeStaticEnd = 0;
@@ -80,13 +91,13 @@ internal static class DeserializerEmitter
             else if (field.IsLengthFieldString)
             {
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
-                EmitLengthFieldStringDeserialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
+                EmitLengthFieldStringDeserialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr, wireCachedFieldNames);
                 EmitDeserializeConverter(sb, field, memberAccess);
             }
             else if (field.IsList)
             {
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
-                EmitListDeserialize(sb, field, helper, memberAccess, fieldEndVar, bitOrder, offsetExpr);
+                EmitListDeserialize(sb, field, helper, memberAccess, fieldEndVar, bitOrder, offsetExpr, wireCachedFieldNames);
                 EmitDeserializeConverter(sb, field, memberAccess);
             }
             else if (field.IsPolymorphic)
@@ -94,11 +105,11 @@ internal static class DeserializerEmitter
                 if (usesRuntimeBitLength)
                 {
                     fieldEndVar = $"_bitIndex_{field.MemberName}";
-                    EmitPolymorphicDeserialize(sb, field, helper, memberAccess, bitOrder, offsetExpr, fieldEndVar);
+                    EmitPolymorphicDeserialize(sb, field, helper, memberAccess, bitOrder, offsetExpr, fieldEndVar, wireCachedFieldNames);
                 }
                 else
                 {
-                    EmitPolymorphicDeserialize(sb, field, helper, memberAccess, bitOrder, offsetExpr);
+                    EmitPolymorphicDeserialize(sb, field, helper, memberAccess, bitOrder, offsetExpr, null, wireCachedFieldNames);
                 }
                 EmitDeserializeConverter(sb, field, memberAccess);
             }
@@ -109,7 +120,7 @@ internal static class DeserializerEmitter
                 if (field.RelationKind == 1 && field.RelatedMemberName != null)
                 {
                     string typeParamCall = $"((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr}, context)";
-                    EmitNestedByteLengthRead(sb, field, helper, memberAccess, fieldEndVar, offsetExpr, methodName, typeParamCall);
+                    EmitNestedByteLengthRead(sb, field, helper, memberAccess, fieldEndVar, offsetExpr, methodName, typeParamCall, wireCachedFieldNames);
                 }
                 else
                 {
@@ -137,7 +148,7 @@ internal static class DeserializerEmitter
                     if (field.RelationKind == 1 && field.RelatedMemberName != null)
                     {
                         fieldEndVar = $"_bitIndex_{field.MemberName}";
-                        EmitNestedByteLengthReadInterface(sb, field, fieldEndVar, offsetExpr, methodName, localVar, ctxArg);
+                        EmitNestedByteLengthReadInterface(sb, field, fieldEndVar, offsetExpr, methodName, localVar, ctxArg, wireCachedFieldNames);
                     }
                     else if (usesRuntimeBitLength)
                     {
@@ -171,7 +182,7 @@ internal static class DeserializerEmitter
                     if (field.RelationKind == 1 && field.RelatedMemberName != null)
                     {
                         fieldEndVar = $"_bitIndex_{field.MemberName}";
-                        EmitNestedByteLengthRead(sb, field, helper, memberAccess, fieldEndVar, offsetExpr, methodName, callExpr);
+                        EmitNestedByteLengthRead(sb, field, helper, memberAccess, fieldEndVar, offsetExpr, methodName, callExpr, wireCachedFieldNames);
                     }
                     else if (usesRuntimeBitLength)
                     {
@@ -194,7 +205,7 @@ internal static class DeserializerEmitter
                 // Primitive converter is handled inside EmitPrimitiveDeserialize.
                 // [BitField(Endian = ...)] override mirrors the serializer side.
                 var fieldHelper = ResolveFieldHelper(helper, field.Endian);
-                EmitPrimitiveDeserialize(sb, field, fieldHelper, memberAccess, offsetExpr);
+                EmitPrimitiveDeserialize(sb, field, fieldHelper, memberAccess, offsetExpr, wireCachedFieldNames);
             }
 
             // If this field is the last include of a dynamic CRC group that validates on deserialize,
@@ -291,9 +302,11 @@ internal static class DeserializerEmitter
         return $"    public {newKeyword}int {methodName}(global::System.ReadOnlySpan<byte> bytes, int bitOffset) => {methodName}(bytes, bitOffset, null);\n";
     }
 
-    private static void EmitPrimitiveDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string offsetExpr)
+    private static void EmitPrimitiveDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string offsetExpr, HashSet<string>? wireCachedFieldNames = null)
     {
         var typeName = field.IsEnum ? field.EnumUnderlyingTypeName! : field.MemberTypeName;
+        bool cacheWire = wireCachedFieldNames != null && wireCachedFieldNames.Contains(field.MemberName);
+        string wireLocal = $"_wire_{field.MemberName}";
 
         // [BitFieldValue(constant, Verify=true)]: read the value, optionally throw on mismatch, then
         // set the property (so callers see the actual wire value for diagnostics).
@@ -311,9 +324,16 @@ internal static class DeserializerEmitter
                 ? $"({field.MemberTypeFullName})_fixedVal_{name}"
                 : $"_fixedVal_{name}";
             sb.AppendLine($"        {memberAccess} = {assignExpr};");
+            if (cacheWire)
+            {
+                // Cache the post-cast property-typed value so dependent reads see it even if the
+                // property has a no-op setter. For enum carriers we cache the underlying integer.
+                sb.AppendLine($"        var {wireLocal} = {assignExpr};");
+            }
             return;
         }
 
+        string valueExpr;
         if (field.ValueConverterTypeFullName != null && field.ValueConverterHasDeserialize)
         {
             var rawValue = $"(object){helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength})";
@@ -321,19 +341,70 @@ internal static class DeserializerEmitter
                 ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({rawValue}, context)"
                 : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({rawValue})";
             var castType = field.IsEnum ? field.MemberTypeFullName : typeName;
-            sb.AppendLine($"        {memberAccess} = ({castType}){convertCall};");
+            valueExpr = $"({castType}){convertCall}";
         }
         else if (field.IsEnum)
         {
-            sb.AppendLine($"        {memberAccess} = ({field.MemberTypeFullName}){helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength});");
+            valueExpr = $"({field.MemberTypeFullName}){helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength})";
         }
         else
         {
-            sb.AppendLine($"        {memberAccess} = {helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength});");
+            valueExpr = $"{helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength})";
+        }
+
+        if (cacheWire)
+        {
+            // Stash the wire value into a method-scope local BEFORE the property assignment so a
+            // downstream field that reads `_wire_<name>` is independent of any side effects on the
+            // property setter (including the no-op pattern from BinarySerialization's derived
+            // length / discriminator getters).
+            sb.AppendLine($"        var {wireLocal} = {valueExpr};");
+            sb.AppendLine($"        {memberAccess} = {wireLocal};");
+        }
+        else
+        {
+            sb.AppendLine($"        {memberAccess} = {valueExpr};");
         }
     }
 
-    private static void EmitListDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string bitOrder, string offsetExpr)
+    /// <summary>
+    /// Builds the set of field names that need their wire value cached because a downstream field
+    /// reads them via `[BitFieldRelated(...)]` (list count, list ByteLength, polymorphic discriminator,
+    /// nested ByteLength) or `[BitLengthFieldString(nameof(...))]`. Fields outside this set don't pay
+    /// for the cache local.
+    /// </summary>
+    private static HashSet<string> ComputeReferencedFieldNames(TypeModel model)
+    {
+        var set = new HashSet<string>();
+        foreach (var f in model.Fields)
+        {
+            if (f.RelatedMemberName != null
+                && (f.IsList || f.IsPolymorphic || f.IsNestedType || f.IsTypeParameter))
+            {
+                set.Add(f.RelatedMemberName);
+            }
+            if (f.IsLengthFieldString && f.LengthFieldMemberName != null)
+            {
+                set.Add(f.LengthFieldMemberName);
+            }
+        }
+        return set;
+    }
+
+    /// <summary>
+    /// Returns the expression a downstream field should use to read the value of <paramref name="memberName"/>.
+    /// Prefers the cached `_wire_<name>` local when ComputeReferencedFieldNames included it (which is
+    /// always true for legitimate references — defensive fallback `this.<member>` keeps the generator
+    /// compiling if a future code path forgets to mark the field).
+    /// </summary>
+    private static string ReadFieldExpr(HashSet<string>? wireCachedFieldNames, string memberName)
+    {
+        return wireCachedFieldNames != null && wireCachedFieldNames.Contains(memberName)
+            ? $"_wire_{memberName}"
+            : $"this.{memberName}";
+    }
+
+    private static void EmitListDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string bitOrder, string offsetExpr, HashSet<string>? wireCachedFieldNames = null)
     {
         int elemBits = field.ListElementBitLength;
         var deserializeMethod = $"Deserialize{bitOrder}";
@@ -351,7 +422,7 @@ internal static class DeserializerEmitter
             && field.RelatedMemberName != null)
         {
             EmitListDeserializeByteLength(sb, field, helper, memberAccess, bitIndexVar, offsetExpr,
-                elemBits, elemTypeFullName!, hasCtx, ctxArg, deserializeMethod);
+                elemBits, elemTypeFullName!, hasCtx, ctxArg, deserializeMethod, wireCachedFieldNames);
             return;
         }
 
@@ -441,7 +512,7 @@ internal static class DeserializerEmitter
                 else
                 {
                     countExpr = $"_listCount_{field.MemberName}";
-                    sb.AppendLine($"        int {countExpr} = (int)this.{field.RelatedMemberName};");
+                    sb.AppendLine($"        int {countExpr} = (int)({ReadFieldExpr(wireCachedFieldNames, field.RelatedMemberName!)});");
                     if (field.IsArray)
                         sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[{countExpr}];");
                     else
@@ -517,7 +588,7 @@ internal static class DeserializerEmitter
         }
         else
         {
-            sb.AppendLine($"        int _listCount_{field.MemberName} = (int)this.{field.RelatedMemberName};");
+            sb.AppendLine($"        int _listCount_{field.MemberName} = (int)({ReadFieldExpr(wireCachedFieldNames, field.RelatedMemberName!)});");
             if (field.IsArray)
             {
                 sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[_listCount_{field.MemberName}];");
@@ -573,13 +644,16 @@ internal static class DeserializerEmitter
     private static void EmitListDeserializeByteLength(
         StringBuilder sb, BitFieldModel field, string helper, string memberAccess,
         string bitIndexVar, string offsetExpr,
-        int elemBits, string elemTypeFullName, bool hasCtx, string ctxArg, string deserializeMethod)
+        int elemBits, string elemTypeFullName, bool hasCtx, string ctxArg, string deserializeMethod,
+        HashSet<string>? wireCachedFieldNames = null)
     {
         var name = field.MemberName;
         var ibsElem = $"(global::BitSerializer.IBitSerializable)_elem";
 
-        // Wire value -> byte budget, optionally via converter
-        string wireExpr = $"this.{field.RelatedMemberName}";
+        // Wire value -> byte budget, optionally via converter. Use the cached `_wire_<related>`
+        // local when available so the read is independent of any property setter side effects
+        // (Issue: derived getter + empty setter pattern).
+        string wireExpr = ReadFieldExpr(wireCachedFieldNames, field.RelatedMemberName!);
         string budgetExpr = field.ValueConverterTypeFullName != null && field.ValueConverterHasDeserialize
             ? (field.ValueConverterDeserializeHasContext
                 ? $"global::System.Convert.ToInt32({field.ValueConverterTypeFullName}.OnDeserializeConvert((object){wireExpr}, context))"
@@ -708,7 +782,7 @@ internal static class DeserializerEmitter
         sb.AppendLine($"{indent}({elemIbsExpr}).AfterDeserialize(_elemCtx, bytes.Slice(_elemBitOff / 8));");
     }
 
-    private static void EmitPolymorphicDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitOrder, string offsetExpr, string? bitIndexVar = null)
+    private static void EmitPolymorphicDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitOrder, string offsetExpr, string? bitIndexVar = null, HashSet<string>? wireCachedFieldNames = null)
     {
         var deserializeMethod = $"Deserialize{bitOrder}";
 
@@ -717,7 +791,11 @@ internal static class DeserializerEmitter
             sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
         }
 
-        sb.AppendLine($"        switch ((int)this.{field.RelatedMemberName})");
+        // Use the cached `_wire_<discriminator>` local so a derived-getter + empty-setter
+        // discriminator (Issue: BinarySerialization-style "computed type id") doesn't make the switch
+        // dispatch read back the *previous* runtime type's id instead of what was on the wire.
+        string discriminatorExpr = ReadFieldExpr(wireCachedFieldNames, field.RelatedMemberName!);
+        sb.AppendLine($"        switch ((int)({discriminatorExpr}))");
         sb.AppendLine("        {");
         foreach (var mapping in field.PolyMappings!)
         {
@@ -737,7 +815,7 @@ internal static class DeserializerEmitter
             sb.AppendLine("            }");
         }
         sb.AppendLine("            default:");
-        sb.AppendLine($"                throw new global::System.InvalidOperationException($\"No polymorphic type mapping found for discriminator value '{{(int)this.{field.RelatedMemberName}}}'\");");
+        sb.AppendLine($"                throw new global::System.InvalidOperationException($\"No polymorphic type mapping found for discriminator value '{{(int)({discriminatorExpr})}}'\");");
         sb.AppendLine("        }");
     }
 
@@ -823,28 +901,28 @@ internal static class DeserializerEmitter
     /// validates against the remaining buffer, then calls the regular nested deserialize and
     /// verifies the actual bits consumed match the declared byte count exactly.
     /// </summary>
-    private static void EmitNestedByteLengthRead(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr, string methodName, string nestedCallExpr)
+    private static void EmitNestedByteLengthRead(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr, string methodName, string nestedCallExpr, HashSet<string>? wireCachedFieldNames = null)
     {
-        EmitNestedByteLengthSetup(sb, field, offsetExpr);
+        EmitNestedByteLengthSetup(sb, field, offsetExpr, wireCachedFieldNames);
         sb.AppendLine($"        int _ncons_{field.MemberName} = {nestedCallExpr};");
         EmitNestedByteLengthVerify(sb, field, bitIndexVar, offsetExpr);
     }
 
     /// <summary>Manual IBitSerializable variant of <see cref="EmitNestedByteLengthRead"/>.</summary>
-    private static void EmitNestedByteLengthReadInterface(StringBuilder sb, BitFieldModel field, string bitIndexVar, string offsetExpr, string methodName, string interfaceLocal, string ctxArg)
+    private static void EmitNestedByteLengthReadInterface(StringBuilder sb, BitFieldModel field, string bitIndexVar, string offsetExpr, string methodName, string interfaceLocal, string ctxArg, HashSet<string>? wireCachedFieldNames = null)
     {
-        EmitNestedByteLengthSetup(sb, field, offsetExpr);
+        EmitNestedByteLengthSetup(sb, field, offsetExpr, wireCachedFieldNames);
         sb.AppendLine($"        int _ncons_{field.MemberName} = {interfaceLocal}.{methodName}(bytes, {offsetExpr}, {ctxArg});");
         EmitNestedByteLengthVerify(sb, field, bitIndexVar, offsetExpr);
     }
 
-    private static void EmitNestedByteLengthSetup(StringBuilder sb, BitFieldModel field, string offsetExpr)
+    private static void EmitNestedByteLengthSetup(StringBuilder sb, BitFieldModel field, string offsetExpr, HashSet<string>? wireCachedFieldNames = null)
     {
         var name = field.MemberName;
 
         // Mirror of the list ByteLength path: read the wire length, optionally convert wire → bytes,
         // bounds-check against the remaining buffer before invoking the nested deserializer.
-        sb.AppendLine($"        long _nwireRaw_{name} = global::System.Convert.ToInt64(this.{field.RelatedMemberName});");
+        sb.AppendLine($"        long _nwireRaw_{name} = global::System.Convert.ToInt64({ReadFieldExpr(wireCachedFieldNames, field.RelatedMemberName!)});");
         string bytesExpr = field.ValueConverterTypeFullName != null && field.ValueConverterHasDeserialize
             ? (field.ValueConverterDeserializeHasContext
                 ? $"global::System.Convert.ToInt64({field.ValueConverterTypeFullName}.OnDeserializeConvert((object)_nwireRaw_{name}, context))"
@@ -870,7 +948,7 @@ internal static class DeserializerEmitter
     /// Mirror of EmitLengthPrefixStringDeserialize minus the inline-prefix read and the prefix-bits
     /// arithmetic; uses _lfsRem to bounds-check the declared length against remaining buffer.
     /// </summary>
-    private static void EmitLengthFieldStringDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
+    private static void EmitLengthFieldStringDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr, HashSet<string>? wireCachedFieldNames = null)
     {
         var encoding = GetEncodingExpression(field.StringEncodingName);
         var name = field.MemberName;
@@ -880,9 +958,10 @@ internal static class DeserializerEmitter
         sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
         sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-field string '{name}' requires a byte-aligned absolute bit offset on Deserialize, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary.\");");
 
-        // Read length from the peer field. Widen to long so unsigned 32-bit values don't go negative
-        // and the buffer-size arithmetic doesn't overflow.
-        sb.AppendLine($"        long _lfsLenRaw_{name} = (long)this.{field.LengthFieldMemberName};");
+        // Read length from the peer field via cached `_wire_<name>` so a derived-getter + empty-setter
+        // length carrier (Issue: BinarySerialization "派生 getter + 空 setter" 惯例) doesn't make the
+        // budget evaluate to whatever the getter returns after an unrelated zero-init.
+        sb.AppendLine($"        long _lfsLenRaw_{name} = (long)({ReadFieldExpr(wireCachedFieldNames, field.LengthFieldMemberName!)});");
         sb.AppendLine($"        long _lfsRemBits_{name} = (long)bytes.Length * 8 - ({offsetExpr});");
         sb.AppendLine($"        if (_lfsLenRaw_{name} < 0 || _lfsLenRaw_{name} * 8 > _lfsRemBits_{name})");
         sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-field string '{name}' declares {{_lfsLenRaw_{name}}} bytes (from field '{field.LengthFieldMemberName}'), but only {{_lfsRemBits_{name} / 8}} bytes remain in the buffer.\");");
