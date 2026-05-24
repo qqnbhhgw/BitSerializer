@@ -271,8 +271,10 @@ internal static class SerializerEmitter
             }
             else if (field.IsNumericOrEnum)
             {
-                // Primitive converter is handled inside EmitPrimitiveSerialize
-                EmitPrimitiveSerialize(sb, field, helper, memberAccess, offsetExpr);
+                // Primitive converter is handled inside EmitPrimitiveSerialize.
+                // [BitField(Endian = ...)] can override the outer method's bit order for this field.
+                var fieldHelper = ResolveFieldHelper(helper, field.Endian);
+                EmitPrimitiveSerialize(sb, field, fieldHelper, memberAccess, offsetExpr);
             }
 
             // If this field is the last include of a dynamic CRC group, capture the runtime end bit.
@@ -346,7 +348,11 @@ internal static class SerializerEmitter
             sb.AppendLine("            _crcAlgo.Update(bytes.Slice(_crcStart, _crcEnd - _crcStart));");
             string castType = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName;
             sb.AppendLine($"            {castType} _crcVal = ({castType})_crcAlgo.Result;");
-            sb.AppendLine($"            {helper}.SetValueLength<{castType}>(bytes, {crcOffsetExpr}, {crc.CrcFieldBitLength}, _crcVal);");
+            // CRC fields honor [BitField(Endian = ...)] just like any other primitive — the CRC block
+            // runs after the field's initial write, so we must use the same helper as ResolveFieldHelper
+            // would have chosen above, otherwise the rewrite silently undoes the per-field byte order.
+            var crcHelper = ResolveFieldHelper(helper, crcField.Endian);
+            sb.AppendLine($"            {crcHelper}.SetValueLength<{castType}>(bytes, {crcOffsetExpr}, {crc.CrcFieldBitLength}, _crcVal);");
             if (!crcField.IsEnum)
                 sb.AppendLine($"            this.{crcField.MemberName} = _crcVal;");
             else
@@ -717,6 +723,22 @@ internal static class SerializerEmitter
             ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess}, context)"
             : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess})";
         sb.AppendLine($"        {memberAccess} = ({field.MemberTypeFullName}){convertCall};");
+    }
+
+    /// <summary>
+    /// Maps a field's [BitField(Endian = ...)] override (0=Inherit, 1=Big, 2=Little) to the helper class.
+    /// Inherit keeps the outer method's helper; Big forces MSB; Little forces LSB. BITS028 already
+    /// guarantees this is only invoked for byte-aligned, byte-multiple-width scalar fields where the
+    /// MSB↔LSB swap actually means a byte-order flip.
+    /// </summary>
+    private static string ResolveFieldHelper(string outerHelper, int fieldEndian)
+    {
+        return fieldEndian switch
+        {
+            1 => "global::BitSerializer.BitHelperMSB",
+            2 => "global::BitSerializer.BitHelperLSB",
+            _ => outerHelper,
+        };
     }
 
     private static bool UsesRuntimeBitLength(BitFieldModel field)

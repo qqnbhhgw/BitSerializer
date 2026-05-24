@@ -220,6 +220,14 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Warning,
         true);
 
+    public static readonly DiagnosticDescriptor FieldEndianRequiresByteAlignedScalar = new(
+        "BITS028",
+        "[BitField(Endian = ...)] requires a byte-aligned scalar field",
+        "Member '{0}' in '{1}' specifies Endian = {2}, but field-level endianness only applies to numeric/enum scalars with byte-aligned offset (BitStartIndex % 8 == 0) and byte-multiple width (BitLength ∈ {{8,16,32,64}}). This field has BitStartIndex = {3}, BitLength = {4}, IsList = {5}, IsString = {6}, IsNested = {7}. Remove the Endian argument, or restructure the field so it lands on a byte boundary with a byte-multiple width.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
     public static readonly DiagnosticDescriptor CrcWholeBufferConflictsWithInclude = new(
         "BITS029",
         "[BitCrc(WholeBuffer = true)] cannot combine with [BitCrcInclude]",
@@ -252,6 +260,14 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor FieldEndianAfterDynamicContent = new(
+        "BITS033",
+        "[BitField(Endian = ...)] cannot follow a dynamic-length member",
+        "Member '{0}' in '{1}' specifies Endian = {2}, but a preceding member ('{3}') has runtime-variable bit length (dynamic list, terminated string, type parameter, auto-length polymorphic, or dynamic [BitSerialize] base). The runtime bit offset of '{0}' can drift to a non-byte boundary depending on the previous content, in which case switching to BitHelperMSB/LSB would no longer represent a byte-order flip and could corrupt values. Place the Endian-overridden field before any dynamic-length member, or remove the Endian argument",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
     public static readonly DiagnosticDescriptor CrcWholeBufferDoesNotCoverCrcField = new(
         "BITS034",
         "[BitCrc(WholeBuffer = true)] SkipHead/SkipTail must cover the CRC field bytes",
@@ -276,6 +292,14 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor FieldEndianOutOfRange = new(
+        "BITS037",
+        "[BitField(Endian = ...)] value is outside the BitEndian enum range",
+        "Member '{0}' in '{1}' specifies Endian = {2}, which is not a defined BitEndian value (0 = Inherit, 1 = Big, 2 = Little). C# allows casting arbitrary integers into enums (e.g. `(BitEndian)3`), but the source generator silently falls back to Inherit for unknown values, masking the typo at runtime. Use one of BitEndian.Inherit / BitEndian.Big / BitEndian.Little",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
     public static readonly DiagnosticDescriptor LengthPrefixStringNotByteAligned = new(
         "BITS038",
         "[BitLengthPrefixString] field must start on a byte boundary",
@@ -288,6 +312,22 @@ internal static class DiagnosticDescriptors
         "BITS039",
         "[BitLengthPrefixString] cannot follow a member whose runtime size may not be byte-aligned",
         "[BitLengthPrefixString] on '{0}' in '{1}' is preceded by '{2}' which has runtime-variable bit length and is not provably byte-aligned (e.g. dynamic list of sub-byte elements, type parameter, polymorphic with non-byte-aligned concrete types, or a dynamic [BitSerialize] base). The static BITS038 check assumes the field starts on a byte boundary, but at runtime '{2}' can shift the offset by a non-byte multiple, breaking wire compatibility. Move the length-prefix string before any non-byte-aligned dynamic content, or restructure the preceding member so its runtime bit count is always a multiple of 8",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor NestedEndianRequiresByteAlignedOffset = new(
+        "BITS040",
+        "Member containing [BitField(Endian = ...)] must be placed at a byte-aligned offset",
+        "Member '{0}' in '{1}' embeds the [BitSerialize] type '{2}' (as {3}), which transitively contains a [BitField(Endian = ...)] field. The static bit offset of this member is {4} (BitStartIndex % 8 == {5}){6}, so the inner type's helper would run at a non-byte-aligned absolute offset and corrupt values instead of just flipping byte order. Place this member at a byte-aligned offset (and, for lists, choose an element bit width that is a multiple of 8), or remove the Endian override on the inner field",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor NestedEndianAfterDynamicContent = new(
+        "BITS041",
+        "Member containing [BitField(Endian = ...)] cannot follow a runtime-variable member",
+        "Member '{0}' in '{1}' embeds the [BitSerialize] type '{2}' (as {3}), which transitively contains a [BitField(Endian = ...)] field. A preceding member ('{4}') has runtime-variable bit length (dynamic list, terminated string, type parameter, auto-length polymorphic, or dynamic [BitSerialize] base), so the embedded type's bit offset can drift to a non-byte boundary at runtime and the inner endian helper swap would corrupt values. Place this member before any dynamic-length member, or remove the Endian override on the inner field",
         "BitSerializer",
         DiagnosticSeverity.Error,
         true);

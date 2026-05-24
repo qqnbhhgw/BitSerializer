@@ -373,6 +373,29 @@ internal static class TypeAnalyzer
             // Get explicit bit length from [BitField]
             int? explicitBitLength = GetBitLengthFromAttribute(bitFieldAttr!);
 
+            // Read [BitField(Endian = ...)] named argument (0=Inherit, 1=Big, 2=Little).
+            // Stored as int to match BitFieldModel.Endian; runtime BitEndian enum maps to the same values.
+            foreach (var named in bitFieldAttr!.NamedArguments)
+            {
+                if (named.Key == "Endian" && named.Value.Value is int endianRaw)
+                {
+                    // BITS037: reject undefined enum values (e.g. `(BitEndian)3`). C# allows arbitrary
+                    // ints into enums and ResolveFieldHelper would silently fall back to Inherit for
+                    // anything other than 1/2, hiding the typo at runtime.
+                    if (endianRaw < 0 || endianRaw > 2)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.FieldEndianOutOfRange,
+                                member.Locations.FirstOrDefault(),
+                                member.Name, symbol.Name, endianRaw)
+                        };
+                    }
+                    field.Endian = endianRaw;
+                }
+            }
+
             // Check for BitFieldRelated
             var relatedAttr = GetAttribute(member, "BitSerializer.BitFieldRelatedAttribute");
             string? relatedMemberName = null;
@@ -534,7 +557,10 @@ internal static class TypeAnalyzer
                         {
                             TypeId = typeId,
                             ConcreteTypeName = concreteType.Name,
-                            ConcreteTypeFullName = concreteType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+                            ConcreteTypeFullName = concreteType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                            // Compute Endian-override flag from the actual ITypeSymbol so types in
+                            // referenced assemblies are seen (review round-12 P1).
+                            HasEndianOverride = HasEndianOverrideRecursive(concreteType, new HashSet<string>())
                         });
                     }
                 }
@@ -565,6 +591,14 @@ internal static class TypeAnalyzer
                         field.ListElementHasDynamicLength = true;
                     if (HasOwnContextMethods(elementType!))
                         field.ListElementHasOwnContext = true;
+                    // Endian-override propagation from actual element symbol (review round-12 P1):
+                    // covers element types in referenced assemblies, not just ContainingAssembly.
+                    if (HasEndianOverrideRecursive(elementType!, new HashSet<string>()))
+                    {
+                        field.NestedHasEndianOverride = true;
+                        field.NestedEndianKind = "list element";
+                        field.NestedEndianTypeFullName = field.ListElementTypeFullName;
+                    }
                 }
                 else if (ImplementsBitSerializable(elementType!))
                 {
@@ -705,6 +739,13 @@ internal static class TypeAnalyzer
                 }
                 if (HasOwnContextMethods(memberType))
                     field.NestedHasOwnContext = true;
+                // Endian-override propagation from actual nested symbol (review round-12 P1).
+                if (HasEndianOverrideRecursive(memberType, new HashSet<string>()))
+                {
+                    field.NestedHasEndianOverride = true;
+                    field.NestedEndianKind = "nested member";
+                    field.NestedEndianTypeFullName = field.MemberTypeFullName;
+                }
                 currentBitIndex += field.BitLength;
             }
             else if (memberType is ITypeParameterSymbol typeParam &&
@@ -775,6 +816,161 @@ internal static class TypeAnalyzer
         }
 
         model.TotalBitLength = currentBitIndex;
+
+        // BITS028 / BITS033 / BITS040 / BITS041: validate [BitField(Endian = ...)] usage,
+        // both for fields declared with Endian directly and for nested [BitSerialize] members
+        // that transitively contain such a field.
+        //
+        // The Endian override swaps MSB ↔ LSB helpers, which is only semantically a "byte-order
+        // flip" when the runtime bit offset is a multiple of 8. Three places can break that:
+        //   - The field's own static layout (BITS028 / BITS040): if the cumulative compile-time
+        //     bit offset already isn't byte-aligned, the swap operates across byte boundaries.
+        //   - A preceding member with runtime-variable bit length (BITS033 / BITS041) — even when
+        //     the static layout is byte-aligned, the *runtime* cursor can drift past the field's
+        //     declared static start. We reject conservatively unless the dynamic member is proven
+        //     to always advance by a byte-multiple amount.
+        //   - The parent that embeds this type calls our serializer with a non-byte-aligned
+        //     bitOffset — which the parent's analysis must reject in turn (BITS040/041 on the
+        //     parent's side), giving us a transitive guarantee from the top-level entry.
+        //
+        // The same checks apply to nested fields whose type transitively contains an Endian
+        // override: the inner type expects its bitOffset to be byte-aligned, and the parent's
+        // static + dynamic layout is what delivers it.
+        for (int idx = 0; idx < model.Fields.Count; idx++)
+        {
+            var f = model.Fields[idx];
+            bool isDirectEndian = f.Endian != 0;
+            string? nestedEndianTypeFullName = null;
+            string? nestedKind = null; // human-readable "nested member" / "list element" / "polymorphic mapping"
+            if (!isDirectEndian)
+            {
+                // Use the per-field flags computed during this field's analysis from the actual
+                // ITypeSymbol — that covers types in referenced assemblies (review round-12 P1).
+                // ContainingAssembly-only reverse lookup is gone.
+                if (f.NestedHasEndianOverride)
+                {
+                    nestedKind = f.NestedEndianKind;
+                    nestedEndianTypeFullName = f.NestedEndianTypeFullName;
+                }
+                else if (f.IsPolymorphic && f.PolyMappings != null)
+                {
+                    foreach (var mapping in f.PolyMappings)
+                    {
+                        if (mapping.HasEndianOverride)
+                        {
+                            nestedKind = "polymorphic mapping";
+                            nestedEndianTypeFullName = mapping.ConcreteTypeFullName;
+                            break;
+                        }
+                    }
+                }
+            }
+            bool isNestedTransitive = nestedEndianTypeFullName != null;
+            if (!isDirectEndian && !isNestedTransitive) continue;
+
+            bool byteAlignedOffset = (f.BitStartIndex % 8) == 0;
+
+            if (isDirectEndian)
+            {
+                bool isScalar = f.IsNumericOrEnum
+                                && !f.IsList
+                                && !f.IsFixedString
+                                && !f.IsTerminatedString
+                                && !f.IsNestedType
+                                && !f.IsPolymorphic
+                                && !f.IsTypeParameter;
+                bool byteMultipleWidth = f.BitLength == 8 || f.BitLength == 16 || f.BitLength == 32 || f.BitLength == 64;
+
+                if (!isScalar || !byteAlignedOffset || !byteMultipleWidth)
+                {
+                    string endianName = f.Endian == 1 ? "Big" : f.Endian == 2 ? "Little" : f.Endian.ToString();
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FieldEndianRequiresByteAlignedScalar,
+                            symbol.Locations.FirstOrDefault(),
+                            f.MemberName, symbol.Name, endianName,
+                            f.BitStartIndex, f.BitLength,
+                            f.IsList, f.IsFixedString || f.IsTerminatedString, f.IsNestedType || f.IsPolymorphic)
+                    };
+                }
+            }
+            else
+            {
+                // Nested transitive: the inner type must be entered at a byte-aligned offset.
+                // For lists, the per-element stride must also be a byte multiple, otherwise odd-
+                // indexed elements would land at non-byte-aligned offsets even if the field start
+                // is fine.
+                bool listElementByteAligned = !f.IsList
+                    || (f.ListElementBitLength > 0 && (f.ListElementBitLength % 8) == 0);
+                if (!byteAlignedOffset || !listElementByteAligned)
+                {
+                    string extra = !listElementByteAligned
+                        ? $", and the list element bit width ({f.ListElementBitLength}) is not a multiple of 8"
+                        : "";
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.NestedEndianRequiresByteAlignedOffset,
+                            symbol.Locations.FirstOrDefault(),
+                            f.MemberName, symbol.Name, nestedEndianTypeFullName, nestedKind,
+                            f.BitStartIndex, (f.BitStartIndex % 8), extra)
+                    };
+                }
+            }
+
+            // BITS033 / BITS039: look at every preceding dynamic-length member for byte alignment safety.
+            //
+            // Review P2: a dynamic field whose runtime size is always a multiple of 8 bits (e.g.
+            // [BitTerminatedString]: encoded bytes + 1-byte NUL; List<byte>/List<ushort> with
+            // byte-multiple element width) keeps subsequent fields on byte boundaries — switching
+            // helpers there is still a byte-order flip, not a corruption. We reject only when the
+            // dynamic content can change the byte alignment of subsequent fields.
+            //
+            // Base-type dynamic length is conservatively rejected: we'd have to recursively prove
+            // the base's runtime size is always byte-aligned, which isn't tracked at this layer.
+            string? dynamicCulpritName = null;
+            if (model.BaseHasDynamicLength)
+                dynamicCulpritName = "base type";
+            else
+            {
+                for (int j = 0; j < idx; j++)
+                {
+                    var prev = model.Fields[j];
+                    if (!IsIncludeFieldDynamic(prev)) continue; // static field — offset cursor is precise
+                    var cls = ClassifyIncludeAlignment(prev, symbol.ContainingAssembly);
+                    if (cls != FieldAlignmentClass.Aligned)
+                    {
+                        dynamicCulpritName = prev.MemberName;
+                        break;
+                    }
+                }
+            }
+            if (dynamicCulpritName != null)
+            {
+                if (isDirectEndian)
+                {
+                    string endianName = f.Endian == 1 ? "Big" : f.Endian == 2 ? "Little" : f.Endian.ToString();
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FieldEndianAfterDynamicContent,
+                            symbol.Locations.FirstOrDefault(),
+                            f.MemberName, symbol.Name, endianName, dynamicCulpritName)
+                    };
+                }
+                else
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.NestedEndianAfterDynamicContent,
+                            symbol.Locations.FirstOrDefault(),
+                            f.MemberName, symbol.Name, nestedEndianTypeFullName, nestedKind, dynamicCulpritName)
+                    };
+                }
+            }
+        }
 
         // Validate PadIfShort: requires primitive element type
         foreach (var f in model.Fields)
@@ -1216,6 +1412,83 @@ internal static class TypeAnalyzer
     }
 
     /// <summary>
+    // FindNestedEndianTypeForField was removed in review round-12: it used FindTypeByFullName which
+    // is bound to a single IAssemblySymbol, so types declared in referenced assemblies fell through
+    // as "no Endian override". The detection now happens at field-analysis time using the actual
+    // ITypeSymbol passed to HasEndianOverrideRecursive, and the result is cached on
+    // BitFieldModel.NestedHasEndianOverride / PolyMapping.HasEndianOverride.
+
+    /// <summary>
+    /// True if <paramref name="type"/> has any [BitField(Endian = Big | Little)] override, either
+    /// directly on its members, in its [BitSerialize] base chain, or transitively through a nested
+    /// [BitSerialize] member type (including list elements and [BitPoly] mappings). Manual
+    /// IBitSerializable members and generic type parameters are treated as having no Endian
+    /// override — the generator cannot introspect them.
+    /// </summary>
+    private static bool HasEndianOverrideRecursive(ITypeSymbol type, HashSet<string> visited)
+    {
+        if (type is not INamedTypeSymbol named) return false;
+
+        var key = named.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        if (!visited.Add(key)) return false; // already in progress on this branch — break cycles
+
+        var baseT = named.BaseType;
+        while (baseT != null && baseT.SpecialType != SpecialType.System_Object)
+        {
+            if (TypeOwnHasEndianOverride(baseT, visited)) return true;
+            baseT = baseT.BaseType;
+        }
+
+        return TypeOwnHasEndianOverride(named, visited);
+    }
+
+    private static bool TypeOwnHasEndianOverride(INamedTypeSymbol type, HashSet<string> visited)
+    {
+        foreach (var member in GetSerializableMembers(type))
+        {
+            if (HasAttribute(member, "BitSerializer.BitIgnoreAttribute")) continue;
+            var memberType = GetMemberType(member);
+            if (memberType == null) continue;
+
+            // String attributes don't accept Endian; skip their carriers entirely.
+            if (GetAttribute(member, "BitSerializer.BitFixedStringAttribute") != null) continue;
+            if (GetAttribute(member, "BitSerializer.BitTerminatedStringAttribute") != null) continue;
+
+            var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");
+            if (bitFieldAttr == null) continue;
+
+            // Direct Endian override on this member.
+            foreach (var namedArg in bitFieldAttr.NamedArguments)
+            {
+                if (namedArg.Key == "Endian" && namedArg.Value.Value is int endianRaw && endianRaw != 0)
+                    return true;
+            }
+
+            // Recurse into nested [BitSerialize] types (list elements, composition). Manual
+            // IBitSerializable / type-parameter targets are opaque and treated as no-Endian.
+            if (IsListType(memberType, out var elemType, out _) && elemType != null
+                && HasAttribute(elemType, "BitSerializer.BitSerializeAttribute"))
+            {
+                if (HasEndianOverrideRecursive(elemType, visited)) return true;
+            }
+            else if (HasAttribute(memberType, "BitSerializer.BitSerializeAttribute"))
+            {
+                if (HasEndianOverrideRecursive(memberType, visited)) return true;
+            }
+
+            // Polymorphic mappings — drill into each [BitPoly] concrete target.
+            foreach (var polyAttr in GetAttributes(member, "BitSerializer.BitPolyAttribute"))
+            {
+                if (polyAttr.ConstructorArguments.Length >= 2
+                    && polyAttr.ConstructorArguments[1].Value is INamedTypeSymbol concrete
+                    && HasEndianOverrideRecursive(concrete, visited))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// Returns the nominal static bit footprint of a field participating in a CRC include range,
     /// matching the layout calculation in <see cref="Analyze"/> (so pure-static groups can tally
     /// IncludeStartByte/IncludeEndByte). Dynamic-length fields that do not advance the static
@@ -1272,8 +1545,9 @@ internal static class TypeAnalyzer
             // dispatch"), so the trailing fields' real start can drift. WholeBuffer CRC relies on this
             // predicate to detect "dynamic-after-CRC" (BITS035), so the omission would let such a list
             // sit after the CRC and silently corrupt the CRC range. The same predicate gates the
-            // LengthPrefixString byte-alignment classifier (BITS038/BITS039), so keeping it correct
-            // here also keeps the dynamic-offset drift detection sound.
+            // LengthPrefixString byte-alignment classifier (BITS038/BITS039) and the BITS033
+            // per-field Endian drift detector, so keeping it correct here also keeps both downstream
+            // diagnostics sound.
             if (f.ListElementIsManualBitSerializable && f.ListElementBitLength == 0) return true;
         }
         return false;
@@ -1344,6 +1618,7 @@ internal static class TypeAnalyzer
             }
             if (elemIsManualUnknownWidth)
             {
+                // Can't statically prove alignment for manual IBitSerializable — defer to runtime.
                 return FieldAlignmentClass.RuntimeOnly;
             }
             // Dynamic [BitSerialize] element: attempt static proof via element type inspection.
@@ -1774,6 +2049,25 @@ internal static class TypeAnalyzer
     {
         // Remove "global::" prefix if present
         var name = fullName.Replace("global::", "");
-        return assembly.GetTypeByMetadataName(name);
+
+        // Strip arity suffix from generic types (e.g. "List<byte>" -> "List`1") — we never resolve
+        // open generics from a display name. For the closed-generic resolution that we'd need, the
+        // caller should fall back to the symbol from analysis time. For our internal callers this
+        // is fine because we only resolve nominally [BitSerialize] types and their poly mappings.
+        var sym = assembly.GetTypeByMetadataName(name);
+        if (sym != null) return sym;
+
+        // CLR metadata uses '+' as the nested-type separator, while SymbolDisplayFormat.Fully-
+        // QualifiedFormat emits '.'. Walk the dotted name from right to left, progressively
+        // converting trailing dots to '+' until a metadata lookup succeeds.
+        var parts = name.Split('.');
+        for (int splitPoint = parts.Length - 1; splitPoint > 0; splitPoint--)
+        {
+            var head = string.Join(".", parts, 0, splitPoint);
+            var tail = string.Join("+", parts, splitPoint, parts.Length - splitPoint);
+            sym = assembly.GetTypeByMetadataName(head + "+" + tail);
+            if (sym != null) return sym;
+        }
+        return null;
     }
 }
