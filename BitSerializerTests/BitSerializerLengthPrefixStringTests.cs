@@ -239,6 +239,31 @@ public partial class BitSerializerLengthPrefixStringTests
     }
 
     [Fact]
+    public void GetTotalBitLength_AfterUtf8Truncation_MatchesActualBytes()
+    {
+        // Review P1: GetTotalBitLength used to cap at MaxBytes naively, but the serializer rolls back
+        // to a multi-byte boundary. For "北京" + MaxBytes=4, serializer writes 3 bytes ("北"); the
+        // predictor previously returned 4. Result: BitSerializerMSB.Serialize allocated a 6-byte
+        // buffer (2 length + 4 payload) but only wrote 5, leaking a trailing 0x00.
+        var data = new Utf8WithMaxBytes { Bounded = "北京" };
+        byte[] bytes = BitSerializerMSB.Serialize(data);
+        var predicted = data.GetTotalBitLength();
+
+        // Actual layout: 2-byte length prefix + 3-byte "北" = 5 bytes.
+        bytes.Length.ShouldBe(5);
+        predicted.ShouldBe(bytes.Length * 8);
+    }
+
+    [Fact]
+    public void GetTotalBitLength_NoTruncation_StillMatches()
+    {
+        // Sanity: when MaxBytes is large enough, predictor stays exact.
+        var data = new Utf8WithMaxBytes { Bounded = "AB" }; // 2 ASCII bytes, under MaxBytes=4
+        byte[] bytes = BitSerializerMSB.Serialize(data);
+        data.GetTotalBitLength().ShouldBe(bytes.Length * 8);
+    }
+
+    [Fact]
     public void LSB_Encoding_FlipsLengthPrefixByteOrder()
     {
         var data = new Utf8With16BitLength { Header = 0xAA, StationName = "ABCD", Footer = 0xBB };
