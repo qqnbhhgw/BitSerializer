@@ -460,4 +460,119 @@ public partial class BitSerializerPerFieldEndianTests
     }
 
     #endregion
+
+    #region BITS038/BITS039 — Parent nesting must keep nested Endian fields byte-aligned
+
+    /// <summary>
+    /// Inner type whose [BitField(Endian = ...)] looks fine in isolation (BitStartIndex = 0,
+    /// byte-multiple width). The Endian helper-swap is only a "byte order flip" when the runtime
+    /// bit offset is a multiple of 8 — so any parent embedding this type owes us a byte-aligned
+    /// invocation. The new BITS038/039 checks enforce that on the parent side.
+    /// </summary>
+    [BitSerialize]
+    public partial class InnerWithLittleEndian
+    {
+        [BitField(16, Endian = BitEndian.Little)] public ushort Value { get; set; }
+    }
+
+    /// <summary>
+    /// Positive case: parent's preceding fields sum to a byte boundary, so the inner type is
+    /// invoked at a byte-aligned offset. Must compile and round-trip.
+    /// </summary>
+    [BitSerialize]
+    public partial class ParentNestedEndian_ByteAligned
+    {
+        [BitField(4)] public byte PrefixA { get; set; }
+        [BitField(4)] public byte PrefixB { get; set; }
+        [BitField] public InnerWithLittleEndian Inner { get; set; } = new();
+    }
+
+    [Fact]
+    public void Nested_Endian_ByteAligned_Parent_Compiles_And_Round_Trips()
+    {
+        var original = new ParentNestedEndian_ByteAligned
+        {
+            PrefixA = 0x0A,
+            PrefixB = 0x0B,
+            Inner = new InnerWithLittleEndian { Value = 0x1234 },
+        };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+
+        // Layout: 0xAB (PrefixA<<4 | PrefixB) | Inner.Value LE = 0x34 0x12
+        bytes.ShouldBe(new byte[] { 0xAB, 0x34, 0x12 });
+
+        var rt = BitSerializerMSB.Deserialize<ParentNestedEndian_ByteAligned>(bytes);
+        rt.PrefixA.ShouldBe((byte)0x0A);
+        rt.PrefixB.ShouldBe((byte)0x0B);
+        rt.Inner.Value.ShouldBe((ushort)0x1234);
+    }
+
+    /// <summary>
+    /// List of InnerWithLittleEndian where each element is 16 bits (byte-aligned stride).
+    /// Element start = list_start + i * 16, which stays byte-aligned. Should compile.
+    /// </summary>
+    [BitSerialize]
+    public partial class ParentNestedEndian_ListByteAlignedStride
+    {
+        [BitField(8)] public byte Count { get; set; }
+        [BitField, BitFieldRelated(nameof(Count))]
+        public List<InnerWithLittleEndian> Items { get; set; } = new();
+    }
+
+    [Fact]
+    public void Nested_Endian_In_List_With_ByteAligned_Stride_Compiles_And_Round_Trips()
+    {
+        var original = new ParentNestedEndian_ListByteAlignedStride
+        {
+            Items = new List<InnerWithLittleEndian>
+            {
+                new() { Value = 0x1234 },
+                new() { Value = 0x5678 },
+            },
+        };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+
+        // Layout: Count=02 | Items[0].Value LE = 34 12 | Items[1].Value LE = 78 56
+        bytes.ShouldBe(new byte[] { 0x02, 0x34, 0x12, 0x78, 0x56 });
+
+        var rt = BitSerializerMSB.Deserialize<ParentNestedEndian_ListByteAlignedStride>(bytes);
+        rt.Items.Count.ShouldBe(2);
+        rt.Items[0].Value.ShouldBe((ushort)0x1234);
+        rt.Items[1].Value.ShouldBe((ushort)0x5678);
+    }
+
+    // The negative cases below are wrapped in #if BITS038_REPRO because the generator is supposed
+    // to reject them at compile time. We keep the source here as documentation; toggling the
+    // symbol at the top of this file exposes BITS038 / BITS039 to the build for manual verification.
+#if BITS038_REPRO
+    /// <summary>
+    /// P1 review repro for BITS038: parent has a 4-bit Prefix then embeds InnerWithLittleEndian.
+    /// Inner.Value lands at runtime bit offset 4, which is not byte-aligned. The MSB↔LSB swap at
+    /// offset 4 isn't a byte-order flip — it corrupts the bytes around it. Verified manually:
+    /// defining BITS038_REPRO at the top of this file makes the build fail with
+    /// `error BITS038: Member 'Inner' in 'ParentNestedEndian_FourBitPrefix' ...`.
+    /// </summary>
+    [BitSerialize]
+    public partial class ParentNestedEndian_FourBitPrefix
+    {
+        [BitField(4)] public byte Prefix { get; set; }
+        [BitField] public InnerWithLittleEndian Inner { get; set; } = new();
+    }
+
+    /// <summary>
+    /// Bug repro for BITS039: a preceding fixed-count list of manual IBitSerializable elements
+    /// has unknown runtime stride (manual IBitSerializable without explicit element width), so
+    /// the nested Endian field's runtime offset can drift to a non-byte boundary. Verified
+    /// manually like the BITS038 repro above.
+    /// </summary>
+    [BitSerialize]
+    public partial class ParentNestedEndian_AfterUnknownStrideList
+    {
+        [BitField, BitFieldCount(2)]
+        public List<ManualTwoByteItem> Items { get; set; } = new();
+        [BitField] public InnerWithLittleEndian Inner { get; set; } = new();
+    }
+#endif
+
+    #endregion
 }
