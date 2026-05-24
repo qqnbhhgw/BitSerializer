@@ -167,6 +167,47 @@ public partial class BitSerializerCrcWholeBufferTests
         [BitField] public InnerWholeBufferFrame Inner { get; set; } = new();
     }
 
+    /// <summary>
+    /// Review round-5 P1：fixed-count list of manual IBitSerializable WITH explicit element bit
+    /// length is statically sized — BITS035 must NOT reject it as "dynamic after CRC".
+    /// </summary>
+    public class FixedWidthManualItem : IBitSerializable
+    {
+        public byte A { get; set; }
+        public int SerializeMSB(Span<byte> bytes, int bitOffset)
+        {
+            BitHelperMSB.SetValueLength<byte>(bytes, bitOffset, 8, A);
+            return 8;
+        }
+        public int SerializeLSB(Span<byte> bytes, int bitOffset)
+        {
+            BitHelperLSB.SetValueLength<byte>(bytes, bitOffset, 8, A);
+            return 8;
+        }
+        public int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset)
+        {
+            A = BitHelperMSB.ValueLength<byte>(bytes, bitOffset, 8);
+            return 8;
+        }
+        public int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset)
+        {
+            A = BitHelperLSB.ValueLength<byte>(bytes, bitOffset, 8);
+            return 8;
+        }
+        public int GetTotalBitLength() => 8;
+    }
+
+    [BitSerialize]
+    public partial class CrcBeforeFixedWidthManualList
+    {
+        [BitField(8)] public byte Header { get; set; }
+        // SkipTail = 2 (CRC) + 3 (Items: 3 × 1 byte) = 5
+        [BitField(16), BitCrc(typeof(CrcCcitt), WholeBuffer = true, SkipTailBytes = 5)]
+        public ushort Crc { get; set; }
+        [BitField(8), BitFieldCount(3)] // 显式 8-bit 宽度 → 静态大小可知
+        public List<FixedWidthManualItem> Items { get; set; } = new();
+    }
+
     #endregion
 
     #region Basic WholeBuffer
@@ -385,6 +426,36 @@ public partial class BitSerializerCrcWholeBufferTests
         var data = new ZeroLengthCrcRangePacket();
         var ex = Should.Throw<System.IO.InvalidDataException>(() => BitSerializerMSB.Serialize(data));
         ex.Message.ShouldContain("empty or negative");
+    }
+
+    [Fact]
+    public void Crc_Before_FixedWidth_ManualList_Compiles_And_Round_Trips()
+    {
+        // BITS035 must classify "fixed-count manual IBitSerializable with explicit element width"
+        // as static — list size 3×8 = 24 bits is known at compile time, no runtime drift.
+        var original = new CrcBeforeFixedWidthManualList
+        {
+            Header = 0xAB,
+            Items = new List<FixedWidthManualItem>
+            {
+                new() { A = 0x11 },
+                new() { A = 0x22 },
+                new() { A = 0x33 },
+            },
+        };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+
+        // CRC covers bytes[0..1) = Header only (SkipTail=5 covers CRC[1..3) + Items[3..6))
+        bytes.Length.ShouldBe(1 + 2 + 3);
+        var algo = new CrcCcitt();
+        algo.Reset(0);
+        algo.Update(new byte[] { 0xAB });
+        ushort want = (ushort)algo.Result;
+        ((bytes[1] << 8) | bytes[2]).ShouldBe(want);
+
+        var result = BitSerializerMSB.Deserialize<CrcBeforeFixedWidthManualList>(bytes);
+        result.Items.Count.ShouldBe(3);
+        result.Items[2].A.ShouldBe((byte)0x33);
     }
 
     [Fact]

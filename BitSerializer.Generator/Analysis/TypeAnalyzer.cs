@@ -1130,6 +1130,13 @@ internal static class TypeAnalyzer
             if (f.ConsumeRemaining) return true;
             if (!f.FixedCount.HasValue) return true;
             if (f.ListElementHasDynamicLength) return true;
+            // Review round-4 follow-up P1: fixed-count list whose element is a manual IBitSerializable
+            // without an explicit [BitField(N)] element bit width — SerializerEmitter falls back to the
+            // runtime-offset path (EmitListSerialize "Dynamic: use runtime offset tracking via interface
+            // dispatch"), so the trailing fields' real start can drift. WholeBuffer CRC relies on this
+            // predicate to detect "dynamic-after-CRC" (BITS035), so the omission would let such a list
+            // sit after the CRC and silently corrupt the CRC range.
+            if (f.ListElementIsManualBitSerializable && f.ListElementBitLength == 0) return true;
         }
         return false;
     }
@@ -1183,13 +1190,21 @@ internal static class TypeAnalyzer
             // ConsumeRemaining fills to buffer end (byte-aligned by buffer construction).
             if (f.ConsumeRemaining)
                 return FieldAlignmentClass.Aligned;
-            if (!f.ListElementHasDynamicLength)
+            // Manual IBitSerializable without explicit element bit length: stride is decided by user
+            // code at runtime. ListElementBitLength=0 here means "unknown", not "zero"; and the manual
+            // impl can write arbitrary bits, so element-type inspection isn't safe either.
+            bool elemIsManualUnknownWidth = f.ListElementIsManualBitSerializable && f.ListElementBitLength == 0;
+            if (!f.ListElementHasDynamicLength && !elemIsManualUnknownWidth)
             {
                 return (f.ListElementBitLength % 8 == 0)
                     ? FieldAlignmentClass.Aligned
                     : FieldAlignmentClass.Rejected;
             }
-            // Dynamic element: attempt static proof via element type inspection.
+            if (elemIsManualUnknownWidth)
+            {
+                return FieldAlignmentClass.RuntimeOnly;
+            }
+            // Dynamic [BitSerialize] element: attempt static proof via element type inspection.
             if (f.ListElementTypeFullName != null)
             {
                 var elemType = FindTypeByFullName(assembly, f.ListElementTypeFullName);
