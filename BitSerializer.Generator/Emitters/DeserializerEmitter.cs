@@ -742,6 +742,11 @@ internal static class DeserializerEmitter
         int lengthBits = field.LengthPrefixBits;
         string lenType = lengthBits == 8 ? "byte" : lengthBits == 16 ? "ushort" : "uint";
 
+        // Mirror of the serializer guard (review round-11 P1): catch types nested at sub-byte
+        // bitOffset where BITS038/BITS039 static checks couldn't see the parent context.
+        sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' requires a byte-aligned absolute bit offset on Deserialize, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary.\");");
+
         // Read prefix into a 64-bit local so 32-bit values with high bit set don't go negative,
         // and so the buffer-size arithmetic below doesn't overflow.
         sb.AppendLine($"        long _strLenRaw_{name} = (long){helper}.ValueLength<{lenType}>(bytes, {offsetExpr}, {lengthBits});");

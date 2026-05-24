@@ -657,6 +657,13 @@ internal static class SerializerEmitter
         int maxBytes = field.LengthPrefixMaxBytes;
         long lengthMax = lengthBits == 32 ? uint.MaxValue : (1L << lengthBits) - 1;
 
+        // Review round-11 P1: BITS038/BITS039 only validate alignment within the declaring type's
+        // static layout. If the type itself is serialized at a non-byte bitOffset (e.g. nested inside
+        // a parent that wrote a 1-bit flag first), the LPS field's absolute offset still lands on a
+        // sub-byte boundary. Runtime guard: refuse to emit the byte-stream across a non-byte boundary.
+        sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' requires a byte-aligned absolute bit offset, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary (the containing type was nested at a non-byte bitOffset).\");");
+
         sb.AppendLine($"        byte[] _strBytes_{name} = {encoding}.GetBytes({memberAccess} ?? \"\");");
 
         // Truncate to MaxBytes (with UTF-8 boundary safety).

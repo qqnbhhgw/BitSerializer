@@ -74,6 +74,32 @@ public partial class BitSerializerLengthPrefixStringTests
         public string Name { get; set; } = "";
     }
 
+    /// <summary>
+    /// Review round-11 P1：嵌套场景。Inner 含 [BitLengthPrefixString]，本身静态布局 OK；
+    /// 但 Outer 写了 1-bit flag 后才嵌入 Inner，Inner 的 LPS 字段绝对 bit offset = 1 (非字节对齐)。
+    /// Runtime guard 应抛 InvalidDataException。
+    /// </summary>
+    [BitSerialize]
+    public partial class InnerWithLps
+    {
+        [BitLengthPrefixString(16)] public string Name { get; set; } = "";
+    }
+
+    [BitSerialize]
+    public partial class OuterNestsInnerAtBit1
+    {
+        [BitField(1)] public byte Flag { get; set; }
+        [BitField] public InnerWithLps Inner { get; set; } = new();
+    }
+
+    [BitSerialize]
+    public partial class OuterNestsInnerAtByteBoundary
+    {
+        [BitField(1)] public byte Flag { get; set; }
+        [BitField(7)] public byte Pad { get; set; }
+        [BitField] public InnerWithLps Inner { get; set; } = new();
+    }
+
     #endregion
 
     [Fact]
@@ -278,6 +304,34 @@ public partial class BitSerializerLengthPrefixStringTests
         var result = BitSerializerMSB.Deserialize<LpsAfterByteAlignedDynamicList>(bytes);
         result.Prelude.Count.ShouldBe(3);
         result.Name.ShouldBe("Hello");
+    }
+
+    [Fact]
+    public void Nested_LPS_At_NonByteAligned_Offset_Throws()
+    {
+        // Outer writes 1 bit, then Inner starts — Inner's LPS field lands at absolute bit offset 1.
+        var data = new OuterNestsInnerAtBit1
+        {
+            Flag = 1,
+            Inner = new InnerWithLps { Name = "X" },
+        };
+        var ex = Should.Throw<System.IO.InvalidDataException>(() => BitSerializerMSB.Serialize(data));
+        ex.Message.ShouldContain("byte-aligned absolute bit offset");
+    }
+
+    [Fact]
+    public void Nested_LPS_At_ByteAligned_Offset_RoundTrips()
+    {
+        // Outer pads Inner to a byte boundary (1+7 = 8 bits) → LPS lands at byte 1.
+        var original = new OuterNestsInnerAtByteBoundary
+        {
+            Flag = 1,
+            Pad = 0x42,
+            Inner = new InnerWithLps { Name = "OK" },
+        };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+        var result = BitSerializerMSB.Deserialize<OuterNestsInnerAtByteBoundary>(bytes);
+        result.Inner.Name.ShouldBe("OK");
     }
 
     [Fact]
