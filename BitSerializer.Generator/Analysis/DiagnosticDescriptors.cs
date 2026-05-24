@@ -244,4 +244,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor CrcWholeBufferTrailingDynamicField = new(
+        "BITS035",
+        "[BitCrc(WholeBuffer = true)] does not support dynamic-length fields after the CRC",
+        "[BitCrc(WholeBuffer = true)] on '{0}' in '{1}' is followed by member '{2}' which has runtime-variable bit length (dynamic list, terminated string, type parameter, auto-length polymorphic, or fixed-count list of manual IBitSerializable elements without an explicit element bit width). WholeBuffer computes the CRC slice end from the runtime buffer end, so a trailing dynamic field grows the tail at runtime — the static SkipTailBytes can no longer guarantee the CRC slot is excluded, and the CRC will read its own bytes back. Move dynamic content before the CRC field, switch to IncludeRange ([BitCrcInclude]) mode, or remove the trailing dynamic member",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }
