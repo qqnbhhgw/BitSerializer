@@ -248,6 +248,19 @@ internal static class TypeAnalyzer
                     };
                 }
 
+                // BITS036: MaxBytes < 0 silently behaved as "unlimited" because emitters guard on > 0.
+                // 0 is the documented unlimited sentinel; reject negatives so typos fail at compile time.
+                if (maxBytes < 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.LengthPrefixStringNegativeMaxBytes,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, maxBytes)
+                    };
+                }
+
                 field.IsLengthPrefixString = true;
                 field.LengthPrefixBits = lengthBits;
                 field.LengthPrefixMaxBytes = maxBytes;

@@ -268,4 +268,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor LengthPrefixStringNegativeMaxBytes = new(
+        "BITS036",
+        "[BitLengthPrefixString] MaxBytes must be non-negative",
+        "[BitLengthPrefixString] on '{0}' in '{1}' has MaxBytes = {2}; values < 0 are not allowed. Use 0 to mean unlimited (only the LengthBits capacity caps the byte count), or a positive value to cap encoded byte count",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }
