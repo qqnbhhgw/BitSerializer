@@ -1,5 +1,6 @@
 using Shouldly;
 using BitSerializer;
+using BitSerializer.CrcAlgorithms;
 
 namespace BitSerializerTests;
 
@@ -225,4 +226,59 @@ public partial class BitSerializerPerFieldEndianTests
         var roundTripped = BitSerializerMSB.Deserialize<EnumWithLittleEndian>(bytes);
         roundTripped.Kind.ShouldBe(SegmentKind.Switch);
     }
+
+    #region CRC field endian override (PR review P1)
+
+    /// <summary>
+    /// CRC 字段标 Endian = Little，外层 SerializeMSB 时 CRC 也应按小端写入 buffer，
+    /// 否则审核意见所指的"CRC 块用 outer helper 重写覆盖 ResolveFieldHelper 选择"会
+    /// 导致 wire 字节序错乱、deserialize 校验失败。
+    /// </summary>
+    [BitSerialize]
+    public partial class CrcFieldWithLittleEndian
+    {
+        [BitField(8), BitCrcInclude(nameof(Crc))]
+        public byte Header { get; set; }
+
+        [BitField(16), BitCrcInclude(nameof(Crc))]
+        public ushort Payload { get; set; }
+
+        [BitField(16, Endian = BitEndian.Little), BitCrc(typeof(CrcCcitt), InitialValue = 0, ValidateOnDeserialize = true)]
+        public ushort Crc { get; set; }
+    }
+
+    [Fact]
+    public void CrcField_With_Little_Endian_Writes_LittleEndian_Bytes_Under_MSB_Frame()
+    {
+        var data = new CrcFieldWithLittleEndian { Header = 0xAB, Payload = 0x1234 };
+        byte[] bytes = BitSerializerMSB.Serialize(data);
+
+        // CRC over [0xAB, 0x12, 0x34] via CrcCcitt.
+        var algo = new CrcCcitt();
+        algo.Reset(0);
+        algo.Update(new byte[] { 0xAB, 0x12, 0x34 });
+        ushort want = (ushort)algo.Result;
+
+        // CRC field is little-endian: low byte at [3], high byte at [4].
+        bytes[3].ShouldBe((byte)(want & 0xFF));
+        bytes[4].ShouldBe((byte)((want >> 8) & 0xFF));
+        // Sanity: data.Crc backfill matches.
+        data.Crc.ShouldBe(want);
+    }
+
+    [Fact]
+    public void CrcField_With_Little_Endian_Round_Trips_With_Validation()
+    {
+        // ValidateOnDeserialize = true: if serializer wrote CRC in the wrong byte order,
+        // deserializer would read a different value and throw InvalidDataException.
+        var original = new CrcFieldWithLittleEndian { Header = 0x7E, Payload = 0xBEEF };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+
+        var result = BitSerializerMSB.Deserialize<CrcFieldWithLittleEndian>(bytes);
+        result.Header.ShouldBe(original.Header);
+        result.Payload.ShouldBe(original.Payload);
+        result.Crc.ShouldBe(original.Crc);
+    }
+
+    #endregion
 }

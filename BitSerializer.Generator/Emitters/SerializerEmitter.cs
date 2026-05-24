@@ -348,7 +348,11 @@ internal static class SerializerEmitter
             sb.AppendLine("            _crcAlgo.Update(bytes.Slice(_crcStart, _crcEnd - _crcStart));");
             string castType = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName;
             sb.AppendLine($"            {castType} _crcVal = ({castType})_crcAlgo.Result;");
-            sb.AppendLine($"            {helper}.SetValueLength<{castType}>(bytes, {crcOffsetExpr}, {crc.CrcFieldBitLength}, _crcVal);");
+            // CRC fields honor [BitField(Endian = ...)] just like any other primitive — the CRC block
+            // runs after the field's initial write, so we must use the same helper as ResolveFieldHelper
+            // would have chosen above, otherwise the rewrite silently undoes the per-field byte order.
+            var crcHelper = ResolveFieldHelper(helper, crcField.Endian);
+            sb.AppendLine($"            {crcHelper}.SetValueLength<{castType}>(bytes, {crcOffsetExpr}, {crc.CrcFieldBitLength}, _crcVal);");
             if (!crcField.IsEnum)
                 sb.AppendLine($"            this.{crcField.MemberName} = _crcVal;");
             else
