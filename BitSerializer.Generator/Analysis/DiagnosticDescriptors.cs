@@ -236,4 +236,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor CrcWholeBufferDoesNotCoverCrcField = new(
+        "BITS034",
+        "[BitCrc(WholeBuffer = true)] SkipHead/SkipTail must cover the CRC field bytes",
+        "[BitCrc(WholeBuffer = true)] on '{0}' in '{1}' has SkipHeadBytes = {2}, SkipTailBytes = {3}, but the CRC field occupies bytes [{4}, {5}) in the static {6}-byte layout. The CRC slot must fall entirely inside either [0, SkipHeadBytes) or [totalBytes - SkipTailBytes, totalBytes) so the CRC computation does not read the field's own (uninitialized or stale) bytes. SkipTailBytes must be ≥ {7} for a tail-positioned CRC, or SkipHeadBytes ≥ {5} for a head-positioned CRC",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

@@ -876,6 +876,39 @@ internal static class TypeAnalyzer
                         };
                     }
 
+                    // BITS034: CRC field's static byte slot must be fully inside SkipHead or SkipTail.
+                    // Otherwise CRC.Update() reads the CRC field's own bytes (uninitialized or stale)
+                    // and produces protocol-invalid output (review P2 — codex flagged 16-bit CRC + SkipTail=1).
+                    //
+                    // We compute on the static layout. For dynamic-length types where dynamic content
+                    // sits BEFORE the CRC field (typical: payload + CRC + EOF), SkipTail is measured from
+                    // the runtime end, and the distance from CRC start to runtime end equals
+                    // (model.TotalBitLength - crcField.BitStartIndex) statically — so this still holds.
+                    {
+                        int crcSlotStartByte = crcField.BitStartIndex / 8;
+                        int crcSlotEndByteExcl = (crcField.BitStartIndex + crcField.BitLength) / 8;
+                        int staticTotalBytes = model.TotalBitLength / 8;
+                        int bytesFromCrcStartToStaticEnd = (model.TotalBitLength - crcField.BitStartIndex) / 8;
+
+                        bool crcFullyInHead = crcSlotEndByteExcl <= crcField.CrcSkipHeadBytes;
+                        bool crcFullyInTail = crcField.CrcSkipTailBytes >= bytesFromCrcStartToStaticEnd;
+
+                        if (!crcFullyInHead && !crcFullyInTail)
+                        {
+                            return new AnalyzeResult
+                            {
+                                Diagnostic = Diagnostic.Create(
+                                    DiagnosticDescriptors.CrcWholeBufferDoesNotCoverCrcField,
+                                    symbol.Locations.FirstOrDefault(),
+                                    crcField.MemberName, symbol.Name,
+                                    crcField.CrcSkipHeadBytes, crcField.CrcSkipTailBytes,
+                                    crcSlotStartByte, crcSlotEndByteExcl,
+                                    staticTotalBytes,
+                                    bytesFromCrcStartToStaticEnd)
+                            };
+                        }
+                    }
+
                     model.CrcGroups.Add(new CrcGroup
                     {
                         TargetFieldName = crcField.MemberName,

@@ -125,6 +125,20 @@ public partial class BitSerializerCrcWholeBufferTests
     }
 
     /// <summary>
+    /// Review P2：CRC 字段在 buffer 开头（少见但合法），SkipHeadBytes 覆盖 CRC slot。
+    /// Crc[0..2) + Payload[2..3) + More[3..5) = 5 bytes. SkipHead=2 包含 CRC slot, SkipTail=0.
+    /// CRC 范围 = [2, 5) 覆盖 Payload + More, 不包含 CRC slot 自身 → 合法。
+    /// </summary>
+    [BitSerialize]
+    public partial class CrcAtHeadPacket
+    {
+        [BitField(16), BitCrc(typeof(CrcCcitt), WholeBuffer = true, SkipHeadBytes = 2, SkipTailBytes = 0)]
+        public ushort Crc { get; set; }
+        [BitField(8)] public byte Payload { get; set; }
+        [BitField(16)] public ushort More { get; set; }
+    }
+
+    /// <summary>
     /// 嵌套场景（review P1）：外层 1-bit 字段使内层 WholeBuffer 子帧从 bitOffset=1 开始。
     /// 没有字节对齐守卫的话，(bitOffset / 8) 会截断到上一个字节，导致 CRC 范围错位。
     /// 守卫应在序列化时抛 InvalidDataException 而非默默算错。
@@ -371,6 +385,26 @@ public partial class BitSerializerCrcWholeBufferTests
         var data = new ZeroLengthCrcRangePacket();
         var ex = Should.Throw<System.IO.InvalidDataException>(() => BitSerializerMSB.Serialize(data));
         ex.Message.ShouldContain("empty or negative");
+    }
+
+    [Fact]
+    public void CrcAtHead_With_Matching_SkipHead_RoundTrips()
+    {
+        // BITS034 covers tail-positioned CRCs naturally; this test exercises the head branch.
+        var original = new CrcAtHeadPacket { Payload = 0xAB, More = 0x1234 };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+
+        // CRC covers bytes[2..5) = Payload (1) + More (2).
+        var algo = new CrcCcitt();
+        algo.Reset(0);
+        algo.Update(new byte[] { 0xAB, 0x12, 0x34 });
+        ushort want = (ushort)algo.Result;
+        ((bytes[0] << 8) | bytes[1]).ShouldBe(want);
+
+        var result = BitSerializerMSB.Deserialize<CrcAtHeadPacket>(bytes);
+        result.Crc.ShouldBe(want);
+        result.Payload.ShouldBe((byte)0xAB);
+        result.More.ShouldBe((ushort)0x1234);
     }
 
     #endregion
