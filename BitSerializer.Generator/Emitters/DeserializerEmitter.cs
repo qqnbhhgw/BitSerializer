@@ -731,6 +731,9 @@ internal static class DeserializerEmitter
 
     /// <summary>
     /// Reads LengthBits-bit byte count, then that many encoded bytes, decodes via Encoding.
+    /// Validates the prefixed byte count fits in the remaining buffer BEFORE allocating
+    /// (review round-4 P1) — without this, a 32-bit prefix on malformed input would
+    /// allocate up to ~2GB, and bit reads past the span return 0 silently.
     /// </summary>
     private static void EmitLengthPrefixStringDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
     {
@@ -739,7 +742,15 @@ internal static class DeserializerEmitter
         int lengthBits = field.LengthPrefixBits;
         string lenType = lengthBits == 8 ? "byte" : lengthBits == 16 ? "ushort" : "uint";
 
-        sb.AppendLine($"        int _strLen_{name} = (int){helper}.ValueLength<{lenType}>(bytes, {offsetExpr}, {lengthBits});");
+        // Read prefix into a 64-bit local so 32-bit values with high bit set don't go negative,
+        // and so the buffer-size arithmetic below doesn't overflow.
+        sb.AppendLine($"        long _strLenRaw_{name} = (long){helper}.ValueLength<{lenType}>(bytes, {offsetExpr}, {lengthBits});");
+        // Compute remaining bytes after the length prefix. (offsetExpr + lengthBits) is bit-aligned
+        // for byte-aligned LengthBits ∈ {8,16,32}, but use bit-level arithmetic for safety.
+        sb.AppendLine($"        long _strRemBits_{name} = (long)bytes.Length * 8 - ({offsetExpr} + {lengthBits});");
+        sb.AppendLine($"        if (_strLenRaw_{name} < 0 || _strLenRaw_{name} * 8 > _strRemBits_{name})");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' declares {{_strLenRaw_{name}}} bytes, but only {{_strRemBits_{name} / 8}} bytes remain in the buffer after the {lengthBits}-bit length prefix.\");");
+        sb.AppendLine($"        int _strLen_{name} = (int)_strLenRaw_{name};");
         sb.AppendLine($"        byte[] _strBytes_{name} = new byte[_strLen_{name}];");
         sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _strLen_{name}; _si_{name}++)");
         sb.AppendLine($"            _strBytes_{name}[_si_{name}] = {helper}.ValueLength<byte>(bytes, {offsetExpr} + {lengthBits} + _si_{name} * 8, 8);");

@@ -264,6 +264,40 @@ public partial class BitSerializerLengthPrefixStringTests
     }
 
     [Fact]
+    public void Deserialize_Truncated_Buffer_Throws_InvalidDataException()
+    {
+        // Review P1: malformed input where length prefix says N bytes but buffer doesn't have them.
+        // Without the guard, bit reads past the span return 0 — silent corruption / OOM on big lengths.
+        // 16-bit prefix says "10 bytes" but we only give 5 bytes of payload.
+        // Layout: Header(1) + Length(2 = 10) + Footer space available... craft a too-short buffer.
+        byte[] truncated = new byte[] { 0x42, 0x00, 0x0A, 0x41, 0x42 }; // Header, len=10, "AB" (3 bytes short of 10 + Footer)
+        Should.Throw<System.IO.InvalidDataException>(() =>
+            BitSerializerMSB.Deserialize<Utf8With16BitLength>(truncated));
+    }
+
+    [Fact]
+    public void Deserialize_Adversarial_32BitPrefix_Throws_Instead_Of_AllocatingHugeArray()
+    {
+        // Review P1: 32-bit prefix with adversarial value (e.g. 0xFFFFFFFF or 0x10000000)
+        // must not allocate gigabytes; should detect remaining-buffer mismatch and throw.
+        // Layout: Length(4 bytes) + payload — give 4 bytes prefix saying "huge" + tiny payload.
+        byte[] adversarial = new byte[] { 0x10, 0x00, 0x00, 0x00, 0x41, 0x42 }; // len=0x10000000 (256MB), payload "AB"
+        Should.Throw<System.IO.InvalidDataException>(() =>
+            BitSerializerMSB.Deserialize<Utf8With32BitLength>(adversarial));
+    }
+
+    [Fact]
+    public void Deserialize_Exactly_Matching_Buffer_Still_Round_Trips()
+    {
+        // Sanity: precise buffer size still works after the guard tightens.
+        var original = new Utf8With16BitLength { Header = 0xAA, StationName = "XYZ", Footer = 0xBB };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+        bytes.Length.ShouldBe(1 + 2 + 3 + 1);
+        var result = BitSerializerMSB.Deserialize<Utf8With16BitLength>(bytes);
+        result.StationName.ShouldBe("XYZ");
+    }
+
+    [Fact]
     public void LSB_Encoding_FlipsLengthPrefixByteOrder()
     {
         var data = new Utf8With16BitLength { Header = 0xAA, StationName = "ABCD", Footer = 0xBB };
