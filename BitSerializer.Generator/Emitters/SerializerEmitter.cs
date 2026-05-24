@@ -374,11 +374,38 @@ internal static class SerializerEmitter
                 EmitSerializeConverter(sb, field, memberAccess);
                 string ctxArg = "context";
                 string ibsExpr = $"(global::BitSerializer.IBitSerializable){memberAccess}";
+                // Codex review round-7 P2: when this is a RelationKind=ByteLength carrier,
+                // EmitNestedByteLengthBackfill already writes a 0 byte budget for null payloads —
+                // but the previous code then unconditionally called `{memberAccess}.Serialize*(...)`
+                // here, producing a guaranteed NRE for optional/null nested payloads. Wrap the
+                // entire nested-serialize block in a null-check ONLY for the ByteLength path so
+                // null + 0-bytes-budget is a valid round-trippable wire shape; keep the original
+                // strict NRE-on-null behavior for non-ByteLength carriers because there's no way
+                // to recover the offset when the slot is fixed-size.
+                bool isByteLengthCarrier = field.RelationKind == 1 && field.RelatedMemberName != null;
+
+                // Declare fieldEndVar at outer scope when needed (downstream CRC tracking + offset
+                // pipeline reads it), default it to offsetExpr so the null branch's "advance 0 bits"
+                // is observable.
+                if (usesRuntimeBitLength)
+                {
+                    fieldEndVar = $"_bitIndex_{field.MemberName}";
+                    sb.AppendLine($"        int {fieldEndVar} = {offsetExpr};");
+                }
+
+                string indent = "        ";
+                if (isByteLengthCarrier)
+                {
+                    sb.AppendLine($"        if ({memberAccess} != null)");
+                    sb.AppendLine("        {");
+                    indent = "            ";
+                }
+
                 if (field.NestedHasOwnContext)
                 {
-                    sb.AppendLine($"        int _nestedBitOff_{field.MemberName} = {offsetExpr};");
-                    sb.AppendLine($"        var _nestedCtx_{field.MemberName} = ({ibsExpr}).SerializeContext();");
-                    sb.AppendLine($"        ({ibsExpr}).BeforeSerialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
+                    sb.AppendLine($"{indent}int _nestedBitOff_{field.MemberName} = {offsetExpr};");
+                    sb.AppendLine($"{indent}var _nestedCtx_{field.MemberName} = ({ibsExpr}).SerializeContext();");
+                    sb.AppendLine($"{indent}({ibsExpr}).BeforeSerialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
                     ctxArg = $"_nestedCtx_{field.MemberName}";
                 }
                 string callExpr = field.IsManualBitSerializable
@@ -387,17 +414,19 @@ internal static class SerializerEmitter
 
                 if (usesRuntimeBitLength)
                 {
-                    fieldEndVar = $"_bitIndex_{field.MemberName}";
-                    sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {callExpr};");
+                    sb.AppendLine($"{indent}{fieldEndVar} = {offsetExpr} + {callExpr};");
                 }
                 else
                 {
-                    sb.AppendLine($"        {callExpr};");
+                    sb.AppendLine($"{indent}{callExpr};");
                 }
                 if (field.NestedHasOwnContext)
                 {
-                    sb.AppendLine($"        ({ibsExpr}).AfterSerialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
+                    sb.AppendLine($"{indent}({ibsExpr}).AfterSerialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
                 }
+
+                if (isByteLengthCarrier)
+                    sb.AppendLine("        }");
             }
             else if (field.IsNumericOrEnum)
             {

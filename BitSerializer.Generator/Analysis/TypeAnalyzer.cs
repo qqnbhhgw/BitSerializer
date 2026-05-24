@@ -2450,9 +2450,15 @@ internal static class TypeAnalyzer
             var fixedStrAttr2 = GetAttribute(member, "BitSerializer.BitFixedStringAttribute");
             var termStrAttr2 = GetAttribute(member, "BitSerializer.BitTerminatedStringAttribute");
             var lpsStrAttr2 = GetAttribute(member, "BitSerializer.BitLengthPrefixStringAttribute");
+            // Codex review round-7 P1: [BitLengthFieldString] (T3) is also dynamic — without this
+            // check, a parent containing a nested type that uses LFS would treat the nested type as
+            // static, place subsequent fields at compile-time offsets, and corrupt the layout
+            // whenever the LFS payload has non-zero length.
+            var lfsStrAttr2 = GetAttribute(member, "BitSerializer.BitLengthFieldStringAttribute");
 
             if (termStrAttr2 != null) return true; // always dynamic
             if (lpsStrAttr2 != null) return true; // always dynamic
+            if (lfsStrAttr2 != null) return true; // always dynamic (encoded bytes follow a peer length carrier)
             if (fixedStrAttr2 != null) continue; // fixed, not dynamic
 
             var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");

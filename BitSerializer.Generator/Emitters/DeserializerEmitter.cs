@@ -940,7 +940,13 @@ internal static class DeserializerEmitter
     private static void EmitNestedByteLengthRead(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr, string methodName, string nestedCallExpr, HashSet<string>? emittedWireLocals = null)
     {
         EmitNestedByteLengthSetup(sb, field, offsetExpr, emittedWireLocals);
-        sb.AppendLine($"        int _ncons_{field.MemberName} = {nestedCallExpr};");
+        // Codex review round-7 P2 symmetry: serializer's null-guarded path writes 0 bytes. Mirror
+        // here — when the declared budget is 0, set the property to null and advance the cursor by
+        // 0, skipping the nested deserialize call (which would consume 1+ bits for any non-empty
+        // nested type and trip the consumed-vs-budget verify below).
+        sb.AppendLine($"        int _ncons_{field.MemberName} = 0;");
+        sb.AppendLine($"        if (_nbudgetBytes_{field.MemberName} == 0) {{ {memberAccess} = null; }}");
+        sb.AppendLine($"        else {{ _ncons_{field.MemberName} = {nestedCallExpr}; }}");
         EmitNestedByteLengthVerify(sb, field, bitIndexVar, offsetExpr);
     }
 
@@ -948,7 +954,12 @@ internal static class DeserializerEmitter
     private static void EmitNestedByteLengthReadInterface(StringBuilder sb, BitFieldModel field, string bitIndexVar, string offsetExpr, string methodName, string interfaceLocal, string ctxArg, HashSet<string>? emittedWireLocals = null)
     {
         EmitNestedByteLengthSetup(sb, field, offsetExpr, emittedWireLocals);
-        sb.AppendLine($"        int _ncons_{field.MemberName} = {interfaceLocal}.{methodName}(bytes, {offsetExpr}, {ctxArg});");
+        // Round-7 P2 symmetry: same null + 0-budget short-circuit as the non-interface variant.
+        // `interfaceLocal` was already assigned to a fresh instance by the caller; we leave that
+        // local alone (the property assignment is done by the caller after this returns).
+        sb.AppendLine($"        int _ncons_{field.MemberName} = 0;");
+        sb.AppendLine($"        if (_nbudgetBytes_{field.MemberName} > 0)");
+        sb.AppendLine($"            _ncons_{field.MemberName} = {interfaceLocal}.{methodName}(bytes, {offsetExpr}, {ctxArg});");
         EmitNestedByteLengthVerify(sb, field, bitIndexVar, offsetExpr);
     }
 
