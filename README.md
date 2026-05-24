@@ -604,6 +604,40 @@ byte[] bytes = BitSerializerMSB.Serialize(src);
 - 字符串字段必须从字节边界开始（BITS048）且不能跟在运行时偏移可能漂移的字段后（BITS049）
 - 可选 `MaxBytes` 限制编码字节上限（≥ 0，BITS050），UTF-8 截断自动避开多字节字符中间
 
+### 多绑定 `[BitFieldRelated]`（v0.12.0+）
+
+同一字段可以同时贴 **2 个** `[BitFieldRelated]` —— 一个 `Count`（判别值）+ 一个 `ByteLength`（字节预算）。
+典型用法：多态字段绑定 Type 字段（决定类型）+ Length 字段（决定字节数）：
+
+```csharp
+[BitSerialize]
+public partial class FrameHeader
+{
+    [BitField(8)]  public byte Type { get; set; }
+    [BitField(16)] public ushort Length { get; set; }
+
+    [BitField]
+    [BitFieldRelated(nameof(Type))]                                          // 判别字段
+    [BitFieldRelated(nameof(Length), RelationKind = BitRelationKind.ByteLength)] // 字节预算
+    [BitPoly(1, typeof(SubFrameA))]
+    [BitPoly(2, typeof(SubFrameB))]
+    public FrameContent Content { get; set; }
+}
+```
+
+序列化时：
+1. `Type` 自动按运行时 Concrete 类型写入对应的 `TypeId`
+2. `Length` 自动按 `Content` 的 `GetTotalBitLength()/8` 回填
+3. `Content` payload 写入
+
+反序列化时：先读 `Type` 选具体类型、读 `Length` 拿到字节预算，dispatch 解码后断言 `consumedBits == declaredBytes * 8`，wire 长度与实际 payload 不一致直接 `InvalidDataException`。
+
+约束（编译期校验）：
+- 最多 2 个 `[BitFieldRelated]`（BITS056）
+- 两个的 `RelationKind` 必须不同（BITS058）
+- 多绑定模式仅 polymorphic 字段支持（BITS057）—— list/nested 单个 binding 已能表达
+- 声明顺序无关，分析器按 RelationKind 把 Count 当 primary
+
 ### 多态类型
 
 通过 `BitPoly` 特性实现基于判别值的类型分发：

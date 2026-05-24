@@ -444,4 +444,28 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor TooManyRelatedAttributes = new(
+        "BITS056",
+        "Too many [BitFieldRelated] attributes on the same field",
+        "Member '{0}' in '{1}' carries {2} [BitFieldRelated] attributes; the analyzer accepts at most 2 (one Count + one ByteLength). The canonical multi-binding pattern is a polymorphic field with a discriminator (Count) and a byte-budget carrier (ByteLength); other combinations would require >2 carrier reads at runtime which is not implemented",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor MultipleRelatedRequirePolymorphic = new(
+        "BITS057",
+        "Multiple [BitFieldRelated] attributes only supported on polymorphic fields",
+        "Member '{0}' in '{1}' has 2 [BitFieldRelated] attributes but is not polymorphic (IsList = {2}, IsNested = {3}). Only [BitPoly]-decorated members can usefully bind both a discriminator and a byte-length carrier — list count + byte-length on the same field would be self-contradictory, and a non-polymorphic nested type already has its discriminator implicit in the type name",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor MultipleRelatedSameRelationKind = new(
+        "BITS058",
+        "Two [BitFieldRelated] attributes must use different RelationKinds",
+        "Member '{0}' in '{1}' has 2 [BitFieldRelated] attributes both using RelationKind={2}. A second binding only makes sense when it carries an *orthogonal* piece of information; two carriers of the same kind would conflict (which one to backfill from? which to verify against?). Set the second attribute's RelationKind to the complementary value (Count + ByteLength)",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

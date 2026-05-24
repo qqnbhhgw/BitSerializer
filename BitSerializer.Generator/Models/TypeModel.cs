@@ -165,6 +165,8 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.IsPolymorphic == y.IsPolymorphic
             && x.FixedCount == y.FixedCount
             && x.RelatedMemberName == y.RelatedMemberName
+            && x.SecondaryRelatedMemberName == y.SecondaryRelatedMemberName
+            && x.SecondaryRelationKind == y.SecondaryRelationKind
             && x.ValueConverterTypeFullName == y.ValueConverterTypeFullName
             && x.IsPotentiallyDynamic == y.IsPotentiallyDynamic
             && x.IsFixedString == y.IsFixedString

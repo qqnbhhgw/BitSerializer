@@ -555,74 +555,121 @@ internal static class TypeAnalyzer
                 }
             }
 
-            // Check for BitFieldRelated
-            var relatedAttr = GetAttribute(member, "BitSerializer.BitFieldRelatedAttribute");
+            // v0.12.0: collect ALL [BitFieldRelated] occurrences (the attribute is now
+            // AllowMultiple=true). The user's canonical pattern is polymorphic + byte-length
+            // budget: one binding identifies the discriminator (Count), the other carries the
+            // byte budget (ByteLength). Source order is preserved by GetAttributes.
+            var relatedAttrs = GetAttributes(member, "BitSerializer.BitFieldRelatedAttribute");
+            // BITS056: hard cap at 2. >2 isn't supported because there are only 2 orthogonal
+            // pieces of information you can pin to a field (which type / how many bytes).
+            if (relatedAttrs.Count > 2)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.TooManyRelatedAttributes,
+                        member.Locations.FirstOrDefault(),
+                        member.Name, symbol.Name, relatedAttrs.Count)
+                };
+            }
             string? relatedMemberName = null;
             string? valueConverterFullName = null;
+            int primaryRelationKind = 0; // Count default
+            string? secondaryRelatedMemberName = null;
+            int secondaryRelationKind = 0;
 
-            if (relatedAttr != null)
+            // Each occurrence has its own (name, converter, RelationKind) tuple. Read them all into
+            // a temporary list, then sort into primary / secondary based on RelationKind below.
+            var parsedBindings = new List<(string? Name, string? ConverterFullName, int RelationKind, INamedTypeSymbol? ConverterSym)>();
+            foreach (var ra in relatedAttrs)
             {
-                if (relatedAttr.ConstructorArguments.Length > 0 &&
-                    !relatedAttr.ConstructorArguments[0].IsNull)
+                string? rmn = null;
+                string? rvc = null;
+                int rrk = 0;
+                INamedTypeSymbol? rcs = null;
+                if (ra.ConstructorArguments.Length > 0 && !ra.ConstructorArguments[0].IsNull)
+                    rmn = ra.ConstructorArguments[0].Value as string;
+                if (ra.ConstructorArguments.Length > 1 && !ra.ConstructorArguments[1].IsNull)
                 {
-                    relatedMemberName = relatedAttr.ConstructorArguments[0].Value as string;
+                    rcs = ra.ConstructorArguments[1].Value as INamedTypeSymbol;
+                    if (rcs != null)
+                        rvc = rcs.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                 }
+                foreach (var namedArg in ra.NamedArguments)
+                {
+                    if (rvc == null && namedArg.Key == "ValueConverterType"
+                        && namedArg.Value.Value is INamedTypeSymbol ncs)
+                    {
+                        rcs = ncs;
+                        rvc = ncs.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                    }
+                    else if (namedArg.Key == "RelationKind" && namedArg.Value.Value is int rk)
+                    {
+                        rrk = rk;
+                    }
+                }
+                parsedBindings.Add((rmn, rvc, rrk, rcs));
+            }
 
-                if (relatedAttr.ConstructorArguments.Length > 1 &&
-                    !relatedAttr.ConstructorArguments[1].IsNull)
+            INamedTypeSymbol? primaryConverterSym = null;
+            if (parsedBindings.Count == 1)
+            {
+                var b = parsedBindings[0];
+                relatedMemberName = b.Name;
+                valueConverterFullName = b.ConverterFullName;
+                primaryRelationKind = b.RelationKind;
+                primaryConverterSym = b.ConverterSym;
+            }
+            else if (parsedBindings.Count == 2)
+            {
+                // BITS058: the two must carry orthogonal information (different RelationKind).
+                if (parsedBindings[0].RelationKind == parsedBindings[1].RelationKind)
                 {
-                    var converterType = relatedAttr.ConstructorArguments[1].Value as INamedTypeSymbol;
-                    if (converterType != null)
+                    return new AnalyzeResult
                     {
-                        valueConverterFullName = converterType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                    }
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.MultipleRelatedSameRelationKind,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name,
+                            parsedBindings[0].RelationKind == 1 ? "ByteLength" : "Count")
+                    };
                 }
-
-                // Also check named arguments (ValueConverterType = typeof(...), RelationKind = ...)
-                foreach (var namedArg in relatedAttr.NamedArguments)
-                {
-                    if (valueConverterFullName == null
-                        && namedArg.Key == "ValueConverterType"
-                        && namedArg.Value.Value is INamedTypeSymbol namedConverterType)
-                    {
-                        valueConverterFullName = namedConverterType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                    }
-                    else if (namedArg.Key == "RelationKind" && namedArg.Value.Value is int relKindRaw)
-                    {
-                        field.RelationKind = relKindRaw;
-                    }
-                }
+                // Canonical ordering: Count binding becomes primary (preserves discriminator /
+                // count-field semantics for callers that expect the *first* read), ByteLength
+                // binding becomes secondary. Source order is irrelevant — the user can write
+                // either order and get the same emit.
+                var countBind = parsedBindings.FirstOrDefault(b => b.RelationKind == 0);
+                var byteBind = parsedBindings.FirstOrDefault(b => b.RelationKind == 1);
+                relatedMemberName = countBind.Name;
+                valueConverterFullName = countBind.ConverterFullName;
+                primaryRelationKind = 0;
+                primaryConverterSym = countBind.ConverterSym;
+                secondaryRelatedMemberName = byteBind.Name;
+                secondaryRelationKind = 1;
             }
 
             field.RelatedMemberName = relatedMemberName;
+            field.RelationKind = primaryRelationKind;
             field.ValueConverterTypeFullName = valueConverterFullName;
+            field.SecondaryRelatedMemberName = secondaryRelatedMemberName;
+            field.SecondaryRelationKind = secondaryRelationKind;
+            // `relatedAttr` is referenced by code below (BITS007 polymorphic-missing-discriminator
+            // check). Synthesize as a non-null sentinel when any [BitFieldRelated] is present so
+            // existing logic keeps working.
+            var relatedAttr = parsedBindings.Count > 0 ? relatedAttrs[0] : null;
 
-            // Check if converter type has context-aware overloads (2-param OnSerializeConvert/OnDeserializeConvert)
-            if (valueConverterFullName != null && relatedAttr != null)
+            // Check if converter type has context-aware overloads (2-param OnSerializeConvert/OnDeserializeConvert).
+            // v0.12.0: use the pre-resolved primaryConverterSym (correct for both 1-binding and
+            // 2-binding cases — the Count-side binding's converter is canonical, ByteLength side
+            // converters are not supported in the multi-binding mode).
+            if (valueConverterFullName != null && primaryConverterSym != null)
             {
-                INamedTypeSymbol? converterSymbol = null;
-                if (relatedAttr.ConstructorArguments.Length > 1 && !relatedAttr.ConstructorArguments[1].IsNull)
-                    converterSymbol = relatedAttr.ConstructorArguments[1].Value as INamedTypeSymbol;
-                if (converterSymbol == null)
-                {
-                    foreach (var namedArg in relatedAttr.NamedArguments)
-                    {
-                        if (namedArg.Key == "ValueConverterType" && namedArg.Value.Value is INamedTypeSymbol ns)
-                        {
-                            converterSymbol = ns;
-                            break;
-                        }
-                    }
-                }
-                if (converterSymbol != null)
-                {
-                    var serMethods = converterSymbol.GetMembers("OnSerializeConvert").OfType<IMethodSymbol>().ToList();
-                    var deserMethods = converterSymbol.GetMembers("OnDeserializeConvert").OfType<IMethodSymbol>().ToList();
-                    field.ValueConverterHasSerialize = serMethods.Count > 0;
-                    field.ValueConverterHasDeserialize = deserMethods.Count > 0;
-                    field.ValueConverterSerializeHasContext = serMethods.Any(m => m.Parameters.Length == 2);
-                    field.ValueConverterDeserializeHasContext = deserMethods.Any(m => m.Parameters.Length == 2);
-                }
+                var serMethods = primaryConverterSym.GetMembers("OnSerializeConvert").OfType<IMethodSymbol>().ToList();
+                var deserMethods = primaryConverterSym.GetMembers("OnDeserializeConvert").OfType<IMethodSymbol>().ToList();
+                field.ValueConverterHasSerialize = serMethods.Count > 0;
+                field.ValueConverterHasDeserialize = deserMethods.Count > 0;
+                field.ValueConverterSerializeHasContext = serMethods.Any(m => m.Parameters.Length == 2);
+                field.ValueConverterDeserializeHasContext = deserMethods.Any(m => m.Parameters.Length == 2);
             }
 
             // Check for BitFieldCount
@@ -1052,6 +1099,21 @@ internal static class TypeAnalyzer
                         DiagnosticDescriptors.NestedTypeMustBeBitSerializable,
                         member.Locations.FirstOrDefault(),
                         memberType.Name, symbol.Name)
+                };
+            }
+
+            // v0.12.0 BITS057: multi-binding [BitFieldRelated] only makes sense for polymorphic
+            // fields. List with both count+ByteLength is self-contradictory (which one drives the
+            // loop?), nested type with count is meaningless (a class isn't a collection), and so on.
+            // The check runs HERE (after field categorization) so we know IsPolymorphic.
+            if (field.SecondaryRelatedMemberName != null && !field.IsPolymorphic)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.MultipleRelatedRequirePolymorphic,
+                        member.Locations.FirstOrDefault(),
+                        member.Name, symbol.Name, field.IsList, field.IsNestedType)
                 };
             }
 

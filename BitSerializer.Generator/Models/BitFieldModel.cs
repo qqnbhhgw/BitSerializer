@@ -34,6 +34,17 @@ internal class BitFieldModel
     public bool ListElementIsNested { get; set; }
     public int? FixedCount { get; set; }
     public string? RelatedMemberName { get; set; }
+
+    // v0.12.0: A field can now carry a SECOND [BitFieldRelated] binding with a different
+    // RelationKind than the primary. The canonical use case is a polymorphic field that needs
+    // BOTH a discriminator (RelationKind=Count, the primary) AND a byte-length carrier
+    // (RelationKind=ByteLength, the secondary) — wire reader uses the discriminator to pick
+    // the concrete poly type and the byte budget to know how many bytes to consume.
+    // Slot is empty (null / 0) when only one [BitFieldRelated] is declared, preserving
+    // backward compatibility with all v0.11.x and earlier consumers.
+    public string? SecondaryRelatedMemberName { get; set; }
+    public int SecondaryRelationKind { get; set; }
+
     public bool IsNestedType { get; set; }
     public bool IsTypeParameter { get; set; }
     public bool IsPolymorphic { get; set; }

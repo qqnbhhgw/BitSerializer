@@ -405,6 +405,14 @@ internal static class DeserializerEmitter
             {
                 set.Add(f.RelatedMemberName);
             }
+            // v0.12.0: secondary [BitFieldRelated] binding (polymorphic + ByteLength budget) —
+            // the byte-length carrier needs the same wire-cache treatment as any other dependent
+            // reference, otherwise a "derived getter + empty setter" carrier would read stale
+            // values on deserialize (Issue resolved in v0.10.x for the single-binding case).
+            if (f.SecondaryRelatedMemberName != null)
+            {
+                set.Add(f.SecondaryRelatedMemberName);
+            }
             if (f.IsLengthFieldString && f.LengthFieldMemberName != null)
             {
                 set.Add(f.LengthFieldMemberName);
@@ -853,6 +861,24 @@ internal static class DeserializerEmitter
         sb.AppendLine("            default:");
         sb.AppendLine($"                throw new global::System.InvalidOperationException($\"No polymorphic type mapping found for discriminator value '{{(int)({discriminatorExpr})}}'\");");
         sb.AppendLine("        }");
+
+        // v0.12.0: when the polymorphic field has a SECONDARY [BitFieldRelated(ByteLength)]
+        // binding, verify that the concrete poly type's deserialize consumed exactly the byte
+        // budget the carrier declared. Mirrors the T4 nested-byte-length post-condition check —
+        // wrong consumption means the wire/spec are out of sync and subsequent fields would land
+        // at the wrong offset.
+        //
+        // Requires bitIndexVar to track post-deserialize bit offset (the caller passes one when
+        // usesRuntimeBitLength is true, which is always true for polymorphic + secondary because
+        // EmitMethod treats poly+secondary as dynamic — see EmitPolymorphicSerialize counterpart).
+        if (field.SecondaryRelatedMemberName != null && field.SecondaryRelationKind == 1 && bitIndexVar != null)
+        {
+            var name = field.MemberName;
+            string byteLenExpr = ReadFieldExpr(emittedWireLocals, field.SecondaryRelatedMemberName);
+            sb.AppendLine($"        long _polyDeclaredBits_{name} = (long)({byteLenExpr}) * 8;");
+            sb.AppendLine($"        if (({bitIndexVar} - ({offsetExpr})) != _polyDeclaredBits_{name})");
+            sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Polymorphic '{name}' deserialized {{({bitIndexVar} - ({offsetExpr}))}} bits but the byte-length field '{field.SecondaryRelatedMemberName}' declared {{_polyDeclaredBits_{name}}} bits. The wire payload size does not match the declared byte budget.\");");
+        }
     }
 
     private static void EmitFixedStringDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string offsetExpr)

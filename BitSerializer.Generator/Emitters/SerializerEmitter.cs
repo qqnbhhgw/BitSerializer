@@ -77,6 +77,33 @@ internal static class SerializerEmitter
                     sb.AppendLine($"        {keyword} (this.{field.MemberName} is {mapping.ConcreteTypeFullName})");
                     sb.AppendLine($"            this.{relatedField.MemberName} = ({relatedField.MemberTypeName}){mapping.TypeId};");
                 }
+
+                // v0.12.0: polymorphic field can also carry a SECONDARY ByteLength binding (BITS057
+                // gates: poly only). Backfill the byte-length carrier from the runtime poly object's
+                // GetTotalBitLength(). Null payload writes 0 bytes (same convention as nested
+                // ByteLength backfill in round-7 P2). The discriminator backfill above already ran
+                // — both carriers will hold consistent values before the primitive write loop.
+                if (field.SecondaryRelatedMemberName != null && field.SecondaryRelationKind == 1)
+                {
+                    var byteLenField = fields.Find(f => f.MemberName == field.SecondaryRelatedMemberName);
+                    if (byteLenField != null)
+                    {
+                        var name = field.MemberName;
+                        sb.AppendLine($"        int _polyBits_{name} = 0;");
+                        sb.AppendLine($"        if (this.{name} != null)");
+                        sb.AppendLine($"            _polyBits_{name} = ((global::BitSerializer.IBitSerializable)this.{name}).GetTotalBitLength();");
+                        sb.AppendLine($"        if ((_polyBits_{name} & 7) != 0)");
+                        sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Polymorphic '{name}' serializes to {{_polyBits_{name}}} bits which is not byte-aligned; the secondary [BitFieldRelated(ByteLength)] binding requires the runtime poly type's size to be a whole number of bytes.\");");
+                        sb.AppendLine($"        int _polyBytes_{name} = _polyBits_{name} / 8;");
+                        if (byteLenField.BitLength < 32)
+                        {
+                            long maxValue = (1L << byteLenField.BitLength) - 1;
+                            sb.AppendLine($"        if (_polyBytes_{name} > {maxValue})");
+                            sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Polymorphic '{name}' produced {{_polyBytes_{name}}} bytes which exceeds the maximum ({maxValue}) representable by the {byteLenField.BitLength}-bit byte-length field '{byteLenField.MemberName}'.\");");
+                        }
+                        sb.AppendLine($"        this.{byteLenField.MemberName} = ({byteLenField.MemberTypeName})_polyBytes_{name};");
+                    }
+                }
             }
         }
     }
