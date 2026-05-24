@@ -246,8 +246,8 @@ internal static class DiagnosticDescriptors
 
     public static readonly DiagnosticDescriptor CrcWholeBufferTrailingDynamicField = new(
         "BITS035",
-        "[BitCrc(WholeBuffer = true)] does not support dynamic-length fields after the CRC",
-        "[BitCrc(WholeBuffer = true)] on '{0}' in '{1}' is followed by member '{2}' which has runtime-variable bit length (dynamic list, terminated string, type parameter, auto-length polymorphic, or fixed-count list of manual IBitSerializable elements without an explicit element bit width). WholeBuffer computes the CRC slice end from the runtime buffer end, so a trailing dynamic field grows the tail at runtime — the static SkipTailBytes can no longer guarantee the CRC slot is excluded, and the CRC will read its own bytes back. Move dynamic content before the CRC field, switch to IncludeRange ([BitCrcInclude]) mode, or remove the trailing dynamic member",
+        "[BitCrc(WholeBuffer = true)] CRC slot is not provably excluded at runtime",
+        "[BitCrc(WholeBuffer = true)] on '{0}' in '{1}' relies on a static SkipHead/SkipTail check, but member '{2}' has runtime-variable bit length (dynamic list, terminated string, type parameter, auto-length polymorphic, or fixed-count list of manual IBitSerializable elements without an explicit element bit width) and would shift the CRC slot off the protected side at runtime. To make a WholeBuffer layout sound, either (a) place all dynamic fields AFTER the CRC with SkipHeadBytes large enough to cover the CRC slot, or (b) place all dynamic fields BEFORE the CRC with SkipTailBytes large enough to cover the CRC slot and any trailing static fields. Mixed leading and trailing dynamic content around the CRC is not supported — switch to IncludeRange ([BitCrcInclude]) mode for those layouts",
         "BitSerializer",
         DiagnosticSeverity.Error,
         true);

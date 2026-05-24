@@ -188,6 +188,13 @@ internal static class SerializerEmitter
                     sb.AppendLine($"        int _crcStartBit_{crc.TargetFieldName} = {offsetExpr};");
             }
 
+            // If this field is itself a CRC result slot, capture its runtime bit offset so the CRC
+            // computation block at the end of the method can back-fill the computed value to the actual
+            // runtime position (review round-7 P1). Static derivation from runtimeOffsetVar /
+            // BitStartIndex breaks down when dynamic content sits both before and after the CRC.
+            if (field.IsCrcResult)
+                sb.AppendLine($"        int _crcFieldBitOff_{field.MemberName} = {offsetExpr};");
+
             string? fieldEndVar = null;
 
             if (field.IsFixedString)
@@ -287,7 +294,9 @@ internal static class SerializerEmitter
         {
             var crcField = model.Fields.Find(f => f.MemberName == crc.TargetFieldName);
             if (crcField == null) continue;
-            string crcOffsetExpr = BuildCrcFieldOffsetExpr(crcField, runtimeOffsetVar, runtimeStaticEnd);
+            // Use the runtime offset captured when the CRC field was serialized — handles all layouts
+            // (CRC at head, in middle, at tail; with leading or trailing dynamic fields).
+            string crcOffsetExpr = $"_crcFieldBitOff_{crcField.MemberName}";
             sb.AppendLine("        {");
             if (crc.IsWholeBuffer)
             {
@@ -354,18 +363,6 @@ internal static class SerializerEmitter
 
         sb.AppendLine("    }");
         return sb.ToString();
-    }
-
-    private static string BuildCrcFieldOffsetExpr(BitFieldModel crcField, string? runtimeOffsetVar, int runtimeStaticEnd)
-    {
-        // CRC field sits BEFORE any dynamic content (or there is no dynamic content): its absolute
-        // bit offset is the static bitOffset + BitStartIndex. Using `runtimeOffsetVar + diff` here
-        // with a negative diff would point backward of the dynamic field's end — wrong (review
-        // round-6: surfaced by CRC-at-head + trailing dynamic list configurations).
-        if (runtimeOffsetVar is null || crcField.BitStartIndex < runtimeStaticEnd)
-            return $"bitOffset + {crcField.BitStartIndex}";
-        int diff = crcField.BitStartIndex - runtimeStaticEnd;
-        return diff == 0 ? runtimeOffsetVar : $"{runtimeOffsetVar} + {diff}";
     }
 
     /// <summary>
