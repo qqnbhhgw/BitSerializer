@@ -428,4 +428,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor FieldValueOnReferencedCarrier = new(
+        "BITS054",
+        "[BitFieldValue] field cannot also be a count / length / discriminator carrier",
+        "Member '{0}' in '{1}' carries [BitFieldValue({2})] but is referenced by '{3}' as its {4}. At serialize time the auto-backfill (or runtime length computation) writes the *real* dependent size into '{0}', then the primitive write overwrites that with the pinned constant {2} — wire is left with {2} but the dependent payload is the real size, so deserialize reads the wrong budget / count / type-id and mis-parses or truncates. Remove [BitFieldValue] from '{0}', or drop the [BitFieldRelated]/[BitLengthFieldString] reference",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

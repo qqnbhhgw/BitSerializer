@@ -1478,6 +1478,36 @@ internal static class TypeAnalyzer
                         dep.MemberName, symbol.Name, referencedName)
                 };
             }
+
+            // Codex review round-4 P2: the inverse of BITS044. The referenced carrier must NOT
+            // have [BitFieldValue(...)]. At serialize time EmitAutoBackfill / EmitLengthFieldStringBackfill
+            // writes the *real* dependent size into the carrier; then EmitPrimitiveSerialize for the
+            // carrier overwrites that with the pinned constant. Wire ends up holding the constant
+            // (e.g. magic 0x7E) but the dependent payload bytes reflect the real size — deserialize
+            // reads the constant as the budget and either truncates or mis-parses subsequent fields.
+            //
+            // BITS044 only catches the same-field case ([BitFieldValue] on a field that ALSO carries
+            // [BitFieldRelated]/[BitFieldCount]); the cross-field "carrier referenced by dependent"
+            // case has no diagnostic and silently corrupts wire output.
+            if (relatedIdx >= 0)
+            {
+                var carrier = model.Fields[relatedIdx];
+                if (carrier.HasConstantValue)
+                {
+                    string referenceKind = dep.IsLengthFieldString ? "string byte-count carrier"
+                        : dep.IsPolymorphic ? "polymorphic discriminator"
+                        : (dep.RelationKind == 1 ? "byte-length carrier" : "count carrier");
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FieldValueOnReferencedCarrier,
+                            symbol.Locations.FirstOrDefault(),
+                            carrier.MemberName, symbol.Name,
+                            $"0x{unchecked((ulong)carrier.ConstantValue):X}",
+                            dep.MemberName, referenceKind)
+                    };
+                }
+            }
         }
 
         // BITS022: reject CRC in types whose [BitSerialize] base is dynamic-length.
