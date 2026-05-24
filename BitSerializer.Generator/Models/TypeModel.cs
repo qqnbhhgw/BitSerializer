@@ -171,6 +171,9 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.FixedStringByteLength == y.FixedStringByteLength
             && x.IsTerminatedString == y.IsTerminatedString
             && x.StringEncodingName == y.StringEncodingName
+            && x.IsLengthPrefixString == y.IsLengthPrefixString
+            && x.LengthPrefixBits == y.LengthPrefixBits
+            && x.LengthPrefixMaxBytes == y.LengthPrefixMaxBytes
             && x.IsManualBitSerializable == y.IsManualBitSerializable
             && x.ListElementIsManualBitSerializable == y.ListElementIsManualBitSerializable
             && x.ListElementIsTypeParameter == y.ListElementIsTypeParameter

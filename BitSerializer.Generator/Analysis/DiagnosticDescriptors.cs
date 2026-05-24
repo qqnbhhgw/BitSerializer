@@ -236,6 +236,22 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor LengthPrefixStringMustBeString = new(
+        "BITS031",
+        "[BitLengthPrefixString] on non-string member",
+        "[BitLengthPrefixString] can only be applied to string members, but '{0}' in '{1}' is not a string",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor LengthPrefixStringInvalidBits = new(
+        "BITS032",
+        "[BitLengthPrefixString] LengthBits must be 8, 16, or 32",
+        "[BitLengthPrefixString] on '{0}' in '{1}' has LengthBits = {2}; only 8, 16, or 32 are supported, matching the byte/ushort/uint length-prefix patterns used by typical protocols",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
     public static readonly DiagnosticDescriptor CrcWholeBufferDoesNotCoverCrcField = new(
         "BITS034",
         "[BitCrc(WholeBuffer = true)] SkipHead/SkipTail must cover the CRC field bytes",
@@ -248,6 +264,30 @@ internal static class DiagnosticDescriptors
         "BITS035",
         "[BitCrc(WholeBuffer = true)] CRC slot is not provably excluded at runtime",
         "[BitCrc(WholeBuffer = true)] on '{0}' in '{1}' relies on a static SkipHead/SkipTail check, but member '{2}' has runtime-variable bit length (dynamic list, terminated string, type parameter, auto-length polymorphic, or fixed-count list of manual IBitSerializable elements without an explicit element bit width) and would shift the CRC slot off the protected side at runtime. To make a WholeBuffer layout sound, either (a) place all dynamic fields AFTER the CRC with SkipHeadBytes large enough to cover the CRC slot, or (b) place all dynamic fields BEFORE the CRC with SkipTailBytes large enough to cover the CRC slot and any trailing static fields. Mixed leading and trailing dynamic content around the CRC is not supported — switch to IncludeRange ([BitCrcInclude]) mode for those layouts",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor LengthPrefixStringNegativeMaxBytes = new(
+        "BITS036",
+        "[BitLengthPrefixString] MaxBytes must be non-negative",
+        "[BitLengthPrefixString] on '{0}' in '{1}' has MaxBytes = {2}; values < 0 are not allowed. Use 0 to mean unlimited (only the LengthBits capacity caps the byte count), or a positive value to cap encoded byte count",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor LengthPrefixStringNotByteAligned = new(
+        "BITS038",
+        "[BitLengthPrefixString] field must start on a byte boundary",
+        "[BitLengthPrefixString] on '{0}' in '{1}' has BitStartIndex = {2}, which is not a multiple of 8. A length-prefix string is fundamentally a byte stream (length prefix + raw encoded bytes), so writing it across a sub-byte boundary would corrupt wire compatibility with any reader that parses byte-aligned prefix + payload. Reorder fields so this attribute lands on a byte boundary, or pad preceding sub-byte fields",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor LengthPrefixStringAfterDynamicContent = new(
+        "BITS039",
+        "[BitLengthPrefixString] cannot follow a member whose runtime size may not be byte-aligned",
+        "[BitLengthPrefixString] on '{0}' in '{1}' is preceded by '{2}' which has runtime-variable bit length and is not provably byte-aligned (e.g. dynamic list of sub-byte elements, type parameter, polymorphic with non-byte-aligned concrete types, or a dynamic [BitSerialize] base). The static BITS038 check assumes the field starts on a byte boundary, but at runtime '{2}' can shift the offset by a non-byte multiple, breaking wire compatibility. Move the length-prefix string before any non-byte-aligned dynamic content, or restructure the preceding member so its runtime bit count is always a multiple of 8",
         "BitSerializer",
         DiagnosticSeverity.Error,
         true);

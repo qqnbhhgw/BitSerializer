@@ -208,6 +208,12 @@ internal static class SerializerEmitter
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
                 EmitTerminatedStringSerialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
             }
+            else if (field.IsLengthPrefixString)
+            {
+                EmitSerializeConverter(sb, field, memberAccess);
+                fieldEndVar = $"_bitIndex_{field.MemberName}";
+                EmitLengthPrefixStringSerialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
+            }
             else if (field.IsList)
             {
                 // List converter is applied before backfill (see pre-backfill loop above)
@@ -637,6 +643,66 @@ internal static class SerializerEmitter
         sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + (_strWriteLen_{name} + 1) * 8;");
     }
 
+    /// <summary>
+    /// Emits length-prefix string serialization: write LengthBits-bit byte count, then encoded bytes.
+    /// UTF-8 truncation to MaxBytes mirrors the BitFixedString path (split-safe multi-byte boundary).
+    /// All locals are suffixed with the field name to avoid clashes — matches the BitTerminatedString
+    /// convention so the bitIndex var stays visible to subsequent fields.
+    /// </summary>
+    private static void EmitLengthPrefixStringSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
+    {
+        var encoding = GetEncodingExpression(field.StringEncodingName);
+        var name = field.MemberName;
+        int lengthBits = field.LengthPrefixBits;
+        int maxBytes = field.LengthPrefixMaxBytes;
+        long lengthMax = lengthBits == 32 ? uint.MaxValue : (1L << lengthBits) - 1;
+
+        // Review round-11 P1: BITS038/BITS039 only validate alignment within the declaring type's
+        // static layout. If the type itself is serialized at a non-byte bitOffset (e.g. nested inside
+        // a parent that wrote a 1-bit flag first), the LPS field's absolute offset still lands on a
+        // sub-byte boundary. Runtime guard: refuse to emit the byte-stream across a non-byte boundary.
+        sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' requires a byte-aligned absolute bit offset, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary (the containing type was nested at a non-byte bitOffset).\");");
+
+        sb.AppendLine($"        byte[] _strBytes_{name} = {encoding}.GetBytes({memberAccess} ?? \"\");");
+
+        // Truncate to MaxBytes (with UTF-8 boundary safety).
+        if (maxBytes > 0)
+        {
+            sb.AppendLine($"        int _strLen_{name} = global::System.Math.Min(_strBytes_{name}.Length, {maxBytes});");
+            if (field.StringEncodingName == "UTF8")
+            {
+                sb.AppendLine($"        if (_strLen_{name} < _strBytes_{name}.Length)");
+                sb.AppendLine("        {");
+                sb.AppendLine($"            int _lcs_{name} = _strLen_{name} - 1;");
+                sb.AppendLine($"            while (_lcs_{name} > 0 && (_strBytes_{name}[_lcs_{name}] & 0xC0) == 0x80) _lcs_{name}--;");
+                sb.AppendLine($"            byte _lead_{name} = _strBytes_{name}[_lcs_{name}];");
+                sb.AppendLine($"            int _seqLen_{name} = _lead_{name} < 0x80 ? 1 : (_lead_{name} & 0xE0) == 0xC0 ? 2 : (_lead_{name} & 0xF0) == 0xE0 ? 3 : (_lead_{name} & 0xF8) == 0xF0 ? 4 : 1;");
+                sb.AppendLine($"            if (_lcs_{name} + _seqLen_{name} > _strLen_{name}) _strLen_{name} = _lcs_{name};");
+                sb.AppendLine("        }");
+            }
+        }
+        else
+        {
+            sb.AppendLine($"        int _strLen_{name} = _strBytes_{name}.Length;");
+        }
+
+        // Bounds check against LengthBits capacity (skip for 32-bit: int.MaxValue < uint.MaxValue
+        // so a managed string can never overflow a 32-bit length prefix — comparison would warn).
+        if (lengthBits < 32)
+        {
+            sb.AppendLine($"        if (_strLen_{name} > {lengthMax})");
+            sb.AppendLine($"            throw new global::System.InvalidOperationException($\"String '{name}' encoded byte length {{_strLen_{name}}} exceeds the maximum ({lengthMax}) representable by the {lengthBits}-bit length prefix.\");");
+        }
+
+        // Write length prefix and bytes.
+        string lenType = lengthBits == 8 ? "byte" : lengthBits == 16 ? "ushort" : "uint";
+        sb.AppendLine($"        {helper}.SetValueLength<{lenType}>(bytes, {offsetExpr}, {lengthBits}, ({lenType})_strLen_{name});");
+        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _strLen_{name}; _si_{name}++)");
+        sb.AppendLine($"            {helper}.SetValueLength<byte>(bytes, {offsetExpr} + {lengthBits} + _si_{name} * 8, 8, _strBytes_{name}[_si_{name}]);");
+        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {lengthBits} + _strLen_{name} * 8;");
+    }
+
     private static string GetEncodingExpression(string encodingName)
     {
         return encodingName == "UTF8"
@@ -658,6 +724,7 @@ internal static class SerializerEmitter
         return field.IsTypeParameter
                || field.IsPotentiallyDynamic
                || field.IsTerminatedString
+               || field.IsLengthPrefixString
                || (field.IsList && !field.FixedCount.HasValue)
                || (field.IsList && field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0)
                || (field.IsList && field.ListElementHasDynamicLength);
@@ -666,6 +733,11 @@ internal static class SerializerEmitter
     private static int GetStaticFieldEnd(BitFieldModel field)
     {
         if (field.IsTerminatedString)
+        {
+            return field.BitStartIndex;
+        }
+
+        if (field.IsLengthPrefixString)
         {
             return field.BitStartIndex;
         }

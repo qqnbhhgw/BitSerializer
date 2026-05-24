@@ -71,6 +71,12 @@ internal static class DeserializerEmitter
                 EmitTerminatedStringDeserialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
                 EmitDeserializeConverter(sb, field, memberAccess);
             }
+            else if (field.IsLengthPrefixString)
+            {
+                fieldEndVar = $"_bitIndex_{field.MemberName}";
+                EmitLengthPrefixStringDeserialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
+                EmitDeserializeConverter(sb, field, memberAccess);
+            }
             else if (field.IsList)
             {
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
@@ -723,6 +729,49 @@ internal static class DeserializerEmitter
         sb.AppendLine($"        {memberAccess} = {encoding}.GetString(_strList_{name}.ToArray());");
     }
 
+    /// <summary>
+    /// Reads LengthBits-bit byte count, then that many encoded bytes, decodes via Encoding.
+    /// Validates the prefixed byte count fits in the remaining buffer BEFORE allocating
+    /// (review round-4 P1) — without this, a 32-bit prefix on malformed input would
+    /// allocate up to ~2GB, and bit reads past the span return 0 silently.
+    /// </summary>
+    private static void EmitLengthPrefixStringDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
+    {
+        var encoding = GetEncodingExpression(field.StringEncodingName);
+        var name = field.MemberName;
+        int lengthBits = field.LengthPrefixBits;
+        string lenType = lengthBits == 8 ? "byte" : lengthBits == 16 ? "ushort" : "uint";
+
+        // Mirror of the serializer guard (review round-11 P1): catch types nested at sub-byte
+        // bitOffset where BITS038/BITS039 static checks couldn't see the parent context.
+        sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' requires a byte-aligned absolute bit offset on Deserialize, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary.\");");
+
+        // Read prefix into a 64-bit local so 32-bit values with high bit set don't go negative,
+        // and so the buffer-size arithmetic below doesn't overflow.
+        sb.AppendLine($"        long _strLenRaw_{name} = (long){helper}.ValueLength<{lenType}>(bytes, {offsetExpr}, {lengthBits});");
+        // Compute remaining bytes after the length prefix. (offsetExpr + lengthBits) is bit-aligned
+        // for byte-aligned LengthBits ∈ {8,16,32}, but use bit-level arithmetic for safety.
+        sb.AppendLine($"        long _strRemBits_{name} = (long)bytes.Length * 8 - ({offsetExpr} + {lengthBits});");
+        sb.AppendLine($"        if (_strLenRaw_{name} < 0 || _strLenRaw_{name} * 8 > _strRemBits_{name})");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' declares {{_strLenRaw_{name}}} bytes, but only {{_strRemBits_{name} / 8}} bytes remain in the buffer after the {lengthBits}-bit length prefix.\");");
+        // Review round-9 P1: enforce MaxBytes on deserialize too. Serializer caps the encoded payload
+        // at MaxBytes, so any wire value larger than MaxBytes violates the declared field contract —
+        // accepting it would force allocations bigger than this model can ever produce. Reject before
+        // allocating.
+        if (field.LengthPrefixMaxBytes > 0)
+        {
+            sb.AppendLine($"        if (_strLenRaw_{name} > {field.LengthPrefixMaxBytes})");
+            sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' declares {{_strLenRaw_{name}}} bytes, exceeding the declared MaxBytes = {field.LengthPrefixMaxBytes} cap.\");");
+        }
+        sb.AppendLine($"        int _strLen_{name} = (int)_strLenRaw_{name};");
+        sb.AppendLine($"        byte[] _strBytes_{name} = new byte[_strLen_{name}];");
+        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _strLen_{name}; _si_{name}++)");
+        sb.AppendLine($"            _strBytes_{name}[_si_{name}] = {helper}.ValueLength<byte>(bytes, {offsetExpr} + {lengthBits} + _si_{name} * 8, 8);");
+        sb.AppendLine($"        {memberAccess} = {encoding}.GetString(_strBytes_{name});");
+        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {lengthBits} + _strLen_{name} * 8;");
+    }
+
     private static string GetEncodingExpression(string encodingName)
     {
         return encodingName == "UTF8"
@@ -761,6 +810,7 @@ internal static class DeserializerEmitter
         return field.IsTypeParameter
                || field.IsPotentiallyDynamic
                || field.IsTerminatedString
+               || field.IsLengthPrefixString
                || (field.IsList && !field.FixedCount.HasValue)
                || (field.IsList && field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0)
                || (field.IsList && field.ListElementHasDynamicLength);
@@ -769,6 +819,11 @@ internal static class DeserializerEmitter
     private static int GetStaticFieldEnd(BitFieldModel field)
     {
         if (field.IsTerminatedString)
+        {
+            return field.BitStartIndex;
+        }
+
+        if (field.IsLengthPrefixString)
         {
             return field.BitStartIndex;
         }
