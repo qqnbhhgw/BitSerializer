@@ -127,6 +127,15 @@ internal class BitFieldModel
     public bool HasConstantValue { get; set; }
     public long ConstantValue { get; set; }
     public bool ConstantValueVerify { get; set; } = true;
+    /// <summary>
+    /// True if the user wrote the constant as a `ulong` literal whose value exceeds long.MaxValue
+    /// (e.g. `0x8000_0000_0000_0000UL` or `ulong.MaxValue`). Such constants only have a meaningful
+    /// representation in 64 bits — they MUST be on a BitLength=64 field, otherwise the serializer
+    /// would silently truncate top bits and deserialize verification would always fail (BITS043).
+    /// Tracked separately from the long-stored bit pattern because once we unchecked-cast to long
+    /// the original "high-bit-only-because-unsigned" intent is indistinguishable from a signed -1.
+    /// </summary>
+    public bool ConstantValueIsUnsignedOverflow { get; set; }
 
     // True if the field's nested type (direct nested OR list element type) transitively contains
     // a [BitField(Endian = ...)] override. Computed during this field's analysis using the actual

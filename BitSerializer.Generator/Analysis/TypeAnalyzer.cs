@@ -644,6 +644,14 @@ internal static class TypeAnalyzer
             {
                 var tc = fieldValueAttr.ConstructorArguments[0];
                 long? parsed = null;
+                // Codex review round-3 P2: track whether the source literal was an *unsigned* type
+                // whose value exceeds long.MaxValue. In that case the `unchecked((long)ul)` cast
+                // produces a negative-looking long that would pass the [signedMin, unsignedMax]
+                // range check on a sub-64-bit field (e.g. BitLength=63 + ulong.MaxValue gets -1L,
+                // which trivially fits the signed range). But the actual bit pattern needs 64 bits
+                // and can never fit a <64-bit slot — the serializer would silently truncate top
+                // bits while Verify=true at deserialize would always fail. Reject upfront.
+                bool wasUnsignedOverflow = false;
                 // Codex review P2: accept the FULL ulong range (e.g. 0x8000000000000000UL on a
                 // 64-bit field). Store the wire-bit pattern as long via unchecked cast — emitters
                 // already use `unchecked((T){literal}L)` so the negative-looking long round-trips
@@ -659,7 +667,10 @@ internal static class TypeAnalyzer
                         case int i: parsed = i; break;
                         case uint ui: parsed = ui; break;
                         case long l: parsed = l; break;
-                        case ulong ul: parsed = unchecked((long)ul); break;
+                        case ulong ul:
+                            parsed = unchecked((long)ul);
+                            wasUnsignedOverflow = ul > long.MaxValue;
+                            break;
                     }
                 }
                 else if (tc.Kind == TypedConstantKind.Enum && tc.Value != null)
@@ -673,7 +684,10 @@ internal static class TypeAnalyzer
                         case int i: parsed = i; break;
                         case uint ui: parsed = ui; break;
                         case long l: parsed = l; break;
-                        case ulong ul: parsed = unchecked((long)ul); break;
+                        case ulong ul:
+                            parsed = unchecked((long)ul);
+                            wasUnsignedOverflow = ul > long.MaxValue;
+                            break;
                     }
                 }
                 if (parsed == null)
@@ -688,6 +702,7 @@ internal static class TypeAnalyzer
                 }
                 field.HasConstantValue = true;
                 field.ConstantValue = parsed.Value;
+                field.ConstantValueIsUnsignedOverflow = wasUnsignedOverflow;
                 foreach (var named in fieldValueAttr.NamedArguments)
                 {
                     if (named.Key == "Verify" && named.Value.Value is bool verifyVal)
@@ -1053,6 +1068,28 @@ internal static class TypeAnalyzer
                 // fields the constant must fit in either signed (two's complement) or unsigned range
                 // — accept both because users may write 0x80 on a `sbyte` (= -128) without thinking
                 // about signedness. Reject if the constant is outside [signedMin, unsignedMax].
+                //
+                // Codex review round-3 P2: when the source literal was a `ulong` > long.MaxValue
+                // the unchecked-cast-to-long produced a negative-looking value that trivially
+                // passes the signed range check on any BitLength ≥ 1. We need a separate
+                // bit-pattern check for that case — the actual unsigned value only fits in 64
+                // bits, so any narrower slot must reject it.
+                if (field.ConstantValueIsUnsignedOverflow && field.BitLength < 64)
+                {
+                    // The actual unsigned value is unchecked((ulong)ConstantValue); for diagnostic
+                    // text we want the original unsigned magnitude, not the negative-looking long.
+                    ulong actualUnsigned = unchecked((ulong)field.ConstantValue);
+                    long unsignedMaxForBitLen = (1L << field.BitLength) - 1;
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FieldValueOverflowsBitLength,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, field.BitLength,
+                            $"0x{actualUnsigned:X}UL", 64,
+                            (long)0, unsignedMaxForBitLen)
+                    };
+                }
                 if (field.BitLength < 64)
                 {
                     long signedMin = -(1L << (field.BitLength - 1));

@@ -201,6 +201,7 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.HasConstantValue == y.HasConstantValue
             && x.ConstantValue == y.ConstantValue
             && x.ConstantValueVerify == y.ConstantValueVerify
+            && x.ConstantValueIsUnsignedOverflow == y.ConstantValueIsUnsignedOverflow
             && x.NestedHasEndianOverride == y.NestedHasEndianOverride
             && x.NestedEndianKind == y.NestedEndianKind
             && x.NestedEndianTypeFullName == y.NestedEndianTypeFullName
