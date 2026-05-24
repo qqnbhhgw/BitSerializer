@@ -181,6 +181,9 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.CrcAlgorithmTypeFullName == y.CrcAlgorithmTypeFullName
             && x.CrcInitialValue == y.CrcInitialValue
             && x.CrcValidateOnDeserialize == y.CrcValidateOnDeserialize
+            && x.CrcWholeBuffer == y.CrcWholeBuffer
+            && x.CrcSkipHeadBytes == y.CrcSkipHeadBytes
+            && x.CrcSkipTailBytes == y.CrcSkipTailBytes
             && x.CrcTargetFieldName == y.CrcTargetFieldName
             && x.PadIfShort == y.PadIfShort
             && x.ConsumeRemaining == y.ConsumeRemaining

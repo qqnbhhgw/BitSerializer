@@ -112,6 +112,19 @@ public partial class BitSerializerCrcWholeBufferTests
     }
 
     /// <summary>
+    /// 零长度 CRC 范围（review P2）：SkipHead + SkipTail == totalBytes，_crcEnd == _crcStart。
+    /// 之前 `if (_crcEnd &lt; _crcStart)` 漏掉这种情况，CRC.Update 在空 span 上跑、返回 initial value，
+    /// 静默错误。修复后用 `&lt;=` 应抛异常。
+    /// totalBytes = 2 (just the CRC), SkipHead = 0, SkipTail = 2 → start=0, end=0 → empty.
+    /// </summary>
+    [BitSerialize]
+    public partial class ZeroLengthCrcRangePacket
+    {
+        [BitField(16), BitCrc(typeof(CrcCcitt), WholeBuffer = true, SkipHeadBytes = 0, SkipTailBytes = 2)]
+        public ushort Crc { get; set; }
+    }
+
+    /// <summary>
     /// 嵌套场景（review P1）：外层 1-bit 字段使内层 WholeBuffer 子帧从 bitOffset=1 开始。
     /// 没有字节对齐守卫的话，(bitOffset / 8) 会截断到上一个字节，导致 CRC 范围错位。
     /// 守卫应在序列化时抛 InvalidDataException 而非默默算错。
@@ -347,6 +360,17 @@ public partial class BitSerializerCrcWholeBufferTests
         // totalBytes = 1 + 2 = 3; SkipHead=10, SkipTail=2; effective end = 3-2 = 1, start = 0+10 = 10 → end < start.
         var data = new DegenerateSkipPacket { Header = 0xAB };
         Should.Throw<System.IO.InvalidDataException>(() => BitSerializerMSB.Serialize(data));
+    }
+
+    [Fact]
+    public void ZeroLengthCrcRange_ThrowsInsteadOfReturningInitialValue()
+    {
+        // totalBytes = 2; SkipHead=0, SkipTail=2 → _crcStart=0, _crcEnd=0 → empty span.
+        // Before P2 fix: CRC.Update(empty) returns InitialValue (silent misconfiguration).
+        // After fix: <= guard throws InvalidDataException.
+        var data = new ZeroLengthCrcRangePacket();
+        var ex = Should.Throw<System.IO.InvalidDataException>(() => BitSerializerMSB.Serialize(data));
+        ex.Message.ShouldContain("empty or negative");
     }
 
     #endregion
