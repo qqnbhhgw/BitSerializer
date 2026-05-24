@@ -236,6 +236,22 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor LengthPrefixStringMustBeString = new(
+        "BITS031",
+        "[BitLengthPrefixString] on non-string member",
+        "[BitLengthPrefixString] can only be applied to string members, but '{0}' in '{1}' is not a string",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor LengthPrefixStringInvalidBits = new(
+        "BITS032",
+        "[BitLengthPrefixString] LengthBits must be 8, 16, or 32",
+        "[BitLengthPrefixString] on '{0}' in '{1}' has LengthBits = {2}; only 8, 16, or 32 are supported, matching the byte/ushort/uint length-prefix patterns used by typical protocols",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
     public static readonly DiagnosticDescriptor CrcWholeBufferDoesNotCoverCrcField = new(
         "BITS034",
         "[BitCrc(WholeBuffer = true)] SkipHead/SkipTail must cover the CRC field bytes",

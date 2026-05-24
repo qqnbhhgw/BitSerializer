@@ -46,6 +46,11 @@ internal class BitFieldModel
     public bool IsTerminatedString { get; set; }
     public string StringEncodingName { get; set; } = "ASCII";
 
+    // [BitLengthPrefixString]: encoded as <LengthBits>-bit byte-count + raw encoded bytes (no terminator)
+    public bool IsLengthPrefixString { get; set; }
+    public int LengthPrefixBits { get; set; }
+    public int LengthPrefixMaxBytes { get; set; } // 0 = unlimited
+
     // Manual IBitSerializable support (without [BitSerialize])
     public bool IsManualBitSerializable { get; set; }
 

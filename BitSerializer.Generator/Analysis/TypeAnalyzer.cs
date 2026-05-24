@@ -148,8 +148,9 @@ internal static class TypeAnalyzer
             var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");
             var fixedStringAttr = GetAttribute(member, "BitSerializer.BitFixedStringAttribute");
             var terminatedStringAttr = GetAttribute(member, "BitSerializer.BitTerminatedStringAttribute");
+            var lengthPrefixStringAttr = GetAttribute(member, "BitSerializer.BitLengthPrefixStringAttribute");
 
-            if (bitFieldAttr == null && fixedStringAttr == null && terminatedStringAttr == null)
+            if (bitFieldAttr == null && fixedStringAttr == null && terminatedStringAttr == null && lengthPrefixStringAttr == null)
                 continue;
 
             var field = new BitFieldModel
@@ -200,6 +201,69 @@ internal static class TypeAnalyzer
                 field.MemberTypeName = "string";
                 field.MemberTypeFullName = "string";
                 currentBitIndex += field.BitLength;
+                model.Fields.Add(field);
+                continue;
+            }
+
+            // Handle [BitLengthPrefixString] (standalone, dynamic, no [BitField] required)
+            if (lengthPrefixStringAttr != null)
+            {
+                if (memberType.SpecialType != SpecialType.System_String)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.LengthPrefixStringMustBeString,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name)
+                    };
+                }
+
+                int lengthBits = 16;
+                string encodingName = "UTF8";
+                int maxBytes = 0;
+                if (lengthPrefixStringAttr.ConstructorArguments.Length > 0
+                    && lengthPrefixStringAttr.ConstructorArguments[0].Value is int ctorBits)
+                {
+                    lengthBits = ctorBits;
+                }
+                foreach (var named in lengthPrefixStringAttr.NamedArguments)
+                {
+                    if (named.Key == "LengthBits" && named.Value.Value is int nbits)
+                        lengthBits = nbits;
+                    else if (named.Key == "Encoding" && named.Value.Value is int encVal)
+                        encodingName = encVal == 1 ? "UTF8" : "ASCII";
+                    else if (named.Key == "MaxBytes" && named.Value.Value is int mb)
+                        maxBytes = mb;
+                }
+
+                if (lengthBits != 8 && lengthBits != 16 && lengthBits != 32)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.LengthPrefixStringInvalidBits,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, lengthBits)
+                    };
+                }
+
+                field.IsLengthPrefixString = true;
+                field.LengthPrefixBits = lengthBits;
+                field.LengthPrefixMaxBytes = maxBytes;
+                field.StringEncodingName = encodingName;
+                field.BitLength = 0; // dynamic
+                field.MemberTypeName = "string";
+                field.MemberTypeFullName = "string";
+                model.HasDynamicLength = true;
+
+                // Preserve [BitCrcInclude] so the CRC aggregator sees this field.
+                var crcIncludeAttrLps = GetAttribute(member, "BitSerializer.BitCrcIncludeAttribute");
+                if (crcIncludeAttrLps != null && crcIncludeAttrLps.ConstructorArguments.Length > 0)
+                {
+                    field.CrcTargetFieldName = crcIncludeAttrLps.ConstructorArguments[0].Value as string;
+                }
+
                 model.Fields.Add(field);
                 continue;
             }
@@ -1097,6 +1161,7 @@ internal static class TypeAnalyzer
     private static int GetIncludeFieldStaticBits(BitFieldModel f)
     {
         if (f.IsTerminatedString) return 0;
+        if (f.IsLengthPrefixString) return 0;
         if (f.IsTypeParameter) return 0;
         if (f.IsList)
         {
@@ -1130,6 +1195,7 @@ internal static class TypeAnalyzer
     private static bool IsIncludeFieldDynamic(BitFieldModel f)
     {
         if (f.IsTerminatedString) return true;
+        if (f.IsLengthPrefixString) return true;
         if (f.IsTypeParameter) return true;
         if (f.IsPotentiallyDynamic) return true;
         if (f.IsList)
@@ -1167,6 +1233,10 @@ internal static class TypeAnalyzer
 
         // Terminated string: encoded bytes + 1-byte terminator — always byte-aligned.
         if (f.IsTerminatedString)
+            return FieldAlignmentClass.Aligned;
+
+        // Length-prefix string: lengthBits (∈ {8,16,32}) + encoded bytes — both byte-aligned.
+        if (f.IsLengthPrefixString)
             return FieldAlignmentClass.Aligned;
 
         // Generic type parameter: concrete T not known at compile time.
@@ -1372,6 +1442,9 @@ internal static class TypeAnalyzer
             var termStrAttr = GetAttribute(member, "BitSerializer.BitTerminatedStringAttribute");
             if (termStrAttr != null)
                 continue; // dynamic, contributes 0 to static total
+            var lpsStrAttr = GetAttribute(member, "BitSerializer.BitLengthPrefixStringAttribute");
+            if (lpsStrAttr != null)
+                continue; // dynamic, contributes 0 to static total
 
             var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");
             if (bitFieldAttr == null) continue;
@@ -1549,8 +1622,10 @@ internal static class TypeAnalyzer
             // Check for string attributes
             var fixedStrAttr2 = GetAttribute(member, "BitSerializer.BitFixedStringAttribute");
             var termStrAttr2 = GetAttribute(member, "BitSerializer.BitTerminatedStringAttribute");
+            var lpsStrAttr2 = GetAttribute(member, "BitSerializer.BitLengthPrefixStringAttribute");
 
             if (termStrAttr2 != null) return true; // always dynamic
+            if (lpsStrAttr2 != null) return true; // always dynamic
             if (fixedStrAttr2 != null) continue; // fixed, not dynamic
 
             var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");

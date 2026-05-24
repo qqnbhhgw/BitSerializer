@@ -223,6 +223,19 @@ public class BitSerializerGenerator : IIncrementalGenerator
                 preStatements.Add($"        if (_tsNul_{field.MemberName} >= 0) {tsVar} = {tsVar}.Substring(0, _tsNul_{field.MemberName});");
                 dynamicParts.Add($"({encoding}.GetByteCount({tsVar}) + 1) * 8");
             }
+            else if (field.IsLengthPrefixString)
+            {
+                // GetTotalBitLength must remain side-effect free and matches serializer prediction:
+                // length prefix (LengthBits) + encoded bytes (capped at MaxBytes if > 0). UTF-8
+                // truncation safety doesn't change the total: serializer rounds down to a multi-byte
+                // boundary which is ≤ MaxBytes, so capping at MaxBytes is a safe upper bound here.
+                var encoding = GetEncodingExpression(field.StringEncodingName);
+                var lpsBytesVar = $"_lpsBytes_{field.MemberName}";
+                preStatements.Add($"        int {lpsBytesVar} = {encoding}.GetByteCount(this.{field.MemberName} ?? \"\");");
+                if (field.LengthPrefixMaxBytes > 0)
+                    preStatements.Add($"        if ({lpsBytesVar} > {field.LengthPrefixMaxBytes}) {lpsBytesVar} = {field.LengthPrefixMaxBytes};");
+                dynamicParts.Add($"{field.LengthPrefixBits} + {lpsBytesVar} * 8");
+            }
             else if (field.IsPotentiallyDynamic)
             {
                 dynamicParts.Add($"((global::BitSerializer.IBitSerializable)this.{field.MemberName}).GetTotalBitLength()");

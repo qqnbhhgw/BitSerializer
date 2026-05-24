@@ -71,6 +71,12 @@ internal static class DeserializerEmitter
                 EmitTerminatedStringDeserialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
                 EmitDeserializeConverter(sb, field, memberAccess);
             }
+            else if (field.IsLengthPrefixString)
+            {
+                fieldEndVar = $"_bitIndex_{field.MemberName}";
+                EmitLengthPrefixStringDeserialize(sb, field, helper, memberAccess, fieldEndVar, offsetExpr);
+                EmitDeserializeConverter(sb, field, memberAccess);
+            }
             else if (field.IsList)
             {
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
@@ -723,6 +729,24 @@ internal static class DeserializerEmitter
         sb.AppendLine($"        {memberAccess} = {encoding}.GetString(_strList_{name}.ToArray());");
     }
 
+    /// <summary>
+    /// Reads LengthBits-bit byte count, then that many encoded bytes, decodes via Encoding.
+    /// </summary>
+    private static void EmitLengthPrefixStringDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
+    {
+        var encoding = GetEncodingExpression(field.StringEncodingName);
+        var name = field.MemberName;
+        int lengthBits = field.LengthPrefixBits;
+        string lenType = lengthBits == 8 ? "byte" : lengthBits == 16 ? "ushort" : "uint";
+
+        sb.AppendLine($"        int _strLen_{name} = (int){helper}.ValueLength<{lenType}>(bytes, {offsetExpr}, {lengthBits});");
+        sb.AppendLine($"        byte[] _strBytes_{name} = new byte[_strLen_{name}];");
+        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _strLen_{name}; _si_{name}++)");
+        sb.AppendLine($"            _strBytes_{name}[_si_{name}] = {helper}.ValueLength<byte>(bytes, {offsetExpr} + {lengthBits} + _si_{name} * 8, 8);");
+        sb.AppendLine($"        {memberAccess} = {encoding}.GetString(_strBytes_{name});");
+        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {lengthBits} + _strLen_{name} * 8;");
+    }
+
     private static string GetEncodingExpression(string encodingName)
     {
         return encodingName == "UTF8"
@@ -761,6 +785,7 @@ internal static class DeserializerEmitter
         return field.IsTypeParameter
                || field.IsPotentiallyDynamic
                || field.IsTerminatedString
+               || field.IsLengthPrefixString
                || (field.IsList && !field.FixedCount.HasValue)
                || (field.IsList && field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0)
                || (field.IsList && field.ListElementHasDynamicLength);
@@ -769,6 +794,11 @@ internal static class DeserializerEmitter
     private static int GetStaticFieldEnd(BitFieldModel field)
     {
         if (field.IsTerminatedString)
+        {
+            return field.BitStartIndex;
+        }
+
+        if (field.IsLengthPrefixString)
         {
             return field.BitStartIndex;
         }
