@@ -429,4 +429,126 @@ public partial class BitSerializerV011Tests
     }
 
     #endregion
+
+    #region Codex review fixes
+
+    /// <summary>
+    /// Codex P2: 接受 0x8000_0000_0000_0000UL 这样的 64 位常量（之前 `ul > long.MaxValue` 被 BITS045 拒）
+    /// </summary>
+    [BitSerialize]
+    public partial class FullUlongMagic
+    {
+        [BitField(64), BitFieldValue(unchecked((long)0x8000000000000000UL))]
+        public ulong Magic { get; set; }
+
+        [BitField(8)] public byte Tail { get; set; }
+    }
+
+    [Fact]
+    public void FieldValue_AcceptsFullUlongRange()
+    {
+        var src = new FullUlongMagic { Tail = 0xAB };
+        var bytes = BitSerializerMSB.Serialize(src);
+        // 0x8000_0000_0000_0000 在 MSB 下高位字节是 0x80
+        bytes[0].ShouldBe((byte)0x80);
+        for (int i = 1; i < 8; i++) bytes[i].ShouldBe((byte)0);
+        bytes[8].ShouldBe((byte)0xAB);
+
+        var dst = BitSerializerMSB.Deserialize<FullUlongMagic>(bytes);
+        dst.Magic.ShouldBe(0x8000000000000000UL);
+        dst.Tail.ShouldBe((byte)0xAB);
+    }
+
+    /// <summary>
+    /// Codex P2: [BitFieldValue] + [BitCrcInclude] 允许共存（典型 DMI/Modbus 帧头被 CRC 覆盖的模式）
+    /// </summary>
+    [BitSerialize]
+    public partial class FixedHeaderCovedByCrc
+    {
+        [BitField(8), BitFieldValue(0x7E)]
+        [BitCrcInclude(nameof(Crc))]
+        public byte FrameStart { get; set; }
+
+        [BitField(8)]
+        [BitCrcInclude(nameof(Crc))]
+        public byte Payload { get; set; }
+
+        [BitField(16)]
+        [BitCrc(typeof(global::BitSerializer.CrcAlgorithms.Crc16Arc))]
+        public ushort Crc { get; set; }
+    }
+
+    [Fact]
+    public void FieldValue_CombinesWithCrcInclude_NoBITS044()
+    {
+        // 关键：编译过即代表 BITS044 没误报。运行一次确保 wire 输出对。
+        var src = new FixedHeaderCovedByCrc { Payload = 0x42 };
+        var bytes = BitSerializerMSB.Serialize(src);
+        bytes[0].ShouldBe((byte)0x7E);
+        bytes[1].ShouldBe((byte)0x42);
+        var dst = BitSerializerMSB.Deserialize<FixedHeaderCovedByCrc>(bytes);
+        dst.FrameStart.ShouldBe((byte)0x7E);
+        dst.Payload.ShouldBe((byte)0x42);
+    }
+
+    /// <summary>
+    /// Codex P1: 派生 getter + 空 setter 的 LIST 形态，dependent 在 related 之前声明应被 BITS053 拒绝。
+    /// 这里只能用 generator 拒绝场景，无法在运行时直接验证 ── 用 reverse 顺序检测能否拒绝。
+    /// 注意：BITS053 是 Error，故不能放编译可过的类型；用 Roslyn 测试代替更可靠，
+    /// 这里改测 *正确顺序* 在新算法下仍工作。
+    /// </summary>
+    [BitSerialize]
+    public partial class CorrectOrderingStillWorks
+    {
+        [BitField(8)] public byte Count { get; set; }
+
+        [BitField(8), BitFieldRelated(nameof(Count))]
+        public byte[] Items { get; set; } = System.Array.Empty<byte>();
+    }
+
+    [Fact]
+    public void RelatedField_DeclaredBeforeDependent_StillWorksUnderNewCacheAlgorithm()
+    {
+        // 验证 emittedWireLocals 增量算法在正向顺序下行为不变
+        var src = new CorrectOrderingStillWorks { Items = new byte[] { 1, 2, 3 } };
+        var bytes = BitSerializerMSB.Serialize(src);
+        bytes[0].ShouldBe((byte)3);
+        var dst = BitSerializerMSB.Deserialize<CorrectOrderingStillWorks>(bytes);
+        dst.Count.ShouldBe((byte)3);
+        dst.Items.Length.ShouldBe(3);
+        dst.Items[2].ShouldBe((byte)3);
+    }
+
+    /// <summary>
+    /// Codex P2: [BitLengthFieldString] 用 sbyte 作长度字段，wire 上 0xC8 表示 200 字节。
+    /// 修复前：sbyte 读回 -56，触发 `_lfsLenRaw < 0` 抛 InvalidDataException 拒绝合法 wire。
+    /// 修复后：通过 (byte)(sbyte) 转 200 → long 200，正确读到 200 字节。
+    /// </summary>
+    [BitSerialize]
+    public partial class SignedLengthCarrier
+    {
+        [BitField(8)] public sbyte NameLength { get; set; }
+
+        [BitLengthFieldString(nameof(NameLength), Encoding = BitStringEncoding.UTF8)]
+        public string Name { get; set; } = "";
+    }
+
+    [Fact]
+    public void LengthFieldString_SignedCarrier_ReinterpretsAsUnsigned()
+    {
+        // 构造一个 200 字节字符串
+        var longStr = new string('A', 200);
+        var src = new SignedLengthCarrier { Name = longStr };
+        var bytes = BitSerializerMSB.Serialize(src);
+        bytes[0].ShouldBe((byte)0xC8); // 200
+        bytes.Length.ShouldBe(1 + 200);
+
+        // 反序列化：修复前会抛 InvalidDataException(< 0)，修复后正常
+        var dst = BitSerializerMSB.Deserialize<SignedLengthCarrier>(bytes);
+        dst.Name.Length.ShouldBe(200);
+        dst.Name[0].ShouldBe('A');
+        dst.Name[199].ShouldBe('A');
+    }
+
+    #endregion
 }

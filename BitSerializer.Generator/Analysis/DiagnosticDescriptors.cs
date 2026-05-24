@@ -420,4 +420,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor RelatedFieldDeclaredAfterDependent = new(
+        "BITS053",
+        "[BitFieldRelated] target field must be declared BEFORE the dependent field",
+        "Member '{0}' in '{1}' references '{2}' via [BitFieldRelated], but '{2}' is declared AFTER '{0}'. Deserialization reads fields in declaration order, so when '{0}' tries to read '{2}' as a count / discriminator / byte-budget the carrier is still at its default value (the list ends up wrong-sized, the poly switch picks the wrong case, etc.). Move the declaration of '{2}' above '{0}'",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

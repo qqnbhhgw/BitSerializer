@@ -623,6 +623,10 @@ internal static class TypeAnalyzer
             {
                 var tc = fieldValueAttr.ConstructorArguments[0];
                 long? parsed = null;
+                // Codex review P2: accept the FULL ulong range (e.g. 0x8000000000000000UL on a
+                // 64-bit field). Store the wire-bit pattern as long via unchecked cast — emitters
+                // already use `unchecked((T){literal}L)` so the negative-looking long round-trips
+                // back to the user's intended unsigned bit pattern on serialize/deserialize.
                 if (tc.Kind == TypedConstantKind.Primitive && tc.Value != null)
                 {
                     switch (tc.Value)
@@ -634,7 +638,7 @@ internal static class TypeAnalyzer
                         case int i: parsed = i; break;
                         case uint ui: parsed = ui; break;
                         case long l: parsed = l; break;
-                        case ulong ul when ul <= long.MaxValue: parsed = (long)ul; break;
+                        case ulong ul: parsed = unchecked((long)ul); break;
                     }
                 }
                 else if (tc.Kind == TypedConstantKind.Enum && tc.Value != null)
@@ -648,7 +652,7 @@ internal static class TypeAnalyzer
                         case int i: parsed = i; break;
                         case uint ui: parsed = ui; break;
                         case long l: parsed = l; break;
-                        case ulong ul when ul <= long.MaxValue: parsed = (long)ul; break;
+                        case ulong ul: parsed = unchecked((long)ul); break;
                     }
                 }
                 if (parsed == null)
@@ -1046,9 +1050,12 @@ internal static class TypeAnalyzer
                     }
                 }
 
+                // Codex review P2: do NOT list [BitCrcInclude] as a conflict. CRC-inclusion just
+                // records that this field's bytes participate in a CRC range; it does not overwrite
+                // the field's wire bytes. Combining [BitFieldValue(0x7E)] + [BitCrcInclude] is the
+                // canonical "fixed magic header covered by CRC" pattern in DMI/Modbus frames.
                 string? conflict = null;
                 if (field.IsCrcResult) conflict = "[BitCrc]";
-                else if (field.CrcTargetFieldName != null) conflict = "[BitCrcInclude]";
                 else if (field.RelatedMemberName != null) conflict = "[BitFieldRelated]";
                 else if (field.FixedCount.HasValue) conflict = "[BitFieldCount]";
                 if (conflict != null)
@@ -1373,6 +1380,45 @@ internal static class TypeAnalyzer
                             f.MemberName, symbol.Name, f.RelatedMemberName ?? "")
                     };
                 }
+            }
+        }
+
+        // Codex review P1: BITS053 — every [BitFieldRelated] (count / discriminator / byte-budget)
+        // and [BitLengthFieldString] dependent reads the related field's wire value at
+        // deserialize time, but deserialization runs in declaration order. If the related field is
+        // declared AFTER the dependent, the wire value isn't on the property yet (and the
+        // generator's `_wire_<name>` local doesn't exist) — the dependent silently uses the
+        // default value (0 / null) and produces an empty list / wrong poly case / mis-sized
+        // payload. BITS052 already covers the nested-ByteLength sub-case; this is the general
+        // gate for list count / list ByteLength / polymorphic discriminator / length-field-string.
+        for (int dependentIdx = 0; dependentIdx < model.Fields.Count; dependentIdx++)
+        {
+            var dep = model.Fields[dependentIdx];
+            string? referencedName = null;
+            if (dep.RelatedMemberName != null
+                && (dep.IsList || dep.IsPolymorphic))
+            {
+                referencedName = dep.RelatedMemberName;
+            }
+            else if (dep.IsLengthFieldString && dep.LengthFieldMemberName != null)
+            {
+                // LengthFieldString's own BITS047 already enforces ordering via model.Fields.Find
+                // at parse time, but emit this check too so the diagnostic IDs are consistent for
+                // downstream tooling.
+                referencedName = dep.LengthFieldMemberName;
+            }
+            if (referencedName == null) continue;
+
+            int relatedIdx = model.Fields.FindIndex(x => x.MemberName == referencedName);
+            if (relatedIdx >= 0 && relatedIdx >= dependentIdx)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.RelatedFieldDeclaredAfterDependent,
+                        symbol.Locations.FirstOrDefault(),
+                        dep.MemberName, symbol.Name, referencedName)
+                };
             }
         }
 
