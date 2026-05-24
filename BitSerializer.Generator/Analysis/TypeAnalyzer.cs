@@ -162,6 +162,27 @@ internal static class TypeAnalyzer
                 BitStartIndex = currentBitIndex,
             };
 
+            // Codex review (round-2) P2: [BitFieldValue] is only meaningful on numeric/enum scalars,
+            // but all four string variants below `continue` BEFORE the per-field BitFieldValue
+            // parsing block runs (around line ~620). Without this upfront guard a user writing
+            // `[BitLengthFieldString(...), BitFieldValue(0x7E)] string Header { get; set; }`
+            // gets neither constant pinning NOR a diagnostic — the attribute is silently dropped.
+            // Reject with BITS042 (which already covers "non-scalar field carries [BitFieldValue]")
+            // so the failure mode is loud at compile time.
+            if ((fixedStringAttr != null || terminatedStringAttr != null
+                 || lengthPrefixStringAttr != null || lengthFieldStringAttr != null)
+                && GetAttribute(member, "BitSerializer.BitFieldValueAttribute") != null)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.FieldValueRequiresNumericScalar,
+                        member.Locations.FirstOrDefault(),
+                        member.Name, symbol.Name,
+                        false, true, false, false, false) // IsList, IsString, IsNested, IsPoly, IsTypeParameter
+                };
+            }
+
             // Handle [BitFixedString] (standalone, no [BitField] required)
             if (fixedStringAttr != null)
             {

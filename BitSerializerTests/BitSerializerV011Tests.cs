@@ -533,6 +533,32 @@ public partial class BitSerializerV011Tests
         public string Name { get; set; } = "";
     }
 
+    /// <summary>
+    /// Codex round-2 P2: 之前 [BitFieldValue] 贴到 LengthFieldString 上会被 continue 静默吞掉。
+    /// 现在前置守卫拒绝该组合并发 BITS042。CSharp source generator 无法在 xUnit 运行时验证
+    /// "不通过编译" 的场景（编译期就失败了），所以这里只做"组合存在编译失败"的 sanity check ——
+    /// 通过把组合用法放到一个独立 *.fail.cs 旁边再单独测会太重，本仓库没有这套基建。
+    /// 改成测同一守卫的另一面：合法组合（不带 BitFieldValue 的 LengthFieldString）仍正常工作。
+    /// </summary>
+    [BitSerialize]
+    public partial class StringWithoutFieldValueStillWorks
+    {
+        [BitField(8)] public byte Len { get; set; }
+        [BitLengthFieldString(nameof(Len), Encoding = BitStringEncoding.UTF8)]
+        public string Text { get; set; } = "";
+    }
+
+    [Fact]
+    public void StringWithoutFieldValue_StillRoundtrips()
+    {
+        // 这条主要证明前置守卫没误伤合法组合
+        var src = new StringWithoutFieldValueStillWorks { Text = "hi" };
+        var bytes = BitSerializerMSB.Serialize(src);
+        bytes[0].ShouldBe((byte)2);
+        var dst = BitSerializerMSB.Deserialize<StringWithoutFieldValueStillWorks>(bytes);
+        dst.Text.ShouldBe("hi");
+    }
+
     [Fact]
     public void LengthFieldString_SignedCarrier_ReinterpretsAsUnsigned()
     {
