@@ -1453,8 +1453,15 @@ internal static class TypeAnalyzer
         {
             var dep = model.Fields[dependentIdx];
             string? referencedName = null;
+            // Codex review round-5 P2: include nested-type and type-parameter ByteLength carriers
+            // (T4). The original condition `IsList || IsPolymorphic` missed them, so a
+            // [BitFieldRelated(nameof(Len), ByteLength)] on a nested [BitSerialize] type could pair
+            // with [BitFieldValue(...)] on Len and silently corrupt wire output (backfill writes
+            // real byte count, primitive write overwrites with constant). The same broad set used
+            // by ComputeReferencedFieldNames in DeserializerEmitter — keep them in sync.
             if (dep.RelatedMemberName != null
-                && (dep.IsList || dep.IsPolymorphic))
+                && (dep.IsList || dep.IsPolymorphic
+                    || ((dep.IsNestedType || dep.IsTypeParameter) && dep.RelationKind == 1)))
             {
                 referencedName = dep.RelatedMemberName;
             }
@@ -1496,6 +1503,7 @@ internal static class TypeAnalyzer
                 {
                     string referenceKind = dep.IsLengthFieldString ? "string byte-count carrier"
                         : dep.IsPolymorphic ? "polymorphic discriminator"
+                        : ((dep.IsNestedType || dep.IsTypeParameter) && dep.RelationKind == 1) ? "nested byte-length carrier"
                         : (dep.RelationKind == 1 ? "byte-length carrier" : "count carrier");
                     return new AnalyzeResult
                     {
