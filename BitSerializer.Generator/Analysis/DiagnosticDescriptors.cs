@@ -284,4 +284,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor LengthPrefixStringAfterDynamicContent = new(
+        "BITS039",
+        "[BitLengthPrefixString] cannot follow a member whose runtime size may not be byte-aligned",
+        "[BitLengthPrefixString] on '{0}' in '{1}' is preceded by '{2}' which has runtime-variable bit length and is not provably byte-aligned (e.g. dynamic list of sub-byte elements, type parameter, polymorphic with non-byte-aligned concrete types, or a dynamic [BitSerialize] base). The static BITS038 check assumes the field starts on a byte boundary, but at runtime '{2}' can shift the offset by a non-byte multiple, breaking wire compatibility. Move the length-prefix string before any non-byte-aligned dynamic content, or restructure the preceding member so its runtime bit count is always a multiple of 8",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

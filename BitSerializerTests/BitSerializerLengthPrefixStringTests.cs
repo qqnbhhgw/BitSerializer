@@ -60,6 +60,20 @@ public partial class BitSerializerLengthPrefixStringTests
         [BitField(8)] public byte Trailer { get; set; }
     }
 
+    /// <summary>
+    /// Review round-10 P2 正向：LengthPrefixString 在 byte-aligned 动态字段 (List&lt;byte&gt;)
+    /// 之后合法 — 该 list 每元素 8 bit，运行时偏移仍是 8 倍数，BITS039 不应误报。
+    /// </summary>
+    [BitSerialize]
+    public partial class LpsAfterByteAlignedDynamicList
+    {
+        [BitField(8)] public byte Count { get; set; }
+        [BitField(8), BitFieldRelated(nameof(Count))]
+        public List<byte> Prelude { get; set; } = new();
+        [BitLengthPrefixString(16)]
+        public string Name { get; set; } = "";
+    }
+
     #endregion
 
     [Fact]
@@ -243,6 +257,27 @@ public partial class BitSerializerLengthPrefixStringTests
         byte[] atCap = new byte[] { 0x00, 0x04, 0x41, 0x42, 0x43, 0x44 };
         var result = BitSerializerMSB.Deserialize<Utf8WithMaxBytes>(atCap);
         result.Bounded.ShouldBe("ABCD");
+    }
+
+    [Fact]
+    public void LpsAfter_ByteAligned_DynamicList_Compiles_And_Round_Trips()
+    {
+        var original = new LpsAfterByteAlignedDynamicList
+        {
+            Prelude = new List<byte> { 0xAA, 0xBB, 0xCC },
+            Name = "Hello",
+        };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+
+        // Layout: Count=03 | Prelude=AA BB CC | NameLen=00 05 | Name="Hello"
+        bytes.Length.ShouldBe(1 + 3 + 2 + 5);
+        bytes[0].ShouldBe((byte)0x03);
+        bytes[4].ShouldBe((byte)0x00); bytes[5].ShouldBe((byte)0x05);
+        bytes[6].ShouldBe((byte)'H');
+
+        var result = BitSerializerMSB.Deserialize<LpsAfterByteAlignedDynamicList>(bytes);
+        result.Prelude.Count.ShouldBe(3);
+        result.Name.ShouldBe("Hello");
     }
 
     [Fact]

@@ -261,9 +261,19 @@ internal static class TypeAnalyzer
                     };
                 }
 
-                // BITS038 (review round-9 P2): a length-prefix string is a byte stream (prefix + raw
-                // bytes), so writing it across a sub-byte boundary breaks wire compatibility with any
-                // byte-aligned reader. Require the field to start on a byte boundary.
+                // BITS038 (review round-9 P2 + round-10 P2): a length-prefix string is a byte stream
+                // (prefix + raw bytes), so writing it across a sub-byte boundary breaks wire
+                // compatibility with any byte-aligned reader. Two checks:
+                //
+                // (a) Static layout: currentBitIndex (the field's nominal offset) must be a multiple
+                //     of 8. Catches sub-byte predecessors with fixed widths (e.g. `[BitField(1)]`).
+                //
+                // (b) Runtime layout: any preceding dynamic field whose runtime bit count is not
+                //     provably a multiple of 8 (e.g. dynamic list of 1-bit elements, runtime-sized
+                //     polymorphic auto-length, manual IBitSerializable with unknown width) would
+                //     shift this field to a non-byte-aligned offset at runtime — defeating BITS038's
+                //     wire-compatibility guarantee. Conservative base-type dynamic length is rejected
+                //     for the same reason (can't recursively prove byte-aligned size).
                 if ((currentBitIndex % 8) != 0)
                 {
                     return new AnalyzeResult
@@ -272,6 +282,32 @@ internal static class TypeAnalyzer
                             DiagnosticDescriptors.LengthPrefixStringNotByteAligned,
                             member.Locations.FirstOrDefault(),
                             member.Name, symbol.Name, currentBitIndex)
+                    };
+                }
+                string? lpsLeadingCulprit = null;
+                if (model.BaseHasDynamicLength)
+                    lpsLeadingCulprit = "base type";
+                else
+                {
+                    foreach (var prev in model.Fields)
+                    {
+                        if (!IsIncludeFieldDynamic(prev)) continue;
+                        var cls = ClassifyIncludeAlignment(prev, symbol.ContainingAssembly);
+                        if (cls != FieldAlignmentClass.Aligned)
+                        {
+                            lpsLeadingCulprit = prev.MemberName;
+                            break;
+                        }
+                    }
+                }
+                if (lpsLeadingCulprit != null)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.LengthPrefixStringAfterDynamicContent,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, lpsLeadingCulprit)
                     };
                 }
 
@@ -1235,7 +1271,9 @@ internal static class TypeAnalyzer
             // runtime-offset path (EmitListSerialize "Dynamic: use runtime offset tracking via interface
             // dispatch"), so the trailing fields' real start can drift. WholeBuffer CRC relies on this
             // predicate to detect "dynamic-after-CRC" (BITS035), so the omission would let such a list
-            // sit after the CRC and silently corrupt the CRC range.
+            // sit after the CRC and silently corrupt the CRC range. The same predicate gates the
+            // LengthPrefixString byte-alignment classifier (BITS038/BITS039), so keeping it correct
+            // here also keeps the dynamic-offset drift detection sound.
             if (f.ListElementIsManualBitSerializable && f.ListElementBitLength == 0) return true;
         }
         return false;
