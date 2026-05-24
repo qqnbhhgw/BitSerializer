@@ -876,12 +876,48 @@ internal static class TypeAnalyzer
                         };
                     }
 
+                    // BITS034: CRC field's static byte slot must be fully inside SkipHead or SkipTail.
+                    // Otherwise CRC.Update() reads the CRC field's own bytes (uninitialized or stale)
+                    // and produces protocol-invalid output (review P2 — codex flagged 16-bit CRC + SkipTail=1).
+                    //
+                    // The static layout suffices here:
+                    // - SkipHead is anchored at bitOffset, independent of runtime tail growth.
+                    // - SkipTail is anchored at runtime end; for a tail-protected CRC the BITS035 check
+                    //   below ensures no dynamic content sits after the CRC, so runtime end equals static
+                    //   end and (model.TotalBitLength - crcField.BitStartIndex) gives the true distance.
+                    int crcSlotStartByte = crcField.BitStartIndex / 8;
+                    int crcSlotEndByteExcl = (crcField.BitStartIndex + crcField.BitLength) / 8;
+                    int staticTotalBytes = model.TotalBitLength / 8;
+                    int bytesFromCrcStartToStaticEnd = (model.TotalBitLength - crcField.BitStartIndex) / 8;
+
+                    bool crcFullyInHead = crcSlotEndByteExcl <= crcField.CrcSkipHeadBytes;
+                    bool crcFullyInTail = crcField.CrcSkipTailBytes >= bytesFromCrcStartToStaticEnd;
+
+                    if (!crcFullyInHead && !crcFullyInTail)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.CrcWholeBufferDoesNotCoverCrcField,
+                                symbol.Locations.FirstOrDefault(),
+                                crcField.MemberName, symbol.Name,
+                                crcField.CrcSkipHeadBytes, crcField.CrcSkipTailBytes,
+                                crcSlotStartByte, crcSlotEndByteExcl,
+                                staticTotalBytes,
+                                bytesFromCrcStartToStaticEnd)
+                        };
+                    }
+
                     // BITS035: WholeBuffer's CRC slice end is computed from the runtime buffer end.
                     // If any field after the CRC is dynamic-length, the runtime tail grows past the
-                    // static layout and the static SkipTailBytes no longer guarantees the CRC slot is
-                    // excluded from the CRC range (review round-4 P1 — fresh evidence vs the earlier
-                    // overlap concern: BITS034's bytesFromCrcStartToStaticEnd is static, but runtime
-                    // CRC end is dynamic).
+                    // static layout and the static SkipTailBytes can no longer guarantee the CRC slot
+                    // is excluded from the CRC range.
+                    //
+                    // Review round-5 follow-up P1: this is ONLY unsafe for tail-protected CRCs. When
+                    // the CRC slot lives in SkipHead (CRC at the start of the frame), the CRC range is
+                    // [SkipHead, runtime_end - SkipTail) — it can grow rightward with trailing dynamic
+                    // fields without ever including the CRC slot. Skip the BITS035 check in that case.
+                    if (!crcFullyInHead)
                     {
                         int crcIdx = model.Fields.IndexOf(crcField);
                         string? trailingDynamicCulprit = null;
@@ -901,38 +937,6 @@ internal static class TypeAnalyzer
                                     DiagnosticDescriptors.CrcWholeBufferTrailingDynamicField,
                                     symbol.Locations.FirstOrDefault(),
                                     crcField.MemberName, symbol.Name, trailingDynamicCulprit)
-                            };
-                        }
-                    }
-
-                    // BITS034: CRC field's static byte slot must be fully inside SkipHead or SkipTail.
-                    // Otherwise CRC.Update() reads the CRC field's own bytes (uninitialized or stale)
-                    // and produces protocol-invalid output (review P2 — codex flagged 16-bit CRC + SkipTail=1).
-                    //
-                    // We compute on the static layout. BITS035 above guarantees no dynamic content follows
-                    // the CRC, so the distance from CRC start to runtime end equals
-                    // (model.TotalBitLength - crcField.BitStartIndex) statically and the check is sound.
-                    {
-                        int crcSlotStartByte = crcField.BitStartIndex / 8;
-                        int crcSlotEndByteExcl = (crcField.BitStartIndex + crcField.BitLength) / 8;
-                        int staticTotalBytes = model.TotalBitLength / 8;
-                        int bytesFromCrcStartToStaticEnd = (model.TotalBitLength - crcField.BitStartIndex) / 8;
-
-                        bool crcFullyInHead = crcSlotEndByteExcl <= crcField.CrcSkipHeadBytes;
-                        bool crcFullyInTail = crcField.CrcSkipTailBytes >= bytesFromCrcStartToStaticEnd;
-
-                        if (!crcFullyInHead && !crcFullyInTail)
-                        {
-                            return new AnalyzeResult
-                            {
-                                Diagnostic = Diagnostic.Create(
-                                    DiagnosticDescriptors.CrcWholeBufferDoesNotCoverCrcField,
-                                    symbol.Locations.FirstOrDefault(),
-                                    crcField.MemberName, symbol.Name,
-                                    crcField.CrcSkipHeadBytes, crcField.CrcSkipTailBytes,
-                                    crcSlotStartByte, crcSlotEndByteExcl,
-                                    staticTotalBytes,
-                                    bytesFromCrcStartToStaticEnd)
                             };
                         }
                     }

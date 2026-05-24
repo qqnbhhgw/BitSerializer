@@ -208,6 +208,21 @@ public partial class BitSerializerCrcWholeBufferTests
         public List<FixedWidthManualItem> Items { get; set; } = new();
     }
 
+    /// <summary>
+    /// Review round-6 P1：CRC slot 在 SkipHead 区，trailing dynamic list 合法。
+    /// CRC range = [SkipHead, runtime_end - SkipTail) — 跟着 runtime tail 一起扩展，但永远
+    /// 不会回头包含 CRC slot。BITS035 应跳过这种配置。
+    /// </summary>
+    [BitSerialize]
+    public partial class CrcAtHead_With_TrailingDynamicList
+    {
+        [BitField(16), BitCrc(typeof(CrcCcitt), WholeBuffer = true, SkipHeadBytes = 2)]
+        public ushort Crc { get; set; }
+        [BitField(8)] public byte Count { get; set; }
+        [BitField(8), BitFieldRelated(nameof(Count))]
+        public List<byte> Items { get; set; } = new();
+    }
+
     #endregion
 
     #region Basic WholeBuffer
@@ -456,6 +471,35 @@ public partial class BitSerializerCrcWholeBufferTests
         var result = BitSerializerMSB.Deserialize<CrcBeforeFixedWidthManualList>(bytes);
         result.Items.Count.ShouldBe(3);
         result.Items[2].A.ShouldBe((byte)0x33);
+    }
+
+    [Fact]
+    public void CrcAtHead_With_TrailingDynamic_RoundTrips()
+    {
+        // BITS035 should NOT fire here: CRC slot lives in SkipHead, so trailing dynamic list growing
+        // the tail rightward never wraps back into the CRC slot.
+        var original = new CrcAtHead_With_TrailingDynamicList
+        {
+            Items = new List<byte> { 0x11, 0x22, 0x33, 0x44 },
+        };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+
+        // Layout: CRC[0..2) | Count=04 [2] | Items=11 22 33 44 [3..7)
+        bytes.Length.ShouldBe(7);
+        bytes[2].ShouldBe((byte)0x04);
+
+        // CRC covers bytes[2..7) = Count + 4 items.
+        var algo = new CrcCcitt();
+        algo.Reset(0);
+        algo.Update(new byte[] { 0x04, 0x11, 0x22, 0x33, 0x44 });
+        ushort want = (ushort)algo.Result;
+        ((bytes[0] << 8) | bytes[1]).ShouldBe(want);
+
+        var result = BitSerializerMSB.Deserialize<CrcAtHead_With_TrailingDynamicList>(bytes);
+        result.Crc.ShouldBe(want);
+        result.Count.ShouldBe((byte)4);
+        result.Items.Count.ShouldBe(4);
+        result.Items[3].ShouldBe((byte)0x44);
     }
 
     [Fact]
