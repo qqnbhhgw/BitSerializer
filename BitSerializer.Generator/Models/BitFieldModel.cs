@@ -7,6 +7,12 @@ internal class PolyMapping
     public int TypeId { get; set; }
     public string ConcreteTypeName { get; set; } = "";
     public string ConcreteTypeFullName { get; set; } = "";
+    /// <summary>
+    /// True if the concrete [BitPoly] target type transitively contains a [BitField(Endian = ...)]
+    /// override. Computed during field analysis from the actual ITypeSymbol so it sees types in
+    /// referenced assemblies, not just the current ContainingAssembly (review round-12 P1).
+    /// </summary>
+    public bool HasEndianOverride { get; set; }
 }
 
 internal class BitFieldModel
@@ -97,4 +103,15 @@ internal class BitFieldModel
     // Stored as int to avoid a Generator-side reference to the runtime BitEndian enum.
     // Only meaningful for numeric/enum fields that are byte-aligned with bit width ∈ {8,16,32,64}.
     public int Endian { get; set; }
+
+    // True if the field's nested type (direct nested OR list element type) transitively contains
+    // a [BitField(Endian = ...)] override. Computed during this field's analysis using the actual
+    // ITypeSymbol, so types in referenced assemblies are seen too — review round-12 P1 closed the
+    // ContainingAssembly-only gap in FindNestedEndianTypeForField. Polymorphic mappings carry their
+    // own per-target flag in PolyMapping.HasEndianOverride.
+    public bool NestedHasEndianOverride { get; set; }
+    /// <summary>"nested member" / "list element" — human-readable culprit kind for diagnostics.</summary>
+    public string? NestedEndianKind { get; set; }
+    /// <summary>Fully qualified name of the nested/element type that carries the Endian override (for diagnostic text).</summary>
+    public string? NestedEndianTypeFullName { get; set; }
 }

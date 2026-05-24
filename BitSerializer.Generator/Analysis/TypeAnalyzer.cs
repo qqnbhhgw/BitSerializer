@@ -557,7 +557,10 @@ internal static class TypeAnalyzer
                         {
                             TypeId = typeId,
                             ConcreteTypeName = concreteType.Name,
-                            ConcreteTypeFullName = concreteType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+                            ConcreteTypeFullName = concreteType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                            // Compute Endian-override flag from the actual ITypeSymbol so types in
+                            // referenced assemblies are seen (review round-12 P1).
+                            HasEndianOverride = HasEndianOverrideRecursive(concreteType, new HashSet<string>())
                         });
                     }
                 }
@@ -588,6 +591,14 @@ internal static class TypeAnalyzer
                         field.ListElementHasDynamicLength = true;
                     if (HasOwnContextMethods(elementType!))
                         field.ListElementHasOwnContext = true;
+                    // Endian-override propagation from actual element symbol (review round-12 P1):
+                    // covers element types in referenced assemblies, not just ContainingAssembly.
+                    if (HasEndianOverrideRecursive(elementType!, new HashSet<string>()))
+                    {
+                        field.NestedHasEndianOverride = true;
+                        field.NestedEndianKind = "list element";
+                        field.NestedEndianTypeFullName = field.ListElementTypeFullName;
+                    }
                 }
                 else if (ImplementsBitSerializable(elementType!))
                 {
@@ -728,6 +739,13 @@ internal static class TypeAnalyzer
                 }
                 if (HasOwnContextMethods(memberType))
                     field.NestedHasOwnContext = true;
+                // Endian-override propagation from actual nested symbol (review round-12 P1).
+                if (HasEndianOverrideRecursive(memberType, new HashSet<string>()))
+                {
+                    field.NestedHasEndianOverride = true;
+                    field.NestedEndianKind = "nested member";
+                    field.NestedEndianTypeFullName = field.MemberTypeFullName;
+                }
                 currentBitIndex += field.BitLength;
             }
             else if (memberType is ITypeParameterSymbol typeParam &&
@@ -826,7 +844,26 @@ internal static class TypeAnalyzer
             string? nestedKind = null; // human-readable "nested member" / "list element" / "polymorphic mapping"
             if (!isDirectEndian)
             {
-                nestedEndianTypeFullName = FindNestedEndianTypeForField(f, symbol.ContainingAssembly, out nestedKind);
+                // Use the per-field flags computed during this field's analysis from the actual
+                // ITypeSymbol — that covers types in referenced assemblies (review round-12 P1).
+                // ContainingAssembly-only reverse lookup is gone.
+                if (f.NestedHasEndianOverride)
+                {
+                    nestedKind = f.NestedEndianKind;
+                    nestedEndianTypeFullName = f.NestedEndianTypeFullName;
+                }
+                else if (f.IsPolymorphic && f.PolyMappings != null)
+                {
+                    foreach (var mapping in f.PolyMappings)
+                    {
+                        if (mapping.HasEndianOverride)
+                        {
+                            nestedKind = "polymorphic mapping";
+                            nestedEndianTypeFullName = mapping.ConcreteTypeFullName;
+                            break;
+                        }
+                    }
+                }
             }
             bool isNestedTransitive = nestedEndianTypeFullName != null;
             if (!isDirectEndian && !isNestedTransitive) continue;
@@ -1375,65 +1412,11 @@ internal static class TypeAnalyzer
     }
 
     /// <summary>
-    /// If <paramref name="field"/> embeds a [BitSerialize] type that transitively contains a
-    /// [BitField(Endian = ...)] override, returns the inner type's display name and the kind of
-    /// embedding ("nested member" / "list element" / "polymorphic mapping"). Returns null when no
-    /// such type exists or when the embedded type is opaque to us (manual IBitSerializable, generic
-    /// type parameter, or [BitPoly] mappings we cannot resolve in the current assembly).
-    /// </summary>
-    private static string? FindNestedEndianTypeForField(BitFieldModel field, IAssemblySymbol assembly, out string? kind)
-    {
-        kind = null;
-
-        // List element: only generated [BitSerialize] element types are introspectable here.
-        // Manual IBitSerializable / type-parameter elements are opaque; treat as no-Endian.
-        if (field.IsList
-            && field.ListElementIsNested
-            && !field.ListElementIsManualBitSerializable
-            && !field.ListElementIsTypeParameter
-            && field.ListElementTypeFullName != null)
-        {
-            var elemType = FindTypeByFullName(assembly, field.ListElementTypeFullName);
-            if (elemType != null && HasEndianOverrideRecursive(elemType, new HashSet<string>()))
-            {
-                kind = "list element";
-                return field.ListElementTypeFullName;
-            }
-        }
-
-        // Polymorphic mappings: every concrete [BitPoly] target. Any one with a transitive Endian
-        // field is enough — the inner serializer dispatches on runtime type at the same offset.
-        if (field.IsPolymorphic && field.PolyMappings != null)
-        {
-            foreach (var mapping in field.PolyMappings)
-            {
-                var concrete = FindTypeByFullName(assembly, mapping.ConcreteTypeFullName);
-                if (concrete != null && HasEndianOverrideRecursive(concrete, new HashSet<string>()))
-                {
-                    kind = "polymorphic mapping";
-                    return mapping.ConcreteTypeFullName;
-                }
-            }
-        }
-
-        // Nested composition: only generated [BitSerialize] types are introspectable.
-        if (field.IsNestedType
-            && !field.IsList
-            && !field.IsPolymorphic
-            && !field.IsTypeParameter
-            && !field.IsManualBitSerializable
-            && field.MemberTypeFullName != null)
-        {
-            var nestedType = FindTypeByFullName(assembly, field.MemberTypeFullName);
-            if (nestedType != null && HasEndianOverrideRecursive(nestedType, new HashSet<string>()))
-            {
-                kind = "nested member";
-                return field.MemberTypeFullName;
-            }
-        }
-
-        return null;
-    }
+    // FindNestedEndianTypeForField was removed in review round-12: it used FindTypeByFullName which
+    // is bound to a single IAssemblySymbol, so types declared in referenced assemblies fell through
+    // as "no Endian override". The detection now happens at field-analysis time using the actual
+    // ITypeSymbol passed to HasEndianOverrideRecursive, and the result is cached on
+    // BitFieldModel.NestedHasEndianOverride / PolyMapping.HasEndianOverride.
 
     /// <summary>
     /// True if <paramref name="type"/> has any [BitField(Endian = Big | Little)] override, either

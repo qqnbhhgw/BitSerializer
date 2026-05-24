@@ -191,7 +191,25 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.PadIfShort == y.PadIfShort
             && x.ConsumeRemaining == y.ConsumeRemaining
             && x.RelationKind == y.RelationKind
-            && x.Endian == y.Endian;
+            && x.Endian == y.Endian
+            && x.NestedHasEndianOverride == y.NestedHasEndianOverride
+            && x.NestedEndianKind == y.NestedEndianKind
+            && x.NestedEndianTypeFullName == y.NestedEndianTypeFullName
+            && PolyMappingsEqual(x.PolyMappings, y.PolyMappings);
+    }
+
+    private static bool PolyMappingsEqual(List<PolyMapping>? a, List<PolyMapping>? b)
+    {
+        if (a == null && b == null) return true;
+        if (a == null || b == null) return false;
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (a[i].TypeId != b[i].TypeId) return false;
+            if (a[i].ConcreteTypeFullName != b[i].ConcreteTypeFullName) return false;
+            if (a[i].HasEndianOverride != b[i].HasEndianOverride) return false;
+        }
+        return true;
     }
 
     public int GetHashCode(BitFieldModel obj) => obj.MemberName.GetHashCode();
