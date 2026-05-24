@@ -149,8 +149,10 @@ internal static class TypeAnalyzer
             var fixedStringAttr = GetAttribute(member, "BitSerializer.BitFixedStringAttribute");
             var terminatedStringAttr = GetAttribute(member, "BitSerializer.BitTerminatedStringAttribute");
             var lengthPrefixStringAttr = GetAttribute(member, "BitSerializer.BitLengthPrefixStringAttribute");
+            var lengthFieldStringAttr = GetAttribute(member, "BitSerializer.BitLengthFieldStringAttribute");
 
-            if (bitFieldAttr == null && fixedStringAttr == null && terminatedStringAttr == null && lengthPrefixStringAttr == null)
+            if (bitFieldAttr == null && fixedStringAttr == null && terminatedStringAttr == null
+                && lengthPrefixStringAttr == null && lengthFieldStringAttr == null)
                 continue;
 
             var field = new BitFieldModel
@@ -159,6 +161,27 @@ internal static class TypeAnalyzer
                 IsProperty = member is IPropertySymbol,
                 BitStartIndex = currentBitIndex,
             };
+
+            // Codex review (round-2) P2: [BitFieldValue] is only meaningful on numeric/enum scalars,
+            // but all four string variants below `continue` BEFORE the per-field BitFieldValue
+            // parsing block runs (around line ~620). Without this upfront guard a user writing
+            // `[BitLengthFieldString(...), BitFieldValue(0x7E)] string Header { get; set; }`
+            // gets neither constant pinning NOR a diagnostic — the attribute is silently dropped.
+            // Reject with BITS042 (which already covers "non-scalar field carries [BitFieldValue]")
+            // so the failure mode is loud at compile time.
+            if ((fixedStringAttr != null || terminatedStringAttr != null
+                 || lengthPrefixStringAttr != null || lengthFieldStringAttr != null)
+                && GetAttribute(member, "BitSerializer.BitFieldValueAttribute") != null)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.FieldValueRequiresNumericScalar,
+                        member.Locations.FirstOrDefault(),
+                        member.Name, symbol.Name,
+                        false, true, false, false, false) // IsList, IsString, IsNested, IsPoly, IsTypeParameter
+                };
+            }
 
             // Handle [BitFixedString] (standalone, no [BitField] required)
             if (fixedStringAttr != null)
@@ -176,12 +199,15 @@ internal static class TypeAnalyzer
 
                 int byteLen = (int)fixedStringAttr.ConstructorArguments[0].Value!;
                 string encodingName = "ASCII";
+                byte padding = 0x00;
                 foreach (var named in fixedStringAttr.NamedArguments)
                 {
                     if (named.Key == "ByteLength" && named.Value.Value is int namedByteLen)
                         byteLen = namedByteLen;
                     else if (named.Key == "Encoding" && named.Value.Value is int encVal)
                         encodingName = encVal == 1 ? "UTF8" : "ASCII";
+                    else if (named.Key == "Padding" && named.Value.Value is byte padVal)
+                        padding = padVal;
                 }
                 if (byteLen <= 0)
                 {
@@ -196,6 +222,7 @@ internal static class TypeAnalyzer
 
                 field.IsFixedString = true;
                 field.FixedStringByteLength = byteLen;
+                field.FixedStringPadding = padding;
                 field.StringEncodingName = encodingName;
                 field.BitLength = byteLen * 8;
                 field.MemberTypeName = "string";
@@ -325,6 +352,138 @@ internal static class TypeAnalyzer
                 if (crcIncludeAttrLps != null && crcIncludeAttrLps.ConstructorArguments.Length > 0)
                 {
                     field.CrcTargetFieldName = crcIncludeAttrLps.ConstructorArguments[0].Value as string;
+                }
+
+                model.Fields.Add(field);
+                continue;
+            }
+
+            // Handle [BitLengthFieldString(nameof(LengthField))]: string whose byte count is carried
+            // by a separately-declared length field. Structurally mirrors [BitLengthPrefixString] but
+            // the prefix lives in a peer field (must be declared earlier in the type) instead of inline.
+            if (lengthFieldStringAttr != null)
+            {
+                if (memberType.SpecialType != SpecialType.System_String)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.LengthFieldStringMustBeString,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name)
+                    };
+                }
+
+                string lengthFieldName = lengthFieldStringAttr.ConstructorArguments[0].Value as string ?? "";
+                string lfsEncodingName = "UTF8";
+                int lfsMaxBytes = 0;
+                foreach (var named in lengthFieldStringAttr.NamedArguments)
+                {
+                    if (named.Key == "Encoding" && named.Value.Value is int encVal)
+                        lfsEncodingName = encVal == 1 ? "UTF8" : "ASCII";
+                    else if (named.Key == "MaxBytes" && named.Value.Value is int mb)
+                        lfsMaxBytes = mb;
+                }
+
+                // BITS050: MaxBytes < 0 — mirror BITS036 (BitLengthPrefixString) sentinel rule.
+                if (lfsMaxBytes < 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.LengthFieldStringNegativeMaxBytes,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, lfsMaxBytes)
+                    };
+                }
+
+                // BITS047: the target field must already exist in model.Fields (earlier in declaration
+                // order), be a byte-aligned numeric scalar, and have a bit width ∈ {8, 16, 32}.
+                // Allowed primitive types: byte, sbyte, short, ushort, int, uint — these are the
+                // typical wire-length carriers. Signed types are allowed for protocol-compat, but the
+                // serializer's overflow check uses the unsigned-range maximum because byte counts are
+                // never negative.
+                var lengthField = model.Fields.Find(f => f.MemberName == lengthFieldName);
+                bool lengthFieldValid = lengthField != null
+                    && lengthField.IsNumericOrEnum
+                    && !lengthField.IsList
+                    && !lengthField.IsFixedString
+                    && !lengthField.IsTerminatedString
+                    && !lengthField.IsLengthPrefixString
+                    && !lengthField.IsLengthFieldString
+                    && !lengthField.IsNestedType
+                    && !lengthField.IsPolymorphic
+                    && !lengthField.IsTypeParameter
+                    && (lengthField.BitLength == 8 || lengthField.BitLength == 16 || lengthField.BitLength == 32)
+                    && (lengthField.BitStartIndex % 8) == 0
+                    && IsAllowedLengthFieldType(lengthField.MemberTypeFullName);
+                if (!lengthFieldValid)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.LengthFieldStringMissingTarget,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, lengthFieldName)
+                    };
+                }
+
+                // BITS048: static byte-alignment of the string slot itself.
+                if ((currentBitIndex % 8) != 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.LengthFieldStringNotByteAligned,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, currentBitIndex)
+                    };
+                }
+
+                // BITS049: dynamic preceding fields that may shift the runtime offset off a byte boundary.
+                string? lfsLeadingCulprit = null;
+                if (model.BaseHasDynamicLength)
+                    lfsLeadingCulprit = "base type";
+                else
+                {
+                    foreach (var prev in model.Fields)
+                    {
+                        if (!IsIncludeFieldDynamic(prev)) continue;
+                        var cls = ClassifyIncludeAlignment(prev, symbol.ContainingAssembly);
+                        if (cls != FieldAlignmentClass.Aligned)
+                        {
+                            lfsLeadingCulprit = prev.MemberName;
+                            break;
+                        }
+                    }
+                }
+                if (lfsLeadingCulprit != null)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.LengthFieldStringAfterDynamicContent,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, lfsLeadingCulprit)
+                    };
+                }
+
+                field.IsLengthFieldString = true;
+                field.LengthFieldMemberName = lengthFieldName;
+                field.LengthFieldMaxBytes = lfsMaxBytes;
+                field.LengthFieldBitWidth = lengthField!.BitLength;
+                field.LengthFieldTypeName = lengthField.MemberTypeName;
+                field.StringEncodingName = lfsEncodingName;
+                field.BitLength = 0; // dynamic
+                field.MemberTypeName = "string";
+                field.MemberTypeFullName = "string";
+                model.HasDynamicLength = true;
+
+                // Preserve [BitCrcInclude] so the CRC aggregator sees this field.
+                var crcIncludeAttrLfs = GetAttribute(member, "BitSerializer.BitCrcIncludeAttribute");
+                if (crcIncludeAttrLfs != null && crcIncludeAttrLfs.ConstructorArguments.Length > 0)
+                {
+                    field.CrcTargetFieldName = crcIncludeAttrLfs.ConstructorArguments[0].Value as string;
                 }
 
                 model.Fields.Add(field);
@@ -475,6 +634,79 @@ internal static class TypeAnalyzer
                 {
                     if (named.Key == "PadIfShort" && named.Value.Value is bool padVal)
                         field.PadIfShort = padVal;
+                }
+            }
+
+            // Check for [BitFieldValue(constant)]
+            // (validated after IsList / IsNumericOrEnum / IsPolymorphic categorization below.)
+            var fieldValueAttr = GetAttribute(member, "BitSerializer.BitFieldValueAttribute");
+            if (fieldValueAttr != null && fieldValueAttr.ConstructorArguments.Length > 0)
+            {
+                var tc = fieldValueAttr.ConstructorArguments[0];
+                long? parsed = null;
+                // Codex review round-3 P2: track whether the source literal was an *unsigned* type
+                // whose value exceeds long.MaxValue. In that case the `unchecked((long)ul)` cast
+                // produces a negative-looking long that would pass the [signedMin, unsignedMax]
+                // range check on a sub-64-bit field (e.g. BitLength=63 + ulong.MaxValue gets -1L,
+                // which trivially fits the signed range). But the actual bit pattern needs 64 bits
+                // and can never fit a <64-bit slot — the serializer would silently truncate top
+                // bits while Verify=true at deserialize would always fail. Reject upfront.
+                bool wasUnsignedOverflow = false;
+                // Codex review P2: accept the FULL ulong range (e.g. 0x8000000000000000UL on a
+                // 64-bit field). Store the wire-bit pattern as long via unchecked cast — emitters
+                // already use `unchecked((T){literal}L)` so the negative-looking long round-trips
+                // back to the user's intended unsigned bit pattern on serialize/deserialize.
+                if (tc.Kind == TypedConstantKind.Primitive && tc.Value != null)
+                {
+                    switch (tc.Value)
+                    {
+                        case sbyte sb: parsed = sb; break;
+                        case byte b: parsed = b; break;
+                        case short s: parsed = s; break;
+                        case ushort us: parsed = us; break;
+                        case int i: parsed = i; break;
+                        case uint ui: parsed = ui; break;
+                        case long l: parsed = l; break;
+                        case ulong ul:
+                            parsed = unchecked((long)ul);
+                            wasUnsignedOverflow = ul > long.MaxValue;
+                            break;
+                    }
+                }
+                else if (tc.Kind == TypedConstantKind.Enum && tc.Value != null)
+                {
+                    switch (tc.Value)
+                    {
+                        case sbyte sb: parsed = sb; break;
+                        case byte b: parsed = b; break;
+                        case short s: parsed = s; break;
+                        case ushort us: parsed = us; break;
+                        case int i: parsed = i; break;
+                        case uint ui: parsed = ui; break;
+                        case long l: parsed = l; break;
+                        case ulong ul:
+                            parsed = unchecked((long)ul);
+                            wasUnsignedOverflow = ul > long.MaxValue;
+                            break;
+                    }
+                }
+                if (parsed == null)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FieldValueInvalidType,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, tc.Value?.ToString() ?? "<null>")
+                    };
+                }
+                field.HasConstantValue = true;
+                field.ConstantValue = parsed.Value;
+                field.ConstantValueIsUnsignedOverflow = wasUnsignedOverflow;
+                foreach (var named in fieldValueAttr.NamedArguments)
+                {
+                    if (named.Key == "Verify" && named.Value.Value is bool verifyVal)
+                        field.ConstantValueVerify = verifyVal;
                 }
             }
 
@@ -723,6 +955,12 @@ internal static class TypeAnalyzer
                 int nestedBits = CalculateNestedBitLength(memberType);
                 field.BitLength = explicitBitLength ?? nestedBits;
                 bool nestedIsDynamic = HasDynamicLengthRecursive(memberType);
+                // Capture regardless of explicit-BitLength override so BITS055 can later reject the
+                // "dynamic nested + fixed slot + ByteLength carrier" combination that BITS023
+                // currently only warns about (round-trip can't work — backfill writes N/8 but the
+                // nested type emits its own runtime size, then the T4 nested deserializer's
+                // consumedBits-vs-budget verify fires).
+                field.NestedTypeHasDynamicContent = nestedIsDynamic;
                 if (!explicitBitLength.HasValue && nestedIsDynamic)
                 {
                     field.IsPotentiallyDynamic = true;
@@ -780,6 +1018,11 @@ internal static class TypeAnalyzer
                 field.MemberTypeName = memberType.Name;
                 field.MemberTypeFullName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
+                // Manual impls are *always* runtime-decided (their Serialize/Deserialize chooses
+                // how many bits to write), so the dynamic-content flag is unconditionally true —
+                // BITS055 uses this to reject ByteLength carriers that lock such a member into a
+                // fixed slot.
+                field.NestedTypeHasDynamicContent = true;
                 if (explicitBitLength.HasValue)
                 {
                     field.BitLength = explicitBitLength.Value;
@@ -810,6 +1053,90 @@ internal static class TypeAnalyzer
                         member.Locations.FirstOrDefault(),
                         memberType.Name, symbol.Name)
                 };
+            }
+
+            // [BitFieldValue] validation: only on numeric/enum scalars; must fit in BitLength;
+            // mutually exclusive with [BitCrc] / [BitFieldRelated] / [BitFieldCount] / [BitPoly].
+            if (field.HasConstantValue)
+            {
+                if (!field.IsNumericOrEnum || field.IsList || field.IsFixedString
+                    || field.IsTerminatedString || field.IsLengthPrefixString
+                    || field.IsNestedType || field.IsPolymorphic || field.IsTypeParameter)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FieldValueRequiresNumericScalar,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name,
+                            field.IsList,
+                            field.IsFixedString || field.IsTerminatedString || field.IsLengthPrefixString,
+                            field.IsNestedType, field.IsPolymorphic, field.IsTypeParameter)
+                    };
+                }
+
+                // Range check against BitLength. For 64-bit fields any long fits; for narrower
+                // fields the constant must fit in either signed (two's complement) or unsigned range
+                // — accept both because users may write 0x80 on a `sbyte` (= -128) without thinking
+                // about signedness. Reject if the constant is outside [signedMin, unsignedMax].
+                //
+                // Codex review round-3 P2: when the source literal was a `ulong` > long.MaxValue
+                // the unchecked-cast-to-long produced a negative-looking value that trivially
+                // passes the signed range check on any BitLength ≥ 1. We need a separate
+                // bit-pattern check for that case — the actual unsigned value only fits in 64
+                // bits, so any narrower slot must reject it.
+                if (field.ConstantValueIsUnsignedOverflow && field.BitLength < 64)
+                {
+                    // The actual unsigned value is unchecked((ulong)ConstantValue); for diagnostic
+                    // text we want the original unsigned magnitude, not the negative-looking long.
+                    ulong actualUnsigned = unchecked((ulong)field.ConstantValue);
+                    long unsignedMaxForBitLen = (1L << field.BitLength) - 1;
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FieldValueOverflowsBitLength,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, field.BitLength,
+                            $"0x{actualUnsigned:X}UL", 64,
+                            (long)0, unsignedMaxForBitLen)
+                    };
+                }
+                if (field.BitLength < 64)
+                {
+                    long signedMin = -(1L << (field.BitLength - 1));
+                    long unsignedMax = (1L << field.BitLength) - 1;
+                    if (field.ConstantValue < signedMin || field.ConstantValue > unsignedMax)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.FieldValueOverflowsBitLength,
+                                member.Locations.FirstOrDefault(),
+                                member.Name, symbol.Name, field.BitLength,
+                                field.ConstantValue, ComputeBitsRequired(field.ConstantValue),
+                                signedMin, unsignedMax)
+                        };
+                    }
+                }
+
+                // Codex review P2: do NOT list [BitCrcInclude] as a conflict. CRC-inclusion just
+                // records that this field's bytes participate in a CRC range; it does not overwrite
+                // the field's wire bytes. Combining [BitFieldValue(0x7E)] + [BitCrcInclude] is the
+                // canonical "fixed magic header covered by CRC" pattern in DMI/Modbus frames.
+                string? conflict = null;
+                if (field.IsCrcResult) conflict = "[BitCrc]";
+                else if (field.RelatedMemberName != null) conflict = "[BitFieldRelated]";
+                else if (field.FixedCount.HasValue) conflict = "[BitFieldCount]";
+                if (conflict != null)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FieldValueConflictsWithOtherFeatures,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, conflict)
+                    };
+                }
             }
 
             model.Fields.Add(field);
@@ -1018,13 +1345,18 @@ internal static class TypeAnalyzer
             }
         }
 
-        // BITS024..027: validate RelationKind=ByteLength usage (Enhancement A + B).
+        // BITS024..027 + BITS051..052: validate RelationKind=ByteLength usage (Enhancement A + B,
+        // T4 nested-type extension). The base predicate is "must be a list OR a nested [BitSerialize]
+        // type whose serialized size is byte-aligned" — both shapes need a count that matches the
+        // bytes actually written.
         foreach (var f in model.Fields)
         {
             if (f.RelationKind != 1) continue; // 1 == ByteLength
 
-            // BITS027: must be a list/array.
-            if (!f.IsList)
+            // BITS027 (now relaxed): list/array OR nested [BitSerialize] (incl. type-parameter and
+            // manual IBitSerializable carriers). Anything else still rejected.
+            bool isNestedCarrier = f.IsNestedType || f.IsTypeParameter;
+            if (!f.IsList && !isNestedCarrier)
             {
                 return new AnalyzeResult
                 {
@@ -1035,7 +1367,8 @@ internal static class TypeAnalyzer
                 };
             }
 
-            // BITS025: conflicts with FixedCount or ConsumeRemaining.
+            // BITS025: conflicts with FixedCount or ConsumeRemaining (list-only; nested types don't
+            // have FixedCount, but guard anyway to keep the predicate uniform).
             if (f.FixedCount.HasValue || f.ConsumeRemaining)
             {
                 return new AnalyzeResult
@@ -1047,22 +1380,71 @@ internal static class TypeAnalyzer
                 };
             }
 
-            // BITS026: static-stride elements (numeric/enum, static nested) must be a POSITIVE
-            // multiple of 8. A zero-width static element would make the while-loop unable to
-            // advance at runtime (0-bit [BitSerialize] types such as CTCS/ETCS placeholders).
-            // Dynamic-length elements are validated at runtime (budget under-run / over-run and
-            // the emitter's "_consumed <= 0" guard).
-            bool elemIsDynamic = f.ListElementHasDynamicLength
-                                  || (f.ListElementIsManualBitSerializable && f.ListElementBitLength == 0);
-            if (!elemIsDynamic && (f.ListElementBitLength <= 0 || (f.ListElementBitLength % 8) != 0))
+            if (f.IsList)
             {
-                return new AnalyzeResult
+                // BITS026: static-stride elements (numeric/enum, static nested) must be a POSITIVE
+                // multiple of 8. A zero-width static element would make the while-loop unable to
+                // advance at runtime (0-bit [BitSerialize] types such as CTCS/ETCS placeholders).
+                // Dynamic-length elements are validated at runtime (budget under-run / over-run and
+                // the emitter's "_consumed <= 0" guard).
+                bool elemIsDynamic = f.ListElementHasDynamicLength
+                                      || (f.ListElementIsManualBitSerializable && f.ListElementBitLength == 0);
+                if (!elemIsDynamic && (f.ListElementBitLength <= 0 || (f.ListElementBitLength % 8) != 0))
                 {
-                    Diagnostic = Diagnostic.Create(
-                        DiagnosticDescriptors.ByteLengthElementNotByteAligned,
-                        symbol.Locations.FirstOrDefault(),
-                        f.MemberName, symbol.Name, f.ListElementBitLength)
-                };
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.ByteLengthElementNotByteAligned,
+                            symbol.Locations.FirstOrDefault(),
+                            f.MemberName, symbol.Name, f.ListElementBitLength)
+                    };
+                }
+            }
+            else
+            {
+                // T4 nested carrier: if the nested type has a *static* bit length we can verify
+                // byte-alignment at compile time (BITS051). For dynamic nested types the runtime
+                // serializer guard catches non-byte-aligned writes.
+                if (!f.IsPotentiallyDynamic && !f.IsTypeParameter && f.BitLength > 0 && (f.BitLength % 8) != 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.ByteLengthNestedNotByteAligned,
+                            symbol.Locations.FirstOrDefault(),
+                            f.MemberName, symbol.Name, f.BitLength)
+                    };
+                }
+
+                // Codex review round-6 P2 (BITS055): explicit [BitField(N)] on a dynamic nested
+                // carrier that ALSO uses RelationKind=ByteLength can never round-trip. The serializer
+                // back-fills the length from the static slot size (N/8), then the nested type writes
+                // its runtime size (possibly different). The T4 nested deserializer
+                // (EmitNestedByteLengthVerify) asserts `consumedBits == declaredBytes * 8` and throws
+                // InvalidDataException on any mismatch. BITS023 currently emits a *warning* about
+                // pinning a dynamic nested type to a fixed slot — when that slot is the byte budget
+                // for a peer length field, escalate to a hard error.
+                //
+                // Detection: NestedTypeHasDynamicContent==true (set by the field analysis branches
+                // unconditionally regardless of explicit-BitLength override) AND the field's runtime
+                // size is *not* tracked dynamically (i.e. !IsPotentiallyDynamic — explicit-BitLength
+                // suppressed the dynamic flag). Type parameters always go through GetTotalBitLength
+                // so they don't hit this corruption path.
+                if (!f.IsTypeParameter && !f.IsPotentiallyDynamic
+                    && f.NestedTypeHasDynamicContent && f.BitLength > 0)
+                {
+                    string carrierKind = f.IsManualBitSerializable
+                        ? "manual IBitSerializable"
+                        : "nested [BitSerialize]";
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.ByteLengthFixedSlotOnDynamicNested,
+                            symbol.Locations.FirstOrDefault(),
+                            f.MemberName, symbol.Name, carrierKind,
+                            f.RelatedMemberName ?? "", f.BitLength, f.BitLength / 8)
+                    };
+                }
             }
 
             // BITS024: if converter is supplied it must provide both directions.
@@ -1076,6 +1458,104 @@ internal static class TypeAnalyzer
                         symbol.Locations.FirstOrDefault(),
                         f.MemberName, symbol.Name, f.ValueConverterTypeFullName)
                 };
+            }
+
+            // T4 (BITS052): the related length field must be declared earlier in the type so
+            // the deserializer can read it before the carrier (it has to know how many bytes to
+            // consume). The list ByteLength path is fine even when the length field comes after,
+            // because the list's count is independently derivable from the wire (consume-until-end),
+            // but for a nested type we have no such fallback — the byte count IS the framing.
+            if (isNestedCarrier && f.RelatedMemberName != null)
+            {
+                int relatedIdx = model.Fields.FindIndex(x => x.MemberName == f.RelatedMemberName);
+                int carrierIdx = model.Fields.FindIndex(x => x.MemberName == f.MemberName);
+                if (relatedIdx < 0 || relatedIdx >= carrierIdx)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.ByteLengthNestedLengthFieldOrdering,
+                            symbol.Locations.FirstOrDefault(),
+                            f.MemberName, symbol.Name, f.RelatedMemberName ?? "")
+                    };
+                }
+            }
+        }
+
+        // Codex review P1: BITS053 — every [BitFieldRelated] (count / discriminator / byte-budget)
+        // and [BitLengthFieldString] dependent reads the related field's wire value at
+        // deserialize time, but deserialization runs in declaration order. If the related field is
+        // declared AFTER the dependent, the wire value isn't on the property yet (and the
+        // generator's `_wire_<name>` local doesn't exist) — the dependent silently uses the
+        // default value (0 / null) and produces an empty list / wrong poly case / mis-sized
+        // payload. BITS052 already covers the nested-ByteLength sub-case; this is the general
+        // gate for list count / list ByteLength / polymorphic discriminator / length-field-string.
+        for (int dependentIdx = 0; dependentIdx < model.Fields.Count; dependentIdx++)
+        {
+            var dep = model.Fields[dependentIdx];
+            string? referencedName = null;
+            // Codex review round-5 P2: include nested-type and type-parameter ByteLength carriers
+            // (T4). The original condition `IsList || IsPolymorphic` missed them, so a
+            // [BitFieldRelated(nameof(Len), ByteLength)] on a nested [BitSerialize] type could pair
+            // with [BitFieldValue(...)] on Len and silently corrupt wire output (backfill writes
+            // real byte count, primitive write overwrites with constant). The same broad set used
+            // by ComputeReferencedFieldNames in DeserializerEmitter — keep them in sync.
+            if (dep.RelatedMemberName != null
+                && (dep.IsList || dep.IsPolymorphic
+                    || ((dep.IsNestedType || dep.IsTypeParameter) && dep.RelationKind == 1)))
+            {
+                referencedName = dep.RelatedMemberName;
+            }
+            else if (dep.IsLengthFieldString && dep.LengthFieldMemberName != null)
+            {
+                // LengthFieldString's own BITS047 already enforces ordering via model.Fields.Find
+                // at parse time, but emit this check too so the diagnostic IDs are consistent for
+                // downstream tooling.
+                referencedName = dep.LengthFieldMemberName;
+            }
+            if (referencedName == null) continue;
+
+            int relatedIdx = model.Fields.FindIndex(x => x.MemberName == referencedName);
+            if (relatedIdx >= 0 && relatedIdx >= dependentIdx)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.RelatedFieldDeclaredAfterDependent,
+                        symbol.Locations.FirstOrDefault(),
+                        dep.MemberName, symbol.Name, referencedName)
+                };
+            }
+
+            // Codex review round-4 P2: the inverse of BITS044. The referenced carrier must NOT
+            // have [BitFieldValue(...)]. At serialize time EmitAutoBackfill / EmitLengthFieldStringBackfill
+            // writes the *real* dependent size into the carrier; then EmitPrimitiveSerialize for the
+            // carrier overwrites that with the pinned constant. Wire ends up holding the constant
+            // (e.g. magic 0x7E) but the dependent payload bytes reflect the real size — deserialize
+            // reads the constant as the budget and either truncates or mis-parses subsequent fields.
+            //
+            // BITS044 only catches the same-field case ([BitFieldValue] on a field that ALSO carries
+            // [BitFieldRelated]/[BitFieldCount]); the cross-field "carrier referenced by dependent"
+            // case has no diagnostic and silently corrupts wire output.
+            if (relatedIdx >= 0)
+            {
+                var carrier = model.Fields[relatedIdx];
+                if (carrier.HasConstantValue)
+                {
+                    string referenceKind = dep.IsLengthFieldString ? "string byte-count carrier"
+                        : dep.IsPolymorphic ? "polymorphic discriminator"
+                        : ((dep.IsNestedType || dep.IsTypeParameter) && dep.RelationKind == 1) ? "nested byte-length carrier"
+                        : (dep.RelationKind == 1 ? "byte-length carrier" : "count carrier");
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FieldValueOnReferencedCarrier,
+                            symbol.Locations.FirstOrDefault(),
+                            carrier.MemberName, symbol.Name,
+                            $"0x{unchecked((ulong)carrier.ConstantValue):X}",
+                            dep.MemberName, referenceKind)
+                    };
+                }
             }
         }
 
@@ -1498,6 +1978,7 @@ internal static class TypeAnalyzer
     {
         if (f.IsTerminatedString) return 0;
         if (f.IsLengthPrefixString) return 0;
+        if (f.IsLengthFieldString) return 0;
         if (f.IsTypeParameter) return 0;
         if (f.IsList)
         {
@@ -1532,6 +2013,7 @@ internal static class TypeAnalyzer
     {
         if (f.IsTerminatedString) return true;
         if (f.IsLengthPrefixString) return true;
+        if (f.IsLengthFieldString) return true;
         if (f.IsTypeParameter) return true;
         if (f.IsPotentiallyDynamic) return true;
         if (f.IsList)
@@ -1576,6 +2058,11 @@ internal static class TypeAnalyzer
 
         // Length-prefix string: lengthBits (∈ {8,16,32}) + encoded bytes — both byte-aligned.
         if (f.IsLengthPrefixString)
+            return FieldAlignmentClass.Aligned;
+
+        // Length-field string: only encoded bytes here (the length lives in a peer field that was
+        // already classified in a previous iteration). Always byte-aligned.
+        if (f.IsLengthFieldString)
             return FieldAlignmentClass.Aligned;
 
         // Generic type parameter: concrete T not known at compile time.
@@ -1963,9 +2450,15 @@ internal static class TypeAnalyzer
             var fixedStrAttr2 = GetAttribute(member, "BitSerializer.BitFixedStringAttribute");
             var termStrAttr2 = GetAttribute(member, "BitSerializer.BitTerminatedStringAttribute");
             var lpsStrAttr2 = GetAttribute(member, "BitSerializer.BitLengthPrefixStringAttribute");
+            // Codex review round-7 P1: [BitLengthFieldString] (T3) is also dynamic — without this
+            // check, a parent containing a nested type that uses LFS would treat the nested type as
+            // static, place subsequent fields at compile-time offsets, and corrupt the layout
+            // whenever the LFS payload has non-zero length.
+            var lfsStrAttr2 = GetAttribute(member, "BitSerializer.BitLengthFieldStringAttribute");
 
             if (termStrAttr2 != null) return true; // always dynamic
             if (lpsStrAttr2 != null) return true; // always dynamic
+            if (lfsStrAttr2 != null) return true; // always dynamic (encoded bytes follow a peer length carrier)
             if (fixedStrAttr2 != null) continue; // fixed, not dynamic
 
             var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");
@@ -2043,6 +2536,50 @@ internal static class TypeAnalyzer
                    .Any(m => m.Parameters.Length == 0 && !m.IsStatic)
             || type.GetMembers("DeserializeContext").OfType<IMethodSymbol>()
                    .Any(m => m.Parameters.Length == 0 && !m.IsStatic);
+    }
+
+    /// <summary>
+    /// True when <paramref name="typeFullName"/> is one of the integer scalars accepted as a
+    /// [BitLengthFieldString] length carrier (byte/sbyte/short/ushort/int/uint). We accept signed
+    /// types because legacy protocol layouts often declare lengths as `int`, even though byte
+    /// counts can't actually be negative; the serializer's overflow check still uses the
+    /// unsigned-range maximum to prevent silent truncation.
+    /// </summary>
+    private static bool IsAllowedLengthFieldType(string typeFullName)
+    {
+        switch (typeFullName)
+        {
+            case "byte":
+            case "sbyte":
+            case "short":
+            case "ushort":
+            case "int":
+            case "uint":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Bits needed to represent <paramref name="value"/> in two's-complement form. Used by BITS043
+    /// to report the minimum BitLength the user needs to expand to.
+    /// </summary>
+    private static int ComputeBitsRequired(long value)
+    {
+        if (value == 0) return 1;
+        if (value > 0)
+        {
+            int bits = 0;
+            long v = value;
+            while (v > 0) { v >>= 1; bits++; }
+            return bits;
+        }
+        // negative: two's-complement representation
+        int n = 0;
+        long u = ~value; // bits needed for the positive complement, plus 1 for sign
+        while (u > 0) { u >>= 1; n++; }
+        return n + 1;
     }
 
     private static INamedTypeSymbol? FindTypeByFullName(IAssemblySymbol assembly, string fullName)
