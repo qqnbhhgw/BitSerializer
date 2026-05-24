@@ -292,6 +292,14 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor FieldEndianOutOfRange = new(
+        "BITS037",
+        "[BitField(Endian = ...)] value is outside the BitEndian enum range",
+        "Member '{0}' in '{1}' specifies Endian = {2}, which is not a defined BitEndian value (0 = Inherit, 1 = Big, 2 = Little). C# allows casting arbitrary integers into enums (e.g. `(BitEndian)3`), but the source generator silently falls back to Inherit for unknown values, masking the typo at runtime. Use one of BitEndian.Inherit / BitEndian.Big / BitEndian.Little",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
     public static readonly DiagnosticDescriptor LengthPrefixStringNotByteAligned = new(
         "BITS038",
         "[BitLengthPrefixString] field must start on a byte boundary",

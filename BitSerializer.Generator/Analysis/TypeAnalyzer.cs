@@ -378,7 +378,22 @@ internal static class TypeAnalyzer
             foreach (var named in bitFieldAttr!.NamedArguments)
             {
                 if (named.Key == "Endian" && named.Value.Value is int endianRaw)
+                {
+                    // BITS037: reject undefined enum values (e.g. `(BitEndian)3`). C# allows arbitrary
+                    // ints into enums and ResolveFieldHelper would silently fall back to Inherit for
+                    // anything other than 1/2, hiding the typo at runtime.
+                    if (endianRaw < 0 || endianRaw > 2)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.FieldEndianOutOfRange,
+                                member.Locations.FirstOrDefault(),
+                                member.Name, symbol.Name, endianRaw)
+                        };
+                    }
                     field.Endian = endianRaw;
+                }
             }
 
             // Check for BitFieldRelated
