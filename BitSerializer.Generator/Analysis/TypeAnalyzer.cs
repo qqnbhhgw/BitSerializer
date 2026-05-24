@@ -821,8 +821,16 @@ internal static class TypeAnalyzer
                 };
             }
 
-            // BITS033: look at every preceding member for runtime-variable length.
-            // Base-type dynamic length is equivalent: the type starts after a runtime-sized base.
+            // BITS033: look at every preceding dynamic-length member for byte alignment safety.
+            //
+            // Review P2: a dynamic field whose runtime size is always a multiple of 8 bits (e.g.
+            // [BitTerminatedString]: encoded bytes + 1-byte NUL; List<byte>/List<ushort> with
+            // byte-multiple element width) keeps subsequent fields on byte boundaries — switching
+            // helpers there is still a byte-order flip, not a corruption. We reject only when the
+            // dynamic content can change the byte alignment of subsequent fields.
+            //
+            // Base-type dynamic length is conservatively rejected: we'd have to recursively prove
+            // the base's runtime size is always byte-aligned, which isn't tracked at this layer.
             string? dynamicCulpritName = null;
             if (model.BaseHasDynamicLength)
                 dynamicCulpritName = "base type";
@@ -830,9 +838,12 @@ internal static class TypeAnalyzer
             {
                 for (int j = 0; j < idx; j++)
                 {
-                    if (IsIncludeFieldDynamic(model.Fields[j]))
+                    var prev = model.Fields[j];
+                    if (!IsIncludeFieldDynamic(prev)) continue; // static field — offset cursor is precise
+                    var cls = ClassifyIncludeAlignment(prev, symbol.ContainingAssembly);
+                    if (cls != FieldAlignmentClass.Aligned)
                     {
-                        dynamicCulpritName = model.Fields[j].MemberName;
+                        dynamicCulpritName = prev.MemberName;
                         break;
                     }
                 }

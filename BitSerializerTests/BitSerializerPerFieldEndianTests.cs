@@ -227,7 +227,7 @@ public partial class BitSerializerPerFieldEndianTests
         roundTripped.Kind.ShouldBe(SegmentKind.Switch);
     }
 
-    #region BITS033 negative — Endian field BEFORE dynamic content is allowed (review P1)
+    #region BITS033 — Endian field placement vs preceding dynamic content (review P1+P2)
 
     /// <summary>
     /// 校正用例：Endian-标注字段在动态字段（List）之前 → 运行时 offset 不漂移 → BITS033 不该误报。
@@ -260,6 +260,69 @@ public partial class BitSerializerPerFieldEndianTests
         var result = BitSerializerMSB.Deserialize<LittleEndianBeforeDynamicList>(bytes);
         result.Value.ShouldBe((ushort)0x1234);
         result.Items.Count.ShouldBe(3);
+    }
+
+    /// <summary>
+    /// Review P2：Endian 字段在 byte-aligned 动态字段（List&lt;byte&gt;）之后应合法。
+    /// 之前 BITS033 用 IsIncludeFieldDynamic 一刀切，误报这种安全场景。
+    /// List&lt;byte&gt; 每元素 8 bit → 运行时 offset 总是 8 倍数 → 后续字段仍字节对齐。
+    /// </summary>
+    [BitSerialize]
+    public partial class LittleEndianAfterByteList
+    {
+        [BitField(8)] public byte Count { get; set; }
+        [BitField(8), BitFieldRelated(nameof(Count))]
+        public List<byte> Items { get; set; } = new();
+        [BitField(16, Endian = BitEndian.Little)] public ushort Value { get; set; }
+    }
+
+    [Fact]
+    public void Endian_Field_After_ByteAligned_List_Compiles_And_Round_Trips()
+    {
+        var original = new LittleEndianAfterByteList
+        {
+            Items = new List<byte> { 0xAA, 0xBB, 0xCC },
+            Value = 0x1234,
+        };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+
+        // Layout: Count=03 | Items=AA BB CC | Value LE=34 12
+        bytes.ShouldBe(new byte[] { 0x03, 0xAA, 0xBB, 0xCC, 0x34, 0x12 });
+
+        var result = BitSerializerMSB.Deserialize<LittleEndianAfterByteList>(bytes);
+        result.Items.Count.ShouldBe(3);
+        result.Value.ShouldBe((ushort)0x1234);
+    }
+
+    /// <summary>
+    /// Review P2：Endian 字段在 TerminatedString（编码字节 + 1 字节 NUL）之后也是安全的。
+    /// </summary>
+    [BitSerialize]
+    public partial class LittleEndianAfterTerminatedString
+    {
+        [BitField(8)] public byte Header { get; set; }
+        [BitTerminatedString(Encoding = BitStringEncoding.UTF8)]
+        public string Name { get; set; } = "";
+        [BitField(32, Endian = BitEndian.Little)] public uint Code { get; set; }
+    }
+
+    [Fact]
+    public void Endian_Field_After_TerminatedString_Compiles_And_Round_Trips()
+    {
+        var original = new LittleEndianAfterTerminatedString
+        {
+            Header = 0x42,
+            Name = "abc",
+            Code = 0xDEADBEEF,
+        };
+        byte[] bytes = BitSerializerMSB.Serialize(original);
+
+        // Layout: 0x42 | "abc"=61 62 63 | 0x00 (NUL) | Code LE=EF BE AD DE
+        bytes.ShouldBe(new byte[] { 0x42, 0x61, 0x62, 0x63, 0x00, 0xEF, 0xBE, 0xAD, 0xDE });
+
+        var result = BitSerializerMSB.Deserialize<LittleEndianAfterTerminatedString>(bytes);
+        result.Name.ShouldBe("abc");
+        result.Code.ShouldBe(0xDEADBEEFu);
     }
 
     #endregion
