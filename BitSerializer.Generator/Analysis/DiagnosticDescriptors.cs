@@ -468,4 +468,20 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor MultipleRelatedSameCarrier = new(
+        "BITS059",
+        "Two [BitFieldRelated] attributes cannot point to the same carrier field",
+        "Member '{0}' in '{1}' has 2 [BitFieldRelated] attributes both targeting '{2}'. The serializer back-fills the discriminator (Count) first and then the byte budget (ByteLength), so the second write overwrites the discriminator value the deserializer would read to pick the concrete polymorphic type; the wire ends up carrying byte-length instead of type-id and deserialize either dispatches the wrong type or throws 'No polymorphic type mapping found'. Use TWO separate carrier fields — one for the discriminator and a distinct one for the byte budget",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor MultipleRelatedRequiresAutoLengthPolymorphic = new(
+        "BITS060",
+        "Multi-binding [BitFieldRelated] requires auto-length polymorphic (no explicit BitField bit length)",
+        "Member '{0}' in '{1}' has 2 [BitFieldRelated] attributes (Count + ByteLength) but also declares an explicit bit length [BitField({2})]. The secondary byte-length carrier was designed for *auto-length* polymorphic fields where the concrete poly type's runtime size determines the byte budget; a fixed-slot polymorphic field always writes exactly {2} bits regardless of the runtime type, so the byte carrier would always be a constant ({3} bytes) AND the deserializer's consumed-vs-declared verify is unreachable (the fixed-slot deserialize path doesn't track runtime bit consumption). Remove the explicit BitField bit length or drop the secondary [BitFieldRelated] binding",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

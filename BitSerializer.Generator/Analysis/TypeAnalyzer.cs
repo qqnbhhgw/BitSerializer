@@ -634,6 +634,21 @@ internal static class TypeAnalyzer
                             parsedBindings[0].RelationKind == 1 ? "ByteLength" : "Count")
                     };
                 }
+                // Codex review round-4 P1: BITS059 — both bindings cannot point to the same
+                // carrier field. EmitAutoBackfill writes the discriminator first then the byte
+                // budget; if they share a target the second write clobbers the discriminator and
+                // wire ends up carrying byte-length instead of type-id (deserialize dispatches the
+                // wrong concrete poly type or hits "No mapping found"). Use two distinct fields.
+                if (parsedBindings[0].Name == parsedBindings[1].Name)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.MultipleRelatedSameCarrier,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, parsedBindings[0].Name)
+                    };
+                }
                 // Canonical ordering: Count binding becomes primary (preserves discriminator /
                 // count-field semantics for callers that expect the *first* read), ByteLength
                 // binding becomes secondary. Source order is irrelevant — the user can write
@@ -1153,6 +1168,26 @@ internal static class TypeAnalyzer
                         DiagnosticDescriptors.MultipleRelatedRequirePolymorphic,
                         member.Locations.FirstOrDefault(),
                         member.Name, symbol.Name, field.IsList, field.IsNestedType)
+                };
+            }
+
+            // Codex review round-4 P2: BITS060 — multi-binding is only meaningful for *auto-length*
+            // polymorphic. With explicit [BitField(N)] the poly field's serialize/deserialize go
+            // through the fixed-slot path (bitIndexVar == null, BitStartIndex-based offsets), which
+            // (a) makes the byte budget a compile-time constant (always N/8), so the carrier is
+            // redundant, and (b) leaves the EmitPolymorphicDeserialize consumed-vs-declared verify
+            // unreachable (it's gated on bitIndexVar != null because the fixed-slot path doesn't
+            // track runtime bit consumption). Reject upfront so users either drop the explicit
+            // [BitField(N)] (auto-length, runtime byte count matters) or drop the secondary binding
+            // (fixed-slot, byte count is implicit).
+            if (field.SecondaryRelatedMemberName != null && field.IsPolymorphic && explicitBitLength.HasValue)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.MultipleRelatedRequiresAutoLengthPolymorphic,
+                        member.Locations.FirstOrDefault(),
+                        member.Name, symbol.Name, explicitBitLength.Value, explicitBitLength.Value / 8)
                 };
             }
 
