@@ -2506,24 +2506,48 @@ internal static class TypeAnalyzer
             {
                 // Codex round-5 P1: walk full instance member set (not just GetSerializableMembers,
                 // which is public field/property only). Any same-name member on a NEARER ancestor
-                // — wire-attributed or not, public or not, even a method — wins under C#
+                // — wire-attributed or not, even non-wire helper or method — wins under C#
                 // `this.<name>` binding from the derived type's view, so it must occupy the name
                 // slot in `seen` to block farther ancestors from contributing a same-named carrier
                 // stub that the runtime would never actually read. Without this gate, a closer
                 // string / list / helper-property of the same name silently hides the farther
                 // numeric carrier the analyzer chose, and codegen emits `(int)this.<closerMember>`
                 // — either CS error or wrong-cast wire corruption.
+                //
+                // Codex round-7 P1×3 (#4 + #5 + #6): scope the ancestor scan to members that are
+                // actually VISIBLE in the derived type's view. private ancestor members can't
+                // shadow `this.<name>` (no private inheritance in C#), so they neither belong in
+                // `seen` (would false-reject farther public carriers as BITS061) nor as carrier
+                // stubs (base.Serialize/Deserialize wouldn't see them either). Stubs additionally
+                // require the public field/property shape — matches GetSerializableMembers, which
+                // is exactly what the ancestor's generated wire layout covers.
                 foreach (var member in t.GetMembers())
                 {
                     if (member.IsStatic) continue;
                     if (member.IsImplicitlyDeclared) continue;
                     if (member is IMethodSymbol ms && ms.MethodKind != MethodKind.Ordinary) continue;
+                    // round-7 P1: ancestor private invisible to derived — skip entirely.
+                    if (member.DeclaredAccessibility == Accessibility.Private) continue;
                     if (seen.Contains(member.Name)) continue;
                     if (shadowedNames.Contains(member.Name)) continue;
 
                     // Claim the name first so farther ancestors with the same name cannot create
-                    // a same-named stub even when *this* member is unusable as a carrier.
+                    // a same-named stub even when *this* member is unusable as a carrier. Visible
+                    // non-wire members (protected helper property, public string field, etc.)
+                    // still claim because `this.<name>` would resolve to them, not to a farther
+                    // same-named carrier.
                     seen.Add(member.Name);
+
+                    // Stub creation rules — must match what base.Serialize / base.Deserialize
+                    // actually puts on wire. GetSerializableMembers covers public fields and
+                    // public non-indexer properties; mirror that here so analysis never accepts a
+                    // carrier the ancestor's generated code wouldn't write.
+                    bool isPublicWireShape =
+                        (member is IPropertySymbol prop && !prop.IsIndexer
+                            && prop.DeclaredAccessibility == Accessibility.Public)
+                        || (member is IFieldSymbol field
+                            && field.DeclaredAccessibility == Accessibility.Public);
+                    if (!isPublicWireShape) continue;
 
                     // v0.12.1 round-2 P1 (codex): only stub members that are actually serialized by
                     // the ancestor's generated Serialize/Deserialize. Without this gate, a
