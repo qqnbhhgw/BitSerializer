@@ -77,6 +77,61 @@ internal static class SerializerEmitter
                     sb.AppendLine($"        {keyword} (this.{field.MemberName} is {mapping.ConcreteTypeFullName})");
                     sb.AppendLine($"            this.{relatedField.MemberName} = ({relatedField.MemberTypeName}){mapping.TypeId};");
                 }
+
+                // v0.12.0: polymorphic field can also carry a SECONDARY ByteLength binding (BITS057
+                // gates: poly only). Backfill the byte-length carrier from the runtime poly object's
+                // GetTotalBitLength(). Null payload writes 0 bytes (same convention as nested
+                // ByteLength backfill in round-7 P2). The discriminator backfill above already ran
+                // — both carriers will hold consistent values before the primitive write loop.
+                if (field.SecondaryRelatedMemberName != null && field.SecondaryRelationKind == 1)
+                {
+                    var byteLenField = fields.Find(f => f.MemberName == field.SecondaryRelatedMemberName);
+                    if (byteLenField != null)
+                    {
+                        var name = field.MemberName;
+                        sb.AppendLine($"        int _polyBits_{name} = 0;");
+                        sb.AppendLine($"        if (this.{name} != null)");
+                        sb.AppendLine($"            _polyBits_{name} = ((global::BitSerializer.IBitSerializable)this.{name}).GetTotalBitLength();");
+                        sb.AppendLine($"        if ((_polyBits_{name} & 7) != 0)");
+                        sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Polymorphic '{name}' serializes to {{_polyBits_{name}}} bits which is not byte-aligned; the secondary [BitFieldRelated(ByteLength)] binding requires the runtime poly type's size to be a whole number of bytes.\");");
+                        sb.AppendLine($"        int _polyBytes_{name} = _polyBits_{name} / 8;");
+
+                        // Codex review round-2 P2: route the domain byte count through the SECONDARY
+                        // binding's ValueConverter (when declared) before writing the wire value. The
+                        // converter is keyed off Secondary* model fields, not the primary set —
+                        // primary carries the discriminator-side converter (typically absent), and a
+                        // length converter (offset / scale / shift) on the ByteLength binding is the
+                        // common protocol pattern this multi-binding path was designed for.
+                        string wireRaw = field.SecondaryValueConverterTypeFullName != null && field.SecondaryValueConverterHasSerialize
+                            ? (field.SecondaryValueConverterSerializeHasContext
+                                ? $"{field.SecondaryValueConverterTypeFullName}.OnSerializeConvert((object)_polyBytes_{name}, context)"
+                                : $"{field.SecondaryValueConverterTypeFullName}.OnSerializeConvert((object)_polyBytes_{name})")
+                            : $"(object)_polyBytes_{name}";
+                        sb.AppendLine($"        long _polyWire_{name} = global::System.Convert.ToInt64({wireRaw});");
+                        // Codex review round-6 P2: 32-bit carriers also need bounds checking. Without
+                        // it, an int carrier could accept _polyWire_ values outside [int.MinValue,
+                        // int.MaxValue] and the explicit cast below would wrap silently in unchecked
+                        // context, writing a corrupted length while leaving deserialize to fail with
+                        // a confusing byte-budget mismatch. Pick the right max from the carrier type
+                        // name (int = signed 32-bit, uint = unsigned 32-bit). 64-bit carriers can
+                        // physically hold any byte count produced by Convert.ToInt64 so skip there.
+                        if (byteLenField.BitLength < 32)
+                        {
+                            long maxValue = (1L << byteLenField.BitLength) - 1;
+                            sb.AppendLine($"        if (_polyWire_{name} < 0 || _polyWire_{name} > {maxValue})");
+                            sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Polymorphic '{name}' produced wire length {{_polyWire_{name}}} which cannot fit in the {byteLenField.BitLength}-bit byte-length field '{byteLenField.MemberName}'.\");");
+                        }
+                        else if (byteLenField.BitLength == 32)
+                        {
+                            string carrierMax = byteLenField.MemberTypeName == "int"
+                                ? "(long)int.MaxValue"
+                                : "(long)uint.MaxValue";
+                            sb.AppendLine($"        if (_polyWire_{name} < 0 || _polyWire_{name} > {carrierMax})");
+                            sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Polymorphic '{name}' produced wire length {{_polyWire_{name}}} which cannot fit in the {byteLenField.MemberName} carrier ({byteLenField.MemberTypeName}).\");");
+                        }
+                        sb.AppendLine($"        this.{byteLenField.MemberName} = ({byteLenField.MemberTypeName})_polyWire_{name};");
+                    }
+                }
             }
         }
     }
@@ -150,18 +205,36 @@ internal static class SerializerEmitter
                         && !field.IsTypeParameter
                         && field.BitLength > 0;
 
+        // Codex review round-7 P1 (PR #5 follow-up): the null-guard only compiles for reference
+        // carriers. Struct / unconstrained-type-parameter carriers can never be null, so emit the
+        // bit-length compute unconditionally for those — value types always have content, so the
+        // "treat null as 0 bytes" affordance doesn't apply (and would produce CS0019 if guarded).
         sb.AppendLine($"        int _nbits_{name} = 0;");
-        sb.AppendLine($"        if (this.{name} != null)");
-        sb.AppendLine("        {");
-        if (isStatic)
+        if (field.NestedIsReferenceType)
         {
-            sb.AppendLine($"            _nbits_{name} = {field.BitLength};");
+            sb.AppendLine($"        if (this.{name} != null)");
+            sb.AppendLine("        {");
+            if (isStatic)
+            {
+                sb.AppendLine($"            _nbits_{name} = {field.BitLength};");
+            }
+            else
+            {
+                sb.AppendLine($"            _nbits_{name} = ((global::BitSerializer.IBitSerializable)this.{name}).GetTotalBitLength();");
+            }
+            sb.AppendLine("        }");
         }
         else
         {
-            sb.AppendLine($"            _nbits_{name} = ((global::BitSerializer.IBitSerializable)this.{name}).GetTotalBitLength();");
+            if (isStatic)
+            {
+                sb.AppendLine($"        _nbits_{name} = {field.BitLength};");
+            }
+            else
+            {
+                sb.AppendLine($"        _nbits_{name} = ((global::BitSerializer.IBitSerializable)this.{name}).GetTotalBitLength();");
+            }
         }
-        sb.AppendLine("        }");
 
         // Runtime byte-alignment guard. Mirror of the list path — BITS051 catches the static case
         // at compile time but dynamic nested types must be checked at runtime.
@@ -382,7 +455,15 @@ internal static class SerializerEmitter
                 // null + 0-bytes-budget is a valid round-trippable wire shape; keep the original
                 // strict NRE-on-null behavior for non-ByteLength carriers because there's no way
                 // to recover the offset when the slot is fixed-size.
+                //
+                // Codex review round-7 P1 (PR #5 follow-up): the null-guard itself only compiles
+                // when memberAccess is a reference type — `!= null` against a struct or against an
+                // unconstrained / struct-constrained type parameter is CS0019. Skip the guard for
+                // those cases; value-type carriers can never be null, so the body is always safe
+                // to execute and the 0-byte-budget edge case won't be hit (a struct always has
+                // content, GetTotalBitLength()>0 always emits non-zero size).
                 bool isByteLengthCarrier = field.RelationKind == 1 && field.RelatedMemberName != null;
+                bool emitNullGuard = isByteLengthCarrier && field.NestedIsReferenceType;
 
                 // Declare fieldEndVar at outer scope when needed (downstream CRC tracking + offset
                 // pipeline reads it), default it to offsetExpr so the null branch's "advance 0 bits"
@@ -394,7 +475,7 @@ internal static class SerializerEmitter
                 }
 
                 string indent = "        ";
-                if (isByteLengthCarrier)
+                if (emitNullGuard)
                 {
                     sb.AppendLine($"        if ({memberAccess} != null)");
                     sb.AppendLine("        {");
@@ -425,7 +506,7 @@ internal static class SerializerEmitter
                     sb.AppendLine($"{indent}({ibsExpr}).AfterSerialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
                 }
 
-                if (isByteLengthCarrier)
+                if (emitNullGuard)
                     sb.AppendLine("        }");
             }
             else if (field.IsNumericOrEnum)

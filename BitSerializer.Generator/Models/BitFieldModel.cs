@@ -34,6 +34,43 @@ internal class BitFieldModel
     public bool ListElementIsNested { get; set; }
     public int? FixedCount { get; set; }
     public string? RelatedMemberName { get; set; }
+
+    // v0.12.0: A field can now carry a SECOND [BitFieldRelated] binding with a different
+    // RelationKind than the primary. The canonical use case is a polymorphic field that needs
+    // BOTH a discriminator (RelationKind=Count, the primary) AND a byte-length carrier
+    // (RelationKind=ByteLength, the secondary) — wire reader uses the discriminator to pick
+    // the concrete poly type and the byte budget to know how many bytes to consume.
+    // Slot is empty (null / 0) when only one [BitFieldRelated] is declared, preserving
+    // backward compatibility with all v0.11.x and earlier consumers.
+    public string? SecondaryRelatedMemberName { get; set; }
+    public int SecondaryRelationKind { get; set; }
+
+    /// <summary>
+    /// Cached primitive type name of the SECONDARY [BitFieldRelated] carrier (e.g. "byte", "sbyte",
+    /// "ushort"). Codex review round-2 P1: the deserializer must reinterpret signed carriers as
+    /// their unsigned twin before widening to long (an 8-bit signed carrier holding the wire value
+    /// 0xC8 reads as -56 and trips the post-deserialize byte-length verify; casting (byte)(sbyte) →
+    /// byte 200 → long 200 recovers the unsigned interpretation). Mirrors LengthFieldTypeName.
+    /// </summary>
+    public string? SecondaryRelatedFieldTypeName { get; set; }
+    /// <summary>Bit width of the secondary carrier (mirrors LengthFieldBitWidth; needed for overflow guards).</summary>
+    public int SecondaryRelatedFieldBitWidth { get; set; }
+
+    /// <summary>
+    /// Optional ValueConverter attached to the SECONDARY [BitFieldRelated] binding (almost always
+    /// a length converter for the ByteLength carrier — protocols that wire-encode length with an
+    /// offset / shift / scale).
+    /// Codex review round-2 P2: previously the analyzer always copied the primary (Count) binding's
+    /// converter and silently dropped any converter declared on the secondary (ByteLength) binding,
+    /// so protocols that encode length with a transform produced incompatible wire values while the
+    /// attribute was accepted.
+    /// </summary>
+    public string? SecondaryValueConverterTypeFullName { get; set; }
+    public bool SecondaryValueConverterHasSerialize { get; set; }
+    public bool SecondaryValueConverterHasDeserialize { get; set; }
+    public bool SecondaryValueConverterSerializeHasContext { get; set; }
+    public bool SecondaryValueConverterDeserializeHasContext { get; set; }
+
     public bool IsNestedType { get; set; }
     public bool IsTypeParameter { get; set; }
     public bool IsPolymorphic { get; set; }
@@ -145,6 +182,18 @@ internal class BitFieldModel
     // size, while the nested deserializer's consumedBits-vs-budget assertion would fail at
     // round-trip).
     public bool NestedTypeHasDynamicContent { get; set; }
+
+    /// <summary>
+    /// True when the field's nested-type member is a reference type (or a generic type parameter
+    /// with a `class` constraint) — i.e. comparing it to <c>null</c> or assigning <c>null</c> to it
+    /// compiles. False for struct nested types and unconstrained / struct-constrained type
+    /// parameters. Codex review round-7 P1: the ByteLength nested-carrier emit paths emit
+    /// <c>if (memberAccess != null)</c> on the serializer and <c>memberAccess = null;</c> on the
+    /// deserializer; both produce CS0019/CS0037/CS0403 against non-reference carriers. Defaults to
+    /// true so non-nested fields and types that never reach the null-guarded path keep the existing
+    /// emit shape.
+    /// </summary>
+    public bool NestedIsReferenceType { get; set; } = true;
 
     // True if the field's nested type (direct nested OR list element type) transitively contains
     // a [BitField(Endian = ...)] override. Computed during this field's analysis using the actual

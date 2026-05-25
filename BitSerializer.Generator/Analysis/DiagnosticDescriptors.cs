@@ -444,4 +444,60 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor TooManyRelatedAttributes = new(
+        "BITS056",
+        "Too many [BitFieldRelated] attributes on the same field",
+        "Member '{0}' in '{1}' carries {2} [BitFieldRelated] attributes; the analyzer accepts at most 2 (one Count + one ByteLength). The canonical multi-binding pattern is a polymorphic field with a discriminator (Count) and a byte-budget carrier (ByteLength); other combinations would require >2 carrier reads at runtime which is not implemented",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor MultipleRelatedRequirePolymorphic = new(
+        "BITS057",
+        "Multiple [BitFieldRelated] attributes only supported on polymorphic fields",
+        "Member '{0}' in '{1}' has 2 [BitFieldRelated] attributes but is not polymorphic (IsList = {2}, IsNested = {3}). Only [BitPoly]-decorated members can usefully bind both a discriminator and a byte-length carrier — list count + byte-length on the same field would be self-contradictory, and a non-polymorphic nested type already has its discriminator implicit in the type name",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor MultipleRelatedSameRelationKind = new(
+        "BITS058",
+        "Two [BitFieldRelated] attributes must use different RelationKinds",
+        "Member '{0}' in '{1}' has 2 [BitFieldRelated] attributes both using RelationKind={2}. A second binding only makes sense when it carries an *orthogonal* piece of information; two carriers of the same kind would conflict (which one to backfill from? which to verify against?). Set the second attribute's RelationKind to the complementary value (Count + ByteLength)",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor MultipleRelatedSameCarrier = new(
+        "BITS059",
+        "Two [BitFieldRelated] attributes cannot point to the same carrier field",
+        "Member '{0}' in '{1}' has 2 [BitFieldRelated] attributes both targeting '{2}'. The serializer back-fills the discriminator (Count) first and then the byte budget (ByteLength), so the second write overwrites the discriminator value the deserializer would read to pick the concrete polymorphic type; the wire ends up carrying byte-length instead of type-id and deserialize either dispatches the wrong type or throws 'No polymorphic type mapping found'. Use TWO separate carrier fields — one for the discriminator and a distinct one for the byte budget",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor MultipleRelatedRequiresAutoLengthPolymorphic = new(
+        "BITS060",
+        "Multi-binding [BitFieldRelated] requires auto-length polymorphic (no explicit BitField bit length)",
+        "Member '{0}' in '{1}' has 2 [BitFieldRelated] attributes (Count + ByteLength) but also declares an explicit bit length [BitField({2})]. The secondary byte-length carrier was designed for *auto-length* polymorphic fields where the concrete poly type's runtime size determines the byte budget; a fixed-slot polymorphic field always writes exactly {2} bits regardless of the runtime type, so the byte carrier would always be a constant ({3} bytes) AND the deserializer's consumed-vs-declared verify is unreachable (the fixed-slot deserialize path doesn't track runtime bit consumption). Remove the explicit BitField bit length or drop the secondary [BitFieldRelated] binding",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor RelatedFieldNotFound = new(
+        "BITS061",
+        "[BitFieldRelated] target field does not exist in the enclosing type",
+        "Member '{0}' in '{1}' references '{2}' via [BitFieldRelated] ({3}), but '{1}' does not declare a field named '{2}'. Typos like `nameof(Lenght)` would otherwise pass analysis and fail the generated code with CS1061 at compile time; reject up front with a BitSerializer diagnostic so the cause is obvious",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
+    public static readonly DiagnosticDescriptor UnknownRelationKind = new(
+        "BITS062",
+        "[BitFieldRelated] RelationKind value is not a known enum member",
+        "Member '{0}' in '{1}' has a [BitFieldRelated] attribute with RelationKind={2}, which is not a valid BitRelationKind value (0 = Count, 1 = ByteLength). Out-of-range values from an explicit enum cast would otherwise silently make the multi-binding sort drop the second attribute and turn it into a no-op",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

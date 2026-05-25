@@ -555,74 +555,195 @@ internal static class TypeAnalyzer
                 }
             }
 
-            // Check for BitFieldRelated
-            var relatedAttr = GetAttribute(member, "BitSerializer.BitFieldRelatedAttribute");
+            // v0.12.0: collect ALL [BitFieldRelated] occurrences (the attribute is now
+            // AllowMultiple=true). The user's canonical pattern is polymorphic + byte-length
+            // budget: one binding identifies the discriminator (Count), the other carries the
+            // byte budget (ByteLength). Source order is preserved by GetAttributes.
+            var relatedAttrs = GetAttributes(member, "BitSerializer.BitFieldRelatedAttribute");
+            // BITS056: hard cap at 2. >2 isn't supported because there are only 2 orthogonal
+            // pieces of information you can pin to a field (which type / how many bytes).
+            if (relatedAttrs.Count > 2)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.TooManyRelatedAttributes,
+                        member.Locations.FirstOrDefault(),
+                        member.Name, symbol.Name, relatedAttrs.Count)
+                };
+            }
             string? relatedMemberName = null;
             string? valueConverterFullName = null;
+            int primaryRelationKind = 0; // Count default
+            string? secondaryRelatedMemberName = null;
+            int secondaryRelationKind = 0;
 
-            if (relatedAttr != null)
+            // Each occurrence has its own (name, converter, RelationKind) tuple. Read them all into
+            // a temporary list, then sort into primary / secondary based on RelationKind below.
+            var parsedBindings = new List<(string? Name, string? ConverterFullName, int RelationKind, INamedTypeSymbol? ConverterSym)>();
+            foreach (var ra in relatedAttrs)
             {
-                if (relatedAttr.ConstructorArguments.Length > 0 &&
-                    !relatedAttr.ConstructorArguments[0].IsNull)
+                string? rmn = null;
+                string? rvc = null;
+                int rrk = 0;
+                INamedTypeSymbol? rcs = null;
+                if (ra.ConstructorArguments.Length > 0 && !ra.ConstructorArguments[0].IsNull)
+                    rmn = ra.ConstructorArguments[0].Value as string;
+                if (ra.ConstructorArguments.Length > 1 && !ra.ConstructorArguments[1].IsNull)
                 {
-                    relatedMemberName = relatedAttr.ConstructorArguments[0].Value as string;
+                    rcs = ra.ConstructorArguments[1].Value as INamedTypeSymbol;
+                    if (rcs != null)
+                        rvc = rcs.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                 }
-
-                if (relatedAttr.ConstructorArguments.Length > 1 &&
-                    !relatedAttr.ConstructorArguments[1].IsNull)
+                foreach (var namedArg in ra.NamedArguments)
                 {
-                    var converterType = relatedAttr.ConstructorArguments[1].Value as INamedTypeSymbol;
-                    if (converterType != null)
+                    if (rvc == null && namedArg.Key == "ValueConverterType"
+                        && namedArg.Value.Value is INamedTypeSymbol ncs)
                     {
-                        valueConverterFullName = converterType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                        rcs = ncs;
+                        rvc = ncs.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                    }
+                    else if (namedArg.Key == "RelationKind" && namedArg.Value.Value is int rk)
+                    {
+                        rrk = rk;
                     }
                 }
+                parsedBindings.Add((rmn, rvc, rrk, rcs));
+            }
 
-                // Also check named arguments (ValueConverterType = typeof(...), RelationKind = ...)
-                foreach (var namedArg in relatedAttr.NamedArguments)
+            INamedTypeSymbol? primaryConverterSym = null;
+            if (parsedBindings.Count == 1)
+            {
+                var b = parsedBindings[0];
+                relatedMemberName = b.Name;
+                valueConverterFullName = b.ConverterFullName;
+                primaryRelationKind = b.RelationKind;
+                primaryConverterSym = b.ConverterSym;
+            }
+            else if (parsedBindings.Count == 2)
+            {
+                // Codex review round-6 P2: BITS062 — every binding's RelationKind must be a known
+                // enum value (0 = Count, 1 = ByteLength). An out-of-range explicit cast
+                // (e.g. `(BitRelationKind)99`) would otherwise let `FirstOrDefault(b =>
+                // b.RelationKind == 0 / 1)` below return a default tuple and silently drop the
+                // matching binding — user-visible second [BitFieldRelated] becomes a no-op without
+                // a diagnostic. Reject up front.
+                foreach (var b in parsedBindings)
                 {
-                    if (valueConverterFullName == null
-                        && namedArg.Key == "ValueConverterType"
-                        && namedArg.Value.Value is INamedTypeSymbol namedConverterType)
+                    if (b.RelationKind != 0 && b.RelationKind != 1)
                     {
-                        valueConverterFullName = namedConverterType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.UnknownRelationKind,
+                                member.Locations.FirstOrDefault(),
+                                member.Name, symbol.Name, b.RelationKind)
+                        };
                     }
-                    else if (namedArg.Key == "RelationKind" && namedArg.Value.Value is int relKindRaw)
+                }
+                // BITS058: the two must carry orthogonal information (different RelationKind).
+                if (parsedBindings[0].RelationKind == parsedBindings[1].RelationKind)
+                {
+                    return new AnalyzeResult
                     {
-                        field.RelationKind = relKindRaw;
-                    }
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.MultipleRelatedSameRelationKind,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name,
+                            parsedBindings[0].RelationKind == 1 ? "ByteLength" : "Count")
+                    };
+                }
+                // Codex review round-4 P1: BITS059 — both bindings cannot point to the same
+                // carrier field. EmitAutoBackfill writes the discriminator first then the byte
+                // budget; if they share a target the second write clobbers the discriminator and
+                // wire ends up carrying byte-length instead of type-id (deserialize dispatches the
+                // wrong concrete poly type or hits "No mapping found"). Use two distinct fields.
+                if (parsedBindings[0].Name == parsedBindings[1].Name)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.MultipleRelatedSameCarrier,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, parsedBindings[0].Name)
+                    };
+                }
+                // Canonical ordering: Count binding becomes primary (preserves discriminator /
+                // count-field semantics for callers that expect the *first* read), ByteLength
+                // binding becomes secondary. Source order is irrelevant — the user can write
+                // either order and get the same emit.
+                var countBind = parsedBindings.FirstOrDefault(b => b.RelationKind == 0);
+                var byteBind = parsedBindings.FirstOrDefault(b => b.RelationKind == 1);
+                relatedMemberName = countBind.Name;
+                valueConverterFullName = countBind.ConverterFullName;
+                primaryRelationKind = 0;
+                primaryConverterSym = countBind.ConverterSym;
+                secondaryRelatedMemberName = byteBind.Name;
+                secondaryRelationKind = 1;
+
+                // Codex review round-2 P2: preserve the secondary binding's ValueConverter (e.g.
+                // protocols that wire-encode byte-length with an offset / scale). Previously only
+                // the primary (Count) converter was kept, so byteBind.ConverterFullName was silently
+                // dropped — secondary backfill / verify ran without the user-declared transform.
+                field.SecondaryValueConverterTypeFullName = byteBind.ConverterFullName;
+                if (byteBind.ConverterSym != null)
+                {
+                    var secSerMethods = byteBind.ConverterSym.GetMembers("OnSerializeConvert").OfType<IMethodSymbol>().ToList();
+                    var secDeserMethods = byteBind.ConverterSym.GetMembers("OnDeserializeConvert").OfType<IMethodSymbol>().ToList();
+                    field.SecondaryValueConverterHasSerialize = secSerMethods.Count > 0;
+                    field.SecondaryValueConverterHasDeserialize = secDeserMethods.Count > 0;
+                    field.SecondaryValueConverterSerializeHasContext = secSerMethods.Any(m => m.Parameters.Length == 2);
+                    field.SecondaryValueConverterDeserializeHasContext = secDeserMethods.Any(m => m.Parameters.Length == 2);
                 }
             }
 
             field.RelatedMemberName = relatedMemberName;
+            field.RelationKind = primaryRelationKind;
             field.ValueConverterTypeFullName = valueConverterFullName;
+            field.SecondaryRelatedMemberName = secondaryRelatedMemberName;
+            field.SecondaryRelationKind = secondaryRelationKind;
 
-            // Check if converter type has context-aware overloads (2-param OnSerializeConvert/OnDeserializeConvert)
-            if (valueConverterFullName != null && relatedAttr != null)
+            // Codex review round-2 P1: cache the secondary carrier's primitive type name and bit
+            // width so EmitPolymorphicDeserialize can reinterpret signed carriers via UnsignedTwinOf
+            // (an 8-bit signed Length holding wire 0xC8 must be read as 200, not -56). Carrier must
+            // already exist in model.Fields because BITS053 secondary now rejects "carrier declared
+            // after dependent" layouts; the null-check below is defensive in case BITS053 is
+            // bypassed in some future refactor.
+            if (secondaryRelatedMemberName != null)
             {
-                INamedTypeSymbol? converterSymbol = null;
-                if (relatedAttr.ConstructorArguments.Length > 1 && !relatedAttr.ConstructorArguments[1].IsNull)
-                    converterSymbol = relatedAttr.ConstructorArguments[1].Value as INamedTypeSymbol;
-                if (converterSymbol == null)
+                var secCarrier = model.Fields.Find(f => f.MemberName == secondaryRelatedMemberName);
+                if (secCarrier != null)
                 {
-                    foreach (var namedArg in relatedAttr.NamedArguments)
-                    {
-                        if (namedArg.Key == "ValueConverterType" && namedArg.Value.Value is INamedTypeSymbol ns)
-                        {
-                            converterSymbol = ns;
-                            break;
-                        }
-                    }
+                    // Codex review round-7 P2: when the carrier is an enum, MemberTypeName is the
+                    // enum's own name (e.g. "MyLengthEnum"), which UnsignedTwinOf doesn't recognize
+                    // — the deserializer would keep signed semantics and reject wire values above
+                    // the signed max of the *underlying* integral type (e.g. `enum : sbyte` length
+                    // 200 reads as -56 and trips the verify). Use the enum's underlying integral
+                    // type name so UnsignedTwinOf can pick the correct unsigned twin. Mirrors the
+                    // same pattern CrcFieldTypeName uses for enum CRC carriers.
+                    field.SecondaryRelatedFieldTypeName = secCarrier.IsEnum
+                        ? secCarrier.EnumUnderlyingTypeName!
+                        : secCarrier.MemberTypeName;
+                    field.SecondaryRelatedFieldBitWidth = secCarrier.BitLength;
                 }
-                if (converterSymbol != null)
-                {
-                    var serMethods = converterSymbol.GetMembers("OnSerializeConvert").OfType<IMethodSymbol>().ToList();
-                    var deserMethods = converterSymbol.GetMembers("OnDeserializeConvert").OfType<IMethodSymbol>().ToList();
-                    field.ValueConverterHasSerialize = serMethods.Count > 0;
-                    field.ValueConverterHasDeserialize = deserMethods.Count > 0;
-                    field.ValueConverterSerializeHasContext = serMethods.Any(m => m.Parameters.Length == 2);
-                    field.ValueConverterDeserializeHasContext = deserMethods.Any(m => m.Parameters.Length == 2);
-                }
+            }
+            // `relatedAttr` is referenced by code below (BITS007 polymorphic-missing-discriminator
+            // check). Synthesize as a non-null sentinel when any [BitFieldRelated] is present so
+            // existing logic keeps working.
+            var relatedAttr = parsedBindings.Count > 0 ? relatedAttrs[0] : null;
+
+            // Check if converter type has context-aware overloads (2-param OnSerializeConvert/OnDeserializeConvert).
+            // v0.12.0: use the pre-resolved primaryConverterSym (correct for both 1-binding and
+            // 2-binding cases — the Count-side binding's converter is canonical, ByteLength side
+            // converters are not supported in the multi-binding mode).
+            if (valueConverterFullName != null && primaryConverterSym != null)
+            {
+                var serMethods = primaryConverterSym.GetMembers("OnSerializeConvert").OfType<IMethodSymbol>().ToList();
+                var deserMethods = primaryConverterSym.GetMembers("OnDeserializeConvert").OfType<IMethodSymbol>().ToList();
+                field.ValueConverterHasSerialize = serMethods.Count > 0;
+                field.ValueConverterHasDeserialize = deserMethods.Count > 0;
+                field.ValueConverterSerializeHasContext = serMethods.Any(m => m.Parameters.Length == 2);
+                field.ValueConverterDeserializeHasContext = deserMethods.Any(m => m.Parameters.Length == 2);
             }
 
             // Check for BitFieldCount
@@ -891,6 +1012,7 @@ internal static class TypeAnalyzer
                 field.MemberTypeName = memberType.Name;
                 field.MemberTypeFullName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                 field.IsNestedType = true;
+                field.NestedIsReferenceType = memberType.IsReferenceType;
 
                 // For polymorphic, use explicit bitLength or calculate from max poly type
                 if (explicitBitLength.HasValue)
@@ -949,6 +1071,7 @@ internal static class TypeAnalyzer
             else if (HasAttribute(memberType, "BitSerializer.BitSerializeAttribute"))
             {
                 field.IsNestedType = true;
+                field.NestedIsReferenceType = memberType.IsReferenceType;
                 field.MemberTypeName = memberType.Name;
                 field.MemberTypeFullName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
@@ -1005,6 +1128,15 @@ internal static class TypeAnalyzer
                 // Bit length is unknown at compile time, use interface dispatch at runtime
                 field.IsNestedType = true;
                 field.IsTypeParameter = true;
+                // Codex review round-7 P1: prefer ITypeParameterSymbol.IsReferenceType over the
+                // narrower HasReferenceTypeConstraint. The former returns true when ANY constraint
+                // forces a reference type — class keyword, OR a base-class constraint like
+                // `where T : PayloadBase, IBitSerializable, new()` — which is the realistic shape
+                // for [BitSerialize] hierarchies. HasReferenceTypeConstraint only sees the literal
+                // `class` keyword, so it false-classifies the common base-class case as value-type
+                // and the ByteLength emit paths skip the null-guard / null-assignment that valid
+                // optional reference payloads need.
+                field.NestedIsReferenceType = typeParam.IsReferenceType;
                 field.MemberTypeName = memberType.Name;
                 field.MemberTypeFullName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                 field.BitLength = 0; // Unknown at compile time
@@ -1015,6 +1147,7 @@ internal static class TypeAnalyzer
                 // Manual IBitSerializable type (without [BitSerialize] attribute)
                 field.IsManualBitSerializable = true;
                 field.IsNestedType = true;
+                field.NestedIsReferenceType = memberType.IsReferenceType;
                 field.MemberTypeName = memberType.Name;
                 field.MemberTypeFullName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 
@@ -1052,6 +1185,41 @@ internal static class TypeAnalyzer
                         DiagnosticDescriptors.NestedTypeMustBeBitSerializable,
                         member.Locations.FirstOrDefault(),
                         memberType.Name, symbol.Name)
+                };
+            }
+
+            // v0.12.0 BITS057: multi-binding [BitFieldRelated] only makes sense for polymorphic
+            // fields. List with both count+ByteLength is self-contradictory (which one drives the
+            // loop?), nested type with count is meaningless (a class isn't a collection), and so on.
+            // The check runs HERE (after field categorization) so we know IsPolymorphic.
+            if (field.SecondaryRelatedMemberName != null && !field.IsPolymorphic)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.MultipleRelatedRequirePolymorphic,
+                        member.Locations.FirstOrDefault(),
+                        member.Name, symbol.Name, field.IsList, field.IsNestedType)
+                };
+            }
+
+            // Codex review round-4 P2: BITS060 — multi-binding is only meaningful for *auto-length*
+            // polymorphic. With explicit [BitField(N)] the poly field's serialize/deserialize go
+            // through the fixed-slot path (bitIndexVar == null, BitStartIndex-based offsets), which
+            // (a) makes the byte budget a compile-time constant (always N/8), so the carrier is
+            // redundant, and (b) leaves the EmitPolymorphicDeserialize consumed-vs-declared verify
+            // unreachable (it's gated on bitIndexVar != null because the fixed-slot path doesn't
+            // track runtime bit consumption). Reject upfront so users either drop the explicit
+            // [BitField(N)] (auto-length, runtime byte count matters) or drop the secondary binding
+            // (fixed-slot, byte count is implicit).
+            if (field.SecondaryRelatedMemberName != null && field.IsPolymorphic && explicitBitLength.HasValue)
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.MultipleRelatedRequiresAutoLengthPolymorphic,
+                        member.Locations.FirstOrDefault(),
+                        member.Name, symbol.Name, explicitBitLength.Value, explicitBitLength.Value / 8)
                 };
             }
 
@@ -1482,6 +1650,30 @@ internal static class TypeAnalyzer
             }
         }
 
+        // Codex review round-3 P1: BITS024 only inspects primary RelationKind==1 above; the
+        // multi-binding path (polymorphic + ByteLength budget, SecondaryRelationKind==1) was
+        // missing the same one-way-converter rejection. A converter that implements only one
+        // direction would silently let the serializer write transformed byte lengths while the
+        // deserializer reads raw values (or vice versa), producing a false
+        // InvalidDataException byte-length mismatch on valid self-produced payloads. Reuse the
+        // BITS024 descriptor so consumers see a single diagnostic id for the whole "ByteLength
+        // converter incomplete" class regardless of which slot carries the binding.
+        foreach (var f in model.Fields)
+        {
+            if (f.SecondaryRelatedMemberName == null || f.SecondaryRelationKind != 1) continue;
+            if (f.SecondaryValueConverterTypeFullName != null
+                && (!f.SecondaryValueConverterHasSerialize || !f.SecondaryValueConverterHasDeserialize))
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.ByteLengthConverterMissingDirection,
+                        symbol.Locations.FirstOrDefault(),
+                        f.MemberName, symbol.Name, f.SecondaryValueConverterTypeFullName)
+                };
+            }
+        }
+
         // Codex review P1: BITS053 — every [BitFieldRelated] (count / discriminator / byte-budget)
         // and [BitLengthFieldString] dependent reads the related field's wire value at
         // deserialize time, but deserialization runs in declaration order. If the related field is
@@ -1490,10 +1682,19 @@ internal static class TypeAnalyzer
         // default value (0 / null) and produces an empty list / wrong poly case / mis-sized
         // payload. BITS052 already covers the nested-ByteLength sub-case; this is the general
         // gate for list count / list ByteLength / polymorphic discriminator / length-field-string.
+        //
+        // v0.12.0 (PR #6 codex P1): a polymorphic field can now also carry a SECONDARY
+        // [BitFieldRelated(ByteLength)] binding (SecondaryRelatedMemberName). The post-deserialize
+        // byte-budget verify in EmitPolymorphicDeserialize reads that secondary carrier via
+        // ReadFieldExpr immediately after the switch — if the carrier is declared AFTER the
+        // polymorphic field, the cached `_wire_<name>` local doesn't exist yet and the verify
+        // falls back to `this.<carrier>` (default 0), turning valid round-trip data into a runtime
+        // InvalidDataException. Add the secondary binding to the same ordering + carrier-constant
+        // gates as primary references.
         for (int dependentIdx = 0; dependentIdx < model.Fields.Count; dependentIdx++)
         {
             var dep = model.Fields[dependentIdx];
-            string? referencedName = null;
+            var referencedSlots = new List<(string Name, string Kind)>();
             // Codex review round-5 P2: include nested-type and type-parameter ByteLength carriers
             // (T4). The original condition `IsList || IsPolymorphic` missed them, so a
             // [BitFieldRelated(nameof(Len), ByteLength)] on a nested [BitSerialize] type could pair
@@ -1504,57 +1705,85 @@ internal static class TypeAnalyzer
                 && (dep.IsList || dep.IsPolymorphic
                     || ((dep.IsNestedType || dep.IsTypeParameter) && dep.RelationKind == 1)))
             {
-                referencedName = dep.RelatedMemberName;
+                string kind = dep.IsPolymorphic ? "polymorphic discriminator"
+                    : ((dep.IsNestedType || dep.IsTypeParameter) && dep.RelationKind == 1) ? "nested byte-length carrier"
+                    : (dep.RelationKind == 1 ? "byte-length carrier" : "count carrier");
+                referencedSlots.Add((dep.RelatedMemberName, kind));
             }
-            else if (dep.IsLengthFieldString && dep.LengthFieldMemberName != null)
+            if (dep.IsLengthFieldString && dep.LengthFieldMemberName != null)
             {
                 // LengthFieldString's own BITS047 already enforces ordering via model.Fields.Find
                 // at parse time, but emit this check too so the diagnostic IDs are consistent for
                 // downstream tooling.
-                referencedName = dep.LengthFieldMemberName;
+                referencedSlots.Add((dep.LengthFieldMemberName, "string byte-count carrier"));
             }
-            if (referencedName == null) continue;
-
-            int relatedIdx = model.Fields.FindIndex(x => x.MemberName == referencedName);
-            if (relatedIdx >= 0 && relatedIdx >= dependentIdx)
+            // v0.12.0 secondary binding (BITS057 restricts this to polymorphic, so SecondaryRelationKind
+            // is always 1 / ByteLength in practice — but treat it generically in case future kinds
+            // are added).
+            if (dep.SecondaryRelatedMemberName != null)
             {
-                return new AnalyzeResult
-                {
-                    Diagnostic = Diagnostic.Create(
-                        DiagnosticDescriptors.RelatedFieldDeclaredAfterDependent,
-                        symbol.Locations.FirstOrDefault(),
-                        dep.MemberName, symbol.Name, referencedName)
-                };
+                string kind = dep.SecondaryRelationKind == 1
+                    ? "polymorphic byte-length carrier"
+                    : "polymorphic secondary carrier";
+                referencedSlots.Add((dep.SecondaryRelatedMemberName, kind));
             }
+            if (referencedSlots.Count == 0) continue;
 
-            // Codex review round-4 P2: the inverse of BITS044. The referenced carrier must NOT
-            // have [BitFieldValue(...)]. At serialize time EmitAutoBackfill / EmitLengthFieldStringBackfill
-            // writes the *real* dependent size into the carrier; then EmitPrimitiveSerialize for the
-            // carrier overwrites that with the pinned constant. Wire ends up holding the constant
-            // (e.g. magic 0x7E) but the dependent payload bytes reflect the real size — deserialize
-            // reads the constant as the budget and either truncates or mis-parses subsequent fields.
-            //
-            // BITS044 only catches the same-field case ([BitFieldValue] on a field that ALSO carries
-            // [BitFieldRelated]/[BitFieldCount]); the cross-field "carrier referenced by dependent"
-            // case has no diagnostic and silently corrupts wire output.
-            if (relatedIdx >= 0)
+            foreach (var (referencedName, referenceKind) in referencedSlots)
             {
-                var carrier = model.Fields[relatedIdx];
-                if (carrier.HasConstantValue)
+                int relatedIdx = model.Fields.FindIndex(x => x.MemberName == referencedName);
+                // Codex review round-5 P1: BITS061 — a typo like `nameof(Lenght)` previously slipped
+                // through to codegen, where SerializerEmitter / DeserializerEmitter would emit
+                // `this.Lenght = …` and the user would see CS1061 instead of a BitSerializer
+                // diagnostic. Reject up-front so the cause (and the offending member / referenced
+                // name) are obvious. Covers primary RelatedMemberName + LengthFieldMemberName +
+                // SecondaryRelatedMemberName because they all funnel through referencedSlots.
+                if (relatedIdx < 0)
                 {
-                    string referenceKind = dep.IsLengthFieldString ? "string byte-count carrier"
-                        : dep.IsPolymorphic ? "polymorphic discriminator"
-                        : ((dep.IsNestedType || dep.IsTypeParameter) && dep.RelationKind == 1) ? "nested byte-length carrier"
-                        : (dep.RelationKind == 1 ? "byte-length carrier" : "count carrier");
                     return new AnalyzeResult
                     {
                         Diagnostic = Diagnostic.Create(
-                            DiagnosticDescriptors.FieldValueOnReferencedCarrier,
+                            DiagnosticDescriptors.RelatedFieldNotFound,
                             symbol.Locations.FirstOrDefault(),
-                            carrier.MemberName, symbol.Name,
-                            $"0x{unchecked((ulong)carrier.ConstantValue):X}",
-                            dep.MemberName, referenceKind)
+                            dep.MemberName, symbol.Name, referencedName, referenceKind)
                     };
+                }
+                if (relatedIdx >= dependentIdx)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.RelatedFieldDeclaredAfterDependent,
+                            symbol.Locations.FirstOrDefault(),
+                            dep.MemberName, symbol.Name, referencedName)
+                    };
+                }
+
+                // Codex review round-4 P2: the inverse of BITS044. The referenced carrier must NOT
+                // have [BitFieldValue(...)]. At serialize time EmitAutoBackfill / EmitLengthFieldStringBackfill
+                // writes the *real* dependent size into the carrier; then EmitPrimitiveSerialize for the
+                // carrier overwrites that with the pinned constant. Wire ends up holding the constant
+                // (e.g. magic 0x7E) but the dependent payload bytes reflect the real size — deserialize
+                // reads the constant as the budget and either truncates or mis-parses subsequent fields.
+                //
+                // BITS044 only catches the same-field case ([BitFieldValue] on a field that ALSO carries
+                // [BitFieldRelated]/[BitFieldCount]); the cross-field "carrier referenced by dependent"
+                // case has no diagnostic and silently corrupts wire output.
+                if (relatedIdx >= 0)
+                {
+                    var carrier = model.Fields[relatedIdx];
+                    if (carrier.HasConstantValue)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.FieldValueOnReferencedCarrier,
+                                symbol.Locations.FirstOrDefault(),
+                                carrier.MemberName, symbol.Name,
+                                $"0x{unchecked((ulong)carrier.ConstantValue):X}",
+                                dep.MemberName, referenceKind)
+                        };
+                    }
                 }
             }
         }

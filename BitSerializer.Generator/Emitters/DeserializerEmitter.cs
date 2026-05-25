@@ -405,6 +405,14 @@ internal static class DeserializerEmitter
             {
                 set.Add(f.RelatedMemberName);
             }
+            // v0.12.0: secondary [BitFieldRelated] binding (polymorphic + ByteLength budget) —
+            // the byte-length carrier needs the same wire-cache treatment as any other dependent
+            // reference, otherwise a "derived getter + empty setter" carrier would read stale
+            // values on deserialize (Issue resolved in v0.10.x for the single-binding case).
+            if (f.SecondaryRelatedMemberName != null)
+            {
+                set.Add(f.SecondaryRelatedMemberName);
+            }
             if (f.IsLengthFieldString && f.LengthFieldMemberName != null)
             {
                 set.Add(f.LengthFieldMemberName);
@@ -853,6 +861,46 @@ internal static class DeserializerEmitter
         sb.AppendLine("            default:");
         sb.AppendLine($"                throw new global::System.InvalidOperationException($\"No polymorphic type mapping found for discriminator value '{{(int)({discriminatorExpr})}}'\");");
         sb.AppendLine("        }");
+
+        // v0.12.0: when the polymorphic field has a SECONDARY [BitFieldRelated(ByteLength)]
+        // binding, verify that the concrete poly type's deserialize consumed exactly the byte
+        // budget the carrier declared. Mirrors the T4 nested-byte-length post-condition check —
+        // wrong consumption means the wire/spec are out of sync and subsequent fields would land
+        // at the wrong offset.
+        //
+        // Requires bitIndexVar to track post-deserialize bit offset (the caller passes one when
+        // usesRuntimeBitLength is true, which is always true for polymorphic + secondary because
+        // EmitMethod treats poly+secondary as dynamic — see EmitPolymorphicSerialize counterpart).
+        if (field.SecondaryRelatedMemberName != null && field.SecondaryRelationKind == 1 && bitIndexVar != null)
+        {
+            var name = field.MemberName;
+            // Codex review round-2 P1: reinterpret the carrier's bit pattern as the UNSIGNED twin
+            // of its declared type before widening to long, otherwise an 8-bit signed carrier
+            // holding wire value 0xC8 sign-extends to -56 and the (now-negative) verify trips on
+            // any payload above the signed max (127 / 32767 / etc.). Same UnsignedTwinOf pipeline
+            // [BitLengthFieldString] uses — keep them in sync. Falls back to plain `long` cast when
+            // SecondaryRelatedFieldTypeName isn't cached (BITS053 secondary should make that
+            // unreachable, but stay defensive so we never emit broken code).
+            string carrierExpr = ReadFieldExpr(emittedWireLocals, field.SecondaryRelatedMemberName);
+            string byteLenExpr = field.SecondaryRelatedFieldTypeName != null
+                ? $"(long)({UnsignedTwinOf(field.SecondaryRelatedFieldTypeName)})({carrierExpr})"
+                : $"(long)({carrierExpr})";
+            sb.AppendLine($"        long _polyWire_{name} = {byteLenExpr};");
+
+            // Codex review round-2 P2: apply the SECONDARY binding's deserialize converter (wire →
+            // domain bytes) before computing the declared bit budget. Without this the polymorphic
+            // byte-length verify uses the raw wire value, but the serializer's secondary backfill
+            // routes through the same converter — so a length converter (offset / scale) makes the
+            // two sides disagree by exactly the transform. Mirror that here.
+            string bytesExpr = field.SecondaryValueConverterTypeFullName != null && field.SecondaryValueConverterHasDeserialize
+                ? (field.SecondaryValueConverterDeserializeHasContext
+                    ? $"global::System.Convert.ToInt64({field.SecondaryValueConverterTypeFullName}.OnDeserializeConvert((object)_polyWire_{name}, context))"
+                    : $"global::System.Convert.ToInt64({field.SecondaryValueConverterTypeFullName}.OnDeserializeConvert((object)_polyWire_{name}))")
+                : $"_polyWire_{name}";
+            sb.AppendLine($"        long _polyDeclaredBits_{name} = ({bytesExpr}) * 8;");
+            sb.AppendLine($"        if (({bitIndexVar} - ({offsetExpr})) != _polyDeclaredBits_{name})");
+            sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Polymorphic '{name}' deserialized {{({bitIndexVar} - ({offsetExpr}))}} bits but the byte-length field '{field.SecondaryRelatedMemberName}' declared {{_polyDeclaredBits_{name}}} bits. The wire payload size does not match the declared byte budget.\");");
+        }
     }
 
     private static void EmitFixedStringDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string offsetExpr)
@@ -944,9 +992,22 @@ internal static class DeserializerEmitter
         // here — when the declared budget is 0, set the property to null and advance the cursor by
         // 0, skipping the nested deserialize call (which would consume 1+ bits for any non-empty
         // nested type and trip the consumed-vs-budget verify below).
+        //
+        // Codex review round-7 P1 (PR #5 follow-up): the `memberAccess = null;` only compiles for
+        // reference carriers (CS0037/CS0403 against struct or unconstrained type parameter). For
+        // value-type carriers, drop the null short-circuit — non-null structs always emit non-zero
+        // size, so a 0 budget there indicates malformed wire data; let the unconditional nested
+        // call run and trip the consumed-vs-budget verify, which is the correct diagnostic.
         sb.AppendLine($"        int _ncons_{field.MemberName} = 0;");
-        sb.AppendLine($"        if (_nbudgetBytes_{field.MemberName} == 0) {{ {memberAccess} = null; }}");
-        sb.AppendLine($"        else {{ _ncons_{field.MemberName} = {nestedCallExpr}; }}");
+        if (field.NestedIsReferenceType)
+        {
+            sb.AppendLine($"        if (_nbudgetBytes_{field.MemberName} == 0) {{ {memberAccess} = null; }}");
+            sb.AppendLine($"        else {{ _ncons_{field.MemberName} = {nestedCallExpr}; }}");
+        }
+        else
+        {
+            sb.AppendLine($"        _ncons_{field.MemberName} = {nestedCallExpr};");
+        }
         EmitNestedByteLengthVerify(sb, field, bitIndexVar, offsetExpr);
     }
 
@@ -957,6 +1018,11 @@ internal static class DeserializerEmitter
         // Round-7 P2 symmetry: same null + 0-budget short-circuit as the non-interface variant.
         // `interfaceLocal` was already assigned to a fresh instance by the caller; we leave that
         // local alone (the property assignment is done by the caller after this returns).
+        //
+        // No NestedIsReferenceType branch needed here: the interface path operates on the locally
+        // boxed `interfaceLocal`, which the caller always assigns regardless of underlying type.
+        // Value-type manual IBitSerializable carriers still get their pre-created default instance
+        // when budget==0; the caller's `memberAccess = (T)interfaceLocal;` unboxes that safely.
         sb.AppendLine($"        int _ncons_{field.MemberName} = 0;");
         sb.AppendLine($"        if (_nbudgetBytes_{field.MemberName} > 0)");
         sb.AppendLine($"            _ncons_{field.MemberName} = {interfaceLocal}.{methodName}(bytes, {offsetExpr}, {ctxArg});");

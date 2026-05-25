@@ -165,6 +165,15 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.IsPolymorphic == y.IsPolymorphic
             && x.FixedCount == y.FixedCount
             && x.RelatedMemberName == y.RelatedMemberName
+            && x.SecondaryRelatedMemberName == y.SecondaryRelatedMemberName
+            && x.SecondaryRelationKind == y.SecondaryRelationKind
+            && x.SecondaryRelatedFieldTypeName == y.SecondaryRelatedFieldTypeName
+            && x.SecondaryRelatedFieldBitWidth == y.SecondaryRelatedFieldBitWidth
+            && x.SecondaryValueConverterTypeFullName == y.SecondaryValueConverterTypeFullName
+            && x.SecondaryValueConverterHasSerialize == y.SecondaryValueConverterHasSerialize
+            && x.SecondaryValueConverterHasDeserialize == y.SecondaryValueConverterHasDeserialize
+            && x.SecondaryValueConverterSerializeHasContext == y.SecondaryValueConverterSerializeHasContext
+            && x.SecondaryValueConverterDeserializeHasContext == y.SecondaryValueConverterDeserializeHasContext
             && x.ValueConverterTypeFullName == y.ValueConverterTypeFullName
             && x.IsPotentiallyDynamic == y.IsPotentiallyDynamic
             && x.IsFixedString == y.IsFixedString
@@ -204,6 +213,7 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.ConstantValueIsUnsignedOverflow == y.ConstantValueIsUnsignedOverflow
             && x.NestedHasEndianOverride == y.NestedHasEndianOverride
             && x.NestedTypeHasDynamicContent == y.NestedTypeHasDynamicContent
+            && x.NestedIsReferenceType == y.NestedIsReferenceType
             && x.NestedEndianKind == y.NestedEndianKind
             && x.NestedEndianTypeFullName == y.NestedEndianTypeFullName
             && PolyMappingsEqual(x.PolyMappings, y.PolyMappings);
