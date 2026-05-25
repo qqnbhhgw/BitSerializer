@@ -2468,12 +2468,21 @@ internal static class TypeAnalyzer
         // Round-4 P1 broadened from GetSerializableMembers (public field/property only) to the
         // full instance member set, because a `private byte Length` on an intermediate class is
         // enough to shadow `base.Length` in `this.Length` lookups — codex's repro.
+        //
+        // Codex round-6 P1: scope private members to derivedSymbol ONLY. C# `this.<name>`
+        // resolution in the derived class can't see private members of intermediate bases (private
+        // inheritance is not a thing in C#), so those should not block the inherited stub. Without
+        // this scope-aware filter, a legitimate [BitFieldRelated(nameof(BaseCarrier))] was
+        // false-rejected as BITS061 whenever an intermediate base happened to declare a private
+        // member of the same name. derivedSymbol itself keeps full-member shadowing because its
+        // own private members ARE visible in its own generated code's `this.<name>` binding.
         var shadowedNames = new HashSet<string>(System.StringComparer.Ordinal);
         var hider = derivedSymbol;
         while (hider != null
                && !SymbolEqualityComparer.Default.Equals(hider, firstAncestor)
                && hider.SpecialType != SpecialType.System_Object)
         {
+            bool isDerivedSelf = SymbolEqualityComparer.Default.Equals(hider, derivedSymbol);
             foreach (var m in hider.GetMembers())
             {
                 if (m.IsStatic) continue;
@@ -2482,6 +2491,9 @@ internal static class TypeAnalyzer
                 // can't shadow a data carrier name via `this.<name>`. Ordinary methods CAN shadow
                 // via method-group conversion and would also fail the dependent's cast at codegen.
                 if (m is IMethodSymbol ms && ms.MethodKind != MethodKind.Ordinary) continue;
+                // round-6 P1 scope guard: intermediate base private members are invisible to
+                // derived-class code, so they don't shadow `this.<name>` resolution.
+                if (!isDerivedSelf && m.DeclaredAccessibility == Accessibility.Private) continue;
                 shadowedNames.Add(m.Name);
             }
             hider = hider.BaseType;
