@@ -103,7 +103,9 @@ internal static class TypeAnalyzer
                     // same way `this.BaseField` reads resolve at runtime via property inheritance.
                     // These are stubs (no BitStartIndex / serialize behavior) — emit main loops
                     // never see them; only carrier lookups and metadata-dependent checks do.
-                    CollectInheritedBitFields(current, inheritedFields);
+                    // round-3 P1: pass `symbol` so the hiding-aware filter drops ancestors
+                    // shadowed by `new` members declared lower in the chain.
+                    CollectInheritedBitFields(symbol, current, inheritedFields);
                     break;
                 }
                 // This intermediate base doesn't have [BitSerialize], collect its fields
@@ -2450,9 +2452,30 @@ internal static class TypeAnalyzer
     /// because cross-inheritance carriers cannot participate in those rules from the derived
     /// frame anyway.
     /// </summary>
-    private static void CollectInheritedBitFields(INamedTypeSymbol firstAncestor, List<BitFieldModel> sink)
+    private static void CollectInheritedBitFields(INamedTypeSymbol derivedSymbol, INamedTypeSymbol firstAncestor, List<BitFieldModel> sink)
     {
         var seen = new HashSet<string>(System.StringComparer.Ordinal);
+
+        // Codex round-3 P1: hiding-aware filter. C# `this.<name>` binds by static type, so if any
+        // class between `derivedSymbol` (inclusive) and `firstAncestor` (exclusive) declares a
+        // public member of the same name — wire-attributed or not — that member SHADOWS the
+        // ancestor's. base.Serialize / base.Deserialize still operate on the ancestor's storage,
+        // but the dependent's `(int)this.<carrier>` reads the hidden one — different storage,
+        // broken round-trip. Drop any inherited stub whose name was already declared lower in
+        // the chain. (Members on `derivedSymbol` itself that ARE wire-attributed end up in
+        // model.Fields and take precedence via the FindFieldOrInherited search order; the
+        // hiding-without-serialize case is the dangerous one this filter catches.)
+        var shadowedNames = new HashSet<string>(System.StringComparer.Ordinal);
+        var hider = derivedSymbol;
+        while (hider != null
+               && !SymbolEqualityComparer.Default.Equals(hider, firstAncestor)
+               && hider.SpecialType != SpecialType.System_Object)
+        {
+            foreach (var m in GetSerializableMembers(hider))
+                shadowedNames.Add(m.Name);
+            hider = hider.BaseType;
+        }
+
         var t = firstAncestor;
         while (t != null && t.SpecialType != SpecialType.System_Object)
         {
@@ -2463,23 +2486,31 @@ internal static class TypeAnalyzer
                     // Ignored members never participate in wire layout, so they can't be a carrier.
                     if (HasAttribute(member, "BitSerializer.BitIgnoreAttribute")) continue;
                     if (seen.Contains(member.Name)) continue; // derived-class new/shadow wins implicitly
+                    if (shadowedNames.Contains(member.Name)) continue; // round-3 P1 hiding guard
                     // v0.12.1 round-2 P1 (codex): only stub members that are actually serialized by
                     // the ancestor's generated Serialize/Deserialize. Without this gate, a
                     // [BitFieldRelated(nameof(BaseHelperProperty))] reference to a *non-wire* base
-                    // property (no [BitField] / string attr) would silently pass BITS061 — yet
-                    // base.Serialize would never write the property to wire and base.Deserialize
-                    // would never populate it, so dependents would size payloads / pick poly
-                    // branches from a stale default and corrupt the round-trip.
-                    if (!HasAttribute(member, "BitSerializer.BitFieldAttribute")
-                        && !HasAttribute(member, "BitSerializer.BitFixedStringAttribute")
-                        && !HasAttribute(member, "BitSerializer.BitTerminatedStringAttribute")
-                        && !HasAttribute(member, "BitSerializer.BitLengthPrefixStringAttribute")
-                        && !HasAttribute(member, "BitSerializer.BitLengthFieldStringAttribute"))
-                    {
+                    // property (no [BitField]) would silently pass BITS061 — yet base.Serialize
+                    // would never write the property to wire and base.Deserialize would never
+                    // populate it, so dependents would size payloads / pick poly branches from a
+                    // stale default and corrupt the round-trip.
+                    //
+                    // Codex round-3 P2: tighten further — only [BitField] members are accepted
+                    // (not string-attribute members). String carriers can't be cast to numeric
+                    // count/length/discriminator and would emit invalid `(int)this.<stringField>`
+                    // at codegen, producing CS errors instead of a clean BITS061 diagnostic.
+                    if (!HasAttribute(member, "BitSerializer.BitFieldAttribute"))
                         continue;
-                    }
                     var memberType = GetMemberType(member);
                     if (memberType == null) continue;
+
+                    // Carrier role requires a numeric / enum scalar in *every* downstream check
+                    // (list count, byte budget, poly discriminator, length-field-string). Anything
+                    // else (list / nested type / type parameter) would let an inherited reference
+                    // through analysis but still fail at codegen. Reject up front so BITS061's
+                    // diagnostic stays the user-facing answer.
+                    if (!IsNumericOrEnum(memberType))
+                        continue;
 
                     var stub = BuildInheritedFieldStub(member, memberType);
                     if (stub != null)
