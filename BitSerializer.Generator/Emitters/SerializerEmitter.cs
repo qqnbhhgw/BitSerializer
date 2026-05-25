@@ -177,18 +177,36 @@ internal static class SerializerEmitter
                         && !field.IsTypeParameter
                         && field.BitLength > 0;
 
+        // Codex review round-7 P1 (PR #5 follow-up): the null-guard only compiles for reference
+        // carriers. Struct / unconstrained-type-parameter carriers can never be null, so emit the
+        // bit-length compute unconditionally for those — value types always have content, so the
+        // "treat null as 0 bytes" affordance doesn't apply (and would produce CS0019 if guarded).
         sb.AppendLine($"        int _nbits_{name} = 0;");
-        sb.AppendLine($"        if (this.{name} != null)");
-        sb.AppendLine("        {");
-        if (isStatic)
+        if (field.NestedIsReferenceType)
         {
-            sb.AppendLine($"            _nbits_{name} = {field.BitLength};");
+            sb.AppendLine($"        if (this.{name} != null)");
+            sb.AppendLine("        {");
+            if (isStatic)
+            {
+                sb.AppendLine($"            _nbits_{name} = {field.BitLength};");
+            }
+            else
+            {
+                sb.AppendLine($"            _nbits_{name} = ((global::BitSerializer.IBitSerializable)this.{name}).GetTotalBitLength();");
+            }
+            sb.AppendLine("        }");
         }
         else
         {
-            sb.AppendLine($"            _nbits_{name} = ((global::BitSerializer.IBitSerializable)this.{name}).GetTotalBitLength();");
+            if (isStatic)
+            {
+                sb.AppendLine($"        _nbits_{name} = {field.BitLength};");
+            }
+            else
+            {
+                sb.AppendLine($"        _nbits_{name} = ((global::BitSerializer.IBitSerializable)this.{name}).GetTotalBitLength();");
+            }
         }
-        sb.AppendLine("        }");
 
         // Runtime byte-alignment guard. Mirror of the list path — BITS051 catches the static case
         // at compile time but dynamic nested types must be checked at runtime.
@@ -409,7 +427,15 @@ internal static class SerializerEmitter
                 // null + 0-bytes-budget is a valid round-trippable wire shape; keep the original
                 // strict NRE-on-null behavior for non-ByteLength carriers because there's no way
                 // to recover the offset when the slot is fixed-size.
+                //
+                // Codex review round-7 P1 (PR #5 follow-up): the null-guard itself only compiles
+                // when memberAccess is a reference type — `!= null` against a struct or against an
+                // unconstrained / struct-constrained type parameter is CS0019. Skip the guard for
+                // those cases; value-type carriers can never be null, so the body is always safe
+                // to execute and the 0-byte-budget edge case won't be hit (a struct always has
+                // content, GetTotalBitLength()>0 always emits non-zero size).
                 bool isByteLengthCarrier = field.RelationKind == 1 && field.RelatedMemberName != null;
+                bool emitNullGuard = isByteLengthCarrier && field.NestedIsReferenceType;
 
                 // Declare fieldEndVar at outer scope when needed (downstream CRC tracking + offset
                 // pipeline reads it), default it to offsetExpr so the null branch's "advance 0 bits"
@@ -421,7 +447,7 @@ internal static class SerializerEmitter
                 }
 
                 string indent = "        ";
-                if (isByteLengthCarrier)
+                if (emitNullGuard)
                 {
                     sb.AppendLine($"        if ({memberAccess} != null)");
                     sb.AppendLine("        {");
@@ -452,7 +478,7 @@ internal static class SerializerEmitter
                     sb.AppendLine($"{indent}({ibsExpr}).AfterSerialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
                 }
 
-                if (isByteLengthCarrier)
+                if (emitNullGuard)
                     sb.AppendLine("        }");
             }
             else if (field.IsNumericOrEnum)

@@ -970,9 +970,22 @@ internal static class DeserializerEmitter
         // here — when the declared budget is 0, set the property to null and advance the cursor by
         // 0, skipping the nested deserialize call (which would consume 1+ bits for any non-empty
         // nested type and trip the consumed-vs-budget verify below).
+        //
+        // Codex review round-7 P1 (PR #5 follow-up): the `memberAccess = null;` only compiles for
+        // reference carriers (CS0037/CS0403 against struct or unconstrained type parameter). For
+        // value-type carriers, drop the null short-circuit — non-null structs always emit non-zero
+        // size, so a 0 budget there indicates malformed wire data; let the unconditional nested
+        // call run and trip the consumed-vs-budget verify, which is the correct diagnostic.
         sb.AppendLine($"        int _ncons_{field.MemberName} = 0;");
-        sb.AppendLine($"        if (_nbudgetBytes_{field.MemberName} == 0) {{ {memberAccess} = null; }}");
-        sb.AppendLine($"        else {{ _ncons_{field.MemberName} = {nestedCallExpr}; }}");
+        if (field.NestedIsReferenceType)
+        {
+            sb.AppendLine($"        if (_nbudgetBytes_{field.MemberName} == 0) {{ {memberAccess} = null; }}");
+            sb.AppendLine($"        else {{ _ncons_{field.MemberName} = {nestedCallExpr}; }}");
+        }
+        else
+        {
+            sb.AppendLine($"        _ncons_{field.MemberName} = {nestedCallExpr};");
+        }
         EmitNestedByteLengthVerify(sb, field, bitIndexVar, offsetExpr);
     }
 
@@ -983,6 +996,11 @@ internal static class DeserializerEmitter
         // Round-7 P2 symmetry: same null + 0-budget short-circuit as the non-interface variant.
         // `interfaceLocal` was already assigned to a fresh instance by the caller; we leave that
         // local alone (the property assignment is done by the caller after this returns).
+        //
+        // No NestedIsReferenceType branch needed here: the interface path operates on the locally
+        // boxed `interfaceLocal`, which the caller always assigns regardless of underlying type.
+        // Value-type manual IBitSerializable carriers still get their pre-created default instance
+        // when budget==0; the caller's `memberAccess = (T)interfaceLocal;` unboxes that safely.
         sb.AppendLine($"        int _ncons_{field.MemberName} = 0;");
         sb.AppendLine($"        if (_nbudgetBytes_{field.MemberName} > 0)");
         sb.AppendLine($"            _ncons_{field.MemberName} = {interfaceLocal}.{methodName}(bytes, {offsetExpr}, {ctxArg});");

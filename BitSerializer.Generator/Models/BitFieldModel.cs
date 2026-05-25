@@ -157,6 +157,18 @@ internal class BitFieldModel
     // round-trip).
     public bool NestedTypeHasDynamicContent { get; set; }
 
+    /// <summary>
+    /// True when the field's nested-type member is a reference type (or a generic type parameter
+    /// with a `class` constraint) — i.e. comparing it to <c>null</c> or assigning <c>null</c> to it
+    /// compiles. False for struct nested types and unconstrained / struct-constrained type
+    /// parameters. Codex review round-7 P1: the ByteLength nested-carrier emit paths emit
+    /// <c>if (memberAccess != null)</c> on the serializer and <c>memberAccess = null;</c> on the
+    /// deserializer; both produce CS0019/CS0037/CS0403 against non-reference carriers. Defaults to
+    /// true so non-nested fields and types that never reach the null-guarded path keep the existing
+    /// emit shape.
+    /// </summary>
+    public bool NestedIsReferenceType { get; set; } = true;
+
     // True if the field's nested type (direct nested OR list element type) transitively contains
     // a [BitField(Endian = ...)] override. Computed during this field's analysis using the actual
     // ITypeSymbol, so types in referenced assemblies are seen too — review round-12 P1 closed the
