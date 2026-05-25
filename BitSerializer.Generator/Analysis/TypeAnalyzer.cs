@@ -1583,6 +1583,30 @@ internal static class TypeAnalyzer
             }
         }
 
+        // Codex review round-3 P1: BITS024 only inspects primary RelationKind==1 above; the
+        // multi-binding path (polymorphic + ByteLength budget, SecondaryRelationKind==1) was
+        // missing the same one-way-converter rejection. A converter that implements only one
+        // direction would silently let the serializer write transformed byte lengths while the
+        // deserializer reads raw values (or vice versa), producing a false
+        // InvalidDataException byte-length mismatch on valid self-produced payloads. Reuse the
+        // BITS024 descriptor so consumers see a single diagnostic id for the whole "ByteLength
+        // converter incomplete" class regardless of which slot carries the binding.
+        foreach (var f in model.Fields)
+        {
+            if (f.SecondaryRelatedMemberName == null || f.SecondaryRelationKind != 1) continue;
+            if (f.SecondaryValueConverterTypeFullName != null
+                && (!f.SecondaryValueConverterHasSerialize || !f.SecondaryValueConverterHasDeserialize))
+            {
+                return new AnalyzeResult
+                {
+                    Diagnostic = Diagnostic.Create(
+                        DiagnosticDescriptors.ByteLengthConverterMissingDirection,
+                        symbol.Locations.FirstOrDefault(),
+                        f.MemberName, symbol.Name, f.SecondaryValueConverterTypeFullName)
+                };
+            }
+        }
+
         // Codex review P1: BITS053 — every [BitFieldRelated] (count / discriminator / byte-budget)
         // and [BitLengthFieldString] dependent reads the related field's wire value at
         // deserialize time, but deserialization runs in declaration order. If the related field is
