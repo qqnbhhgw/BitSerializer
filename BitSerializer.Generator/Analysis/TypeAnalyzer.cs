@@ -2456,23 +2456,34 @@ internal static class TypeAnalyzer
     {
         var seen = new HashSet<string>(System.StringComparer.Ordinal);
 
-        // Codex round-3 P1: hiding-aware filter. C# `this.<name>` binds by static type, so if any
-        // class between `derivedSymbol` (inclusive) and `firstAncestor` (exclusive) declares a
-        // public member of the same name — wire-attributed or not — that member SHADOWS the
-        // ancestor's. base.Serialize / base.Deserialize still operate on the ancestor's storage,
-        // but the dependent's `(int)this.<carrier>` reads the hidden one — different storage,
-        // broken round-trip. Drop any inherited stub whose name was already declared lower in
-        // the chain. (Members on `derivedSymbol` itself that ARE wire-attributed end up in
-        // model.Fields and take precedence via the FindFieldOrInherited search order; the
-        // hiding-without-serialize case is the dangerous one this filter catches.)
+        // Codex round-3 P1 + round-4 P1: hiding-aware filter. C# `this.<name>` binds by static
+        // type, so if any class between `derivedSymbol` (inclusive) and `firstAncestor` (exclusive)
+        // declares a member of the same name — public or not, wire-attributed or not, field /
+        // property / method — that member SHADOWS the ancestor's. base.Serialize /
+        // base.Deserialize still operate on the ancestor's storage, but the dependent's
+        // `(int)this.<carrier>` reads the hidden one (or fails to compile for method hiding) —
+        // different storage, broken round-trip. Drop any inherited stub whose name was already
+        // declared lower in the chain.
+        //
+        // Round-4 P1 broadened from GetSerializableMembers (public field/property only) to the
+        // full instance member set, because a `private byte Length` on an intermediate class is
+        // enough to shadow `base.Length` in `this.Length` lookups — codex's repro.
         var shadowedNames = new HashSet<string>(System.StringComparer.Ordinal);
         var hider = derivedSymbol;
         while (hider != null
                && !SymbolEqualityComparer.Default.Equals(hider, firstAncestor)
                && hider.SpecialType != SpecialType.System_Object)
         {
-            foreach (var m in GetSerializableMembers(hider))
+            foreach (var m in hider.GetMembers())
+            {
+                if (m.IsStatic) continue;
+                if (m.IsImplicitlyDeclared) continue; // property backing fields, default ctors, etc.
+                // Skip the non-ordinary method shapes (ctor, accessor, operator, finalizer) — they
+                // can't shadow a data carrier name via `this.<name>`. Ordinary methods CAN shadow
+                // via method-group conversion and would also fail the dependent's cast at codegen.
+                if (m is IMethodSymbol ms && ms.MethodKind != MethodKind.Ordinary) continue;
                 shadowedNames.Add(m.Name);
+            }
             hider = hider.BaseType;
         }
 
@@ -2600,9 +2611,29 @@ internal static class TypeAnalyzer
 
         // Track [BitFieldValue] presence so BITS054 (carrier referenced by dependent cannot pin a
         // constant) catches the cross-inheritance variant of the same corruption pattern.
+        // Codex round-4 P3: also extract the constant payload (mirrors the round-3 unsigned-cast
+        // path in the main analyzer so ulong constants > long.MaxValue round-trip). Without this,
+        // BITS054 reports `0x0` for inherited carriers and obscures which constant the user pinned.
         var fvAttr = GetAttribute(member, "BitSerializer.BitFieldValueAttribute");
-        if (fvAttr != null)
+        if (fvAttr != null && fvAttr.ConstructorArguments.Length > 0)
+        {
             stub.HasConstantValue = true;
+            var tc = fvAttr.ConstructorArguments[0];
+            if (tc.Value != null && (tc.Kind == TypedConstantKind.Primitive || tc.Kind == TypedConstantKind.Enum))
+            {
+                switch (tc.Value)
+                {
+                    case sbyte sb: stub.ConstantValue = sb; break;
+                    case byte b: stub.ConstantValue = b; break;
+                    case short s: stub.ConstantValue = s; break;
+                    case ushort us: stub.ConstantValue = us; break;
+                    case int i: stub.ConstantValue = i; break;
+                    case uint ui: stub.ConstantValue = ui; break;
+                    case long l: stub.ConstantValue = l; break;
+                    case ulong ul: stub.ConstantValue = unchecked((long)ul); break;
+                }
+            }
+        }
 
         return stub;
     }
