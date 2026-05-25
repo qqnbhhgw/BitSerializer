@@ -2463,6 +2463,21 @@ internal static class TypeAnalyzer
                     // Ignored members never participate in wire layout, so they can't be a carrier.
                     if (HasAttribute(member, "BitSerializer.BitIgnoreAttribute")) continue;
                     if (seen.Contains(member.Name)) continue; // derived-class new/shadow wins implicitly
+                    // v0.12.1 round-2 P1 (codex): only stub members that are actually serialized by
+                    // the ancestor's generated Serialize/Deserialize. Without this gate, a
+                    // [BitFieldRelated(nameof(BaseHelperProperty))] reference to a *non-wire* base
+                    // property (no [BitField] / string attr) would silently pass BITS061 — yet
+                    // base.Serialize would never write the property to wire and base.Deserialize
+                    // would never populate it, so dependents would size payloads / pick poly
+                    // branches from a stale default and corrupt the round-trip.
+                    if (!HasAttribute(member, "BitSerializer.BitFieldAttribute")
+                        && !HasAttribute(member, "BitSerializer.BitFixedStringAttribute")
+                        && !HasAttribute(member, "BitSerializer.BitTerminatedStringAttribute")
+                        && !HasAttribute(member, "BitSerializer.BitLengthPrefixStringAttribute")
+                        && !HasAttribute(member, "BitSerializer.BitLengthFieldStringAttribute"))
+                    {
+                        continue;
+                    }
                     var memberType = GetMemberType(member);
                     if (memberType == null) continue;
 
