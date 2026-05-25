@@ -2492,12 +2492,27 @@ internal static class TypeAnalyzer
         {
             if (HasAttribute(t, "BitSerializer.BitSerializeAttribute"))
             {
-                foreach (var member in GetSerializableMembers(t))
+                // Codex round-5 P1: walk full instance member set (not just GetSerializableMembers,
+                // which is public field/property only). Any same-name member on a NEARER ancestor
+                // — wire-attributed or not, public or not, even a method — wins under C#
+                // `this.<name>` binding from the derived type's view, so it must occupy the name
+                // slot in `seen` to block farther ancestors from contributing a same-named carrier
+                // stub that the runtime would never actually read. Without this gate, a closer
+                // string / list / helper-property of the same name silently hides the farther
+                // numeric carrier the analyzer chose, and codegen emits `(int)this.<closerMember>`
+                // — either CS error or wrong-cast wire corruption.
+                foreach (var member in t.GetMembers())
                 {
-                    // Ignored members never participate in wire layout, so they can't be a carrier.
-                    if (HasAttribute(member, "BitSerializer.BitIgnoreAttribute")) continue;
-                    if (seen.Contains(member.Name)) continue; // derived-class new/shadow wins implicitly
-                    if (shadowedNames.Contains(member.Name)) continue; // round-3 P1 hiding guard
+                    if (member.IsStatic) continue;
+                    if (member.IsImplicitlyDeclared) continue;
+                    if (member is IMethodSymbol ms && ms.MethodKind != MethodKind.Ordinary) continue;
+                    if (seen.Contains(member.Name)) continue;
+                    if (shadowedNames.Contains(member.Name)) continue;
+
+                    // Claim the name first so farther ancestors with the same name cannot create
+                    // a same-named stub even when *this* member is unusable as a carrier.
+                    seen.Add(member.Name);
+
                     // v0.12.1 round-2 P1 (codex): only stub members that are actually serialized by
                     // the ancestor's generated Serialize/Deserialize. Without this gate, a
                     // [BitFieldRelated(nameof(BaseHelperProperty))] reference to a *non-wire* base
@@ -2510,8 +2525,8 @@ internal static class TypeAnalyzer
                     // (not string-attribute members). String carriers can't be cast to numeric
                     // count/length/discriminator and would emit invalid `(int)this.<stringField>`
                     // at codegen, producing CS errors instead of a clean BITS061 diagnostic.
-                    if (!HasAttribute(member, "BitSerializer.BitFieldAttribute"))
-                        continue;
+                    if (HasAttribute(member, "BitSerializer.BitIgnoreAttribute")) continue;
+                    if (!HasAttribute(member, "BitSerializer.BitFieldAttribute")) continue;
                     var memberType = GetMemberType(member);
                     if (memberType == null) continue;
 
@@ -2520,15 +2535,10 @@ internal static class TypeAnalyzer
                     // else (list / nested type / type parameter) would let an inherited reference
                     // through analysis but still fail at codegen. Reject up front so BITS061's
                     // diagnostic stays the user-facing answer.
-                    if (!IsNumericOrEnum(memberType))
-                        continue;
+                    if (!IsNumericOrEnum(memberType)) continue;
 
                     var stub = BuildInheritedFieldStub(member, memberType);
-                    if (stub != null)
-                    {
-                        seen.Add(member.Name);
-                        sink.Add(stub);
-                    }
+                    if (stub != null) sink.Add(stub);
                 }
             }
             t = t.BaseType;
