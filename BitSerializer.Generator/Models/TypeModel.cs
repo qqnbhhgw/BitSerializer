@@ -115,6 +115,15 @@ internal class TypeModel : IEquatable<TypeModel>
     /// </summary>
     public List<CrcGroup> CrcGroups { get; set; } = new();
 
+    /// <summary>
+    /// v0.12.1: synthesized metadata for [BitField] members inherited from [BitSerialize]
+    /// ancestors. NOT iterated by the emit main loops (base.Serialize / base.Deserialize handle
+    /// them) — present only so cross-inheritance [BitFieldRelated(nameof(BaseField))] references
+    /// can resolve at analysis time and downstream emit decisions (carrier type, bit width,
+    /// converter expectations) have the same metadata as for own-class carriers.
+    /// </summary>
+    public List<BitFieldModel> InheritedFields { get; set; } = new();
+
     public bool Equals(TypeModel? other)
     {
         if (other is null) return false;
@@ -127,7 +136,9 @@ internal class TypeModel : IEquatable<TypeModel>
             && Fields.Count == other.Fields.Count
             && Fields.SequenceEqual(other.Fields, BitFieldModelComparer.Instance)
             && CrcGroups.Count == other.CrcGroups.Count
-            && CrcGroups.SequenceEqual(other.CrcGroups);
+            && CrcGroups.SequenceEqual(other.CrcGroups)
+            && InheritedFields.Count == other.InheritedFields.Count
+            && InheritedFields.SequenceEqual(other.InheritedFields, BitFieldModelComparer.Instance);
     }
 
     public override bool Equals(object? obj) => Equals(obj as TypeModel);
