@@ -714,7 +714,16 @@ internal static class TypeAnalyzer
                 var secCarrier = model.Fields.Find(f => f.MemberName == secondaryRelatedMemberName);
                 if (secCarrier != null)
                 {
-                    field.SecondaryRelatedFieldTypeName = secCarrier.MemberTypeName;
+                    // Codex review round-7 P2: when the carrier is an enum, MemberTypeName is the
+                    // enum's own name (e.g. "MyLengthEnum"), which UnsignedTwinOf doesn't recognize
+                    // — the deserializer would keep signed semantics and reject wire values above
+                    // the signed max of the *underlying* integral type (e.g. `enum : sbyte` length
+                    // 200 reads as -56 and trips the verify). Use the enum's underlying integral
+                    // type name so UnsignedTwinOf can pick the correct unsigned twin. Mirrors the
+                    // same pattern CrcFieldTypeName uses for enum CRC carriers.
+                    field.SecondaryRelatedFieldTypeName = secCarrier.IsEnum
+                        ? secCarrier.EnumUnderlyingTypeName!
+                        : secCarrier.MemberTypeName;
                     field.SecondaryRelatedFieldBitWidth = secCarrier.BitLength;
                 }
             }
@@ -1119,11 +1128,15 @@ internal static class TypeAnalyzer
                 // Bit length is unknown at compile time, use interface dispatch at runtime
                 field.IsNestedType = true;
                 field.IsTypeParameter = true;
-                // A type parameter is only known to be a reference type when it carries the `class`
-                // constraint (HasReferenceTypeConstraint). Without it (or with a `struct` constraint)
-                // the carrier may close over a value type at instantiation, so the ByteLength emit
-                // paths must not produce `!= null` / `= null` against it.
-                field.NestedIsReferenceType = typeParam.HasReferenceTypeConstraint;
+                // Codex review round-7 P1: prefer ITypeParameterSymbol.IsReferenceType over the
+                // narrower HasReferenceTypeConstraint. The former returns true when ANY constraint
+                // forces a reference type — class keyword, OR a base-class constraint like
+                // `where T : PayloadBase, IBitSerializable, new()` — which is the realistic shape
+                // for [BitSerialize] hierarchies. HasReferenceTypeConstraint only sees the literal
+                // `class` keyword, so it false-classifies the common base-class case as value-type
+                // and the ByteLength emit paths skip the null-guard / null-assignment that valid
+                // optional reference payloads need.
+                field.NestedIsReferenceType = typeParam.IsReferenceType;
                 field.MemberTypeName = memberType.Name;
                 field.MemberTypeFullName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                 field.BitLength = 0; // Unknown at compile time
