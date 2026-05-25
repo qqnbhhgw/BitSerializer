@@ -492,4 +492,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor UnknownRelationKind = new(
+        "BITS062",
+        "[BitFieldRelated] RelationKind value is not a known enum member",
+        "Member '{0}' in '{1}' has a [BitFieldRelated] attribute with RelationKind={2}, which is not a valid BitRelationKind value (0 = Count, 1 = ByteLength). Out-of-range values from an explicit enum cast would otherwise silently make the multi-binding sort drop the second attribute and turn it into a no-op",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

@@ -108,11 +108,26 @@ internal static class SerializerEmitter
                                 : $"{field.SecondaryValueConverterTypeFullName}.OnSerializeConvert((object)_polyBytes_{name})")
                             : $"(object)_polyBytes_{name}";
                         sb.AppendLine($"        long _polyWire_{name} = global::System.Convert.ToInt64({wireRaw});");
+                        // Codex review round-6 P2: 32-bit carriers also need bounds checking. Without
+                        // it, an int carrier could accept _polyWire_ values outside [int.MinValue,
+                        // int.MaxValue] and the explicit cast below would wrap silently in unchecked
+                        // context, writing a corrupted length while leaving deserialize to fail with
+                        // a confusing byte-budget mismatch. Pick the right max from the carrier type
+                        // name (int = signed 32-bit, uint = unsigned 32-bit). 64-bit carriers can
+                        // physically hold any byte count produced by Convert.ToInt64 so skip there.
                         if (byteLenField.BitLength < 32)
                         {
                             long maxValue = (1L << byteLenField.BitLength) - 1;
                             sb.AppendLine($"        if (_polyWire_{name} < 0 || _polyWire_{name} > {maxValue})");
                             sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Polymorphic '{name}' produced wire length {{_polyWire_{name}}} which cannot fit in the {byteLenField.BitLength}-bit byte-length field '{byteLenField.MemberName}'.\");");
+                        }
+                        else if (byteLenField.BitLength == 32)
+                        {
+                            string carrierMax = byteLenField.MemberTypeName == "int"
+                                ? "(long)int.MaxValue"
+                                : "(long)uint.MaxValue";
+                            sb.AppendLine($"        if (_polyWire_{name} < 0 || _polyWire_{name} > {carrierMax})");
+                            sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Polymorphic '{name}' produced wire length {{_polyWire_{name}}} which cannot fit in the {byteLenField.MemberName} carrier ({byteLenField.MemberTypeName}).\");");
                         }
                         sb.AppendLine($"        this.{byteLenField.MemberName} = ({byteLenField.MemberTypeName})_polyWire_{name};");
                     }

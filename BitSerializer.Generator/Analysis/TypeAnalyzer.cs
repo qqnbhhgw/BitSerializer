@@ -622,6 +622,25 @@ internal static class TypeAnalyzer
             }
             else if (parsedBindings.Count == 2)
             {
+                // Codex review round-6 P2: BITS062 — every binding's RelationKind must be a known
+                // enum value (0 = Count, 1 = ByteLength). An out-of-range explicit cast
+                // (e.g. `(BitRelationKind)99`) would otherwise let `FirstOrDefault(b =>
+                // b.RelationKind == 0 / 1)` below return a default tuple and silently drop the
+                // matching binding — user-visible second [BitFieldRelated] becomes a no-op without
+                // a diagnostic. Reject up front.
+                foreach (var b in parsedBindings)
+                {
+                    if (b.RelationKind != 0 && b.RelationKind != 1)
+                    {
+                        return new AnalyzeResult
+                        {
+                            Diagnostic = Diagnostic.Create(
+                                DiagnosticDescriptors.UnknownRelationKind,
+                                member.Locations.FirstOrDefault(),
+                                member.Name, symbol.Name, b.RelationKind)
+                        };
+                    }
+                }
                 // BITS058: the two must carry orthogonal information (different RelationKind).
                 if (parsedBindings[0].RelationKind == parsedBindings[1].RelationKind)
                 {
