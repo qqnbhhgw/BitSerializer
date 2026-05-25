@@ -12,8 +12,16 @@ internal static class SerializerEmitter
     /// - List/array count fields: set from collection length (with overflow check)
     /// - Polymorphic discriminator fields: set from runtime type via [BitPoly] mappings
     /// </summary>
-    internal static void EmitAutoBackfill(StringBuilder sb, List<BitFieldModel> fields)
+    internal static void EmitAutoBackfill(StringBuilder sb, TypeModel model)
     {
+        var fields = model.Fields;
+        // v0.12.1: cross-inheritance carriers resolve through InheritedFields stubs so backfill
+        // can emit the correct cast/overflow checks against the actual ancestor property's type
+        // and bit width. The wire assignment `this.<carrier> = ...` resolves to the inherited
+        // property via C# semantics at runtime, mirroring how user code would write to it.
+        BitFieldModel? FindCarrier(string name) =>
+            fields.Find(f => f.MemberName == name)
+            ?? model.InheritedFields.Find(f => f.MemberName == name);
         foreach (var field in fields)
         {
             // [BitLengthFieldString]: backfill the byte count into a peer length field. Mirrors the
@@ -21,16 +29,25 @@ internal static class SerializerEmitter
             // count (with UTF-8 boundary rollback when MaxBytes truncates inside a multi-byte char).
             if (field.IsLengthFieldString && field.LengthFieldMemberName != null)
             {
-                var lenField = fields.Find(f => f.MemberName == field.LengthFieldMemberName);
-                if (lenField != null) EmitLengthFieldStringBackfill(sb, field, lenField);
+                var lenField = FindCarrier(field.LengthFieldMemberName);
+                // v0.12.1: inherited carrier — base.Serialize already wrote the wire slot before
+                // this method runs, so a property-level backfill here would set `this.<carrier>`
+                // but the wire bytes are already out the door. Skip silently and rely on the user
+                // (or the BinarySerialization-double-decorated peer) to set the carrier *before*
+                // Serialize is called. Same rationale applies to the [BitFieldRelated] branch
+                // below.
+                if (lenField != null && !lenField.IsInherited)
+                    EmitLengthFieldStringBackfill(sb, field, lenField);
                 continue;
             }
 
             if (field.RelatedMemberName == null)
                 continue;
 
-            var relatedField = fields.Find(f => f.MemberName == field.RelatedMemberName);
+            var relatedField = FindCarrier(field.RelatedMemberName);
             if (relatedField == null)
+                continue;
+            if (relatedField.IsInherited)
                 continue;
 
             // T4: ByteLength on a nested [BitSerialize] / IBitSerializable / type-parameter carrier
@@ -85,8 +102,11 @@ internal static class SerializerEmitter
                 // — both carriers will hold consistent values before the primitive write loop.
                 if (field.SecondaryRelatedMemberName != null && field.SecondaryRelationKind == 1)
                 {
-                    var byteLenField = fields.Find(f => f.MemberName == field.SecondaryRelatedMemberName);
-                    if (byteLenField != null)
+                    var byteLenField = FindCarrier(field.SecondaryRelatedMemberName);
+                    // v0.12.1: skip backfill when the secondary carrier lives on a base class —
+                    // base.Serialize already wrote the wire slot, so a property-level write here
+                    // would be too late. User must populate the carrier before Serialize.
+                    if (byteLenField != null && !byteLenField.IsInherited)
                     {
                         var name = field.MemberName;
                         sb.AppendLine($"        int _polyBits_{name} = 0;");
@@ -359,7 +379,7 @@ internal static class SerializerEmitter
             }
         }
 
-        EmitAutoBackfill(sb, model.Fields);
+        EmitAutoBackfill(sb, model);
 
         foreach (var field in model.Fields)
         {

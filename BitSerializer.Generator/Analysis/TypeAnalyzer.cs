@@ -86,6 +86,7 @@ internal static class TypeAnalyzer
         int baseBitLength = 0;
         bool baseHasDynamicLength = false;
         var intermediateFields = new List<ISymbol>();
+        var inheritedFields = new List<BitFieldModel>();
         {
             var current = symbol.BaseType;
             while (current != null && current.SpecialType != SpecialType.System_Object)
@@ -96,6 +97,13 @@ internal static class TypeAnalyzer
                     hasBitSerializableBase = true;
                     baseBitLength = CalculateNestedBitLength(current);
                     baseHasDynamicLength = HasDynamicLengthRecursive(current);
+                    // v0.12.1 (Issue: BITS061 误伤跨继承链的 [BitFieldRelated]): collect [BitField]
+                    // metadata from the whole ancestor chain so cross-inheritance
+                    // [BitFieldRelated(nameof(BaseField))] references resolve at analysis time the
+                    // same way `this.BaseField` reads resolve at runtime via property inheritance.
+                    // These are stubs (no BitStartIndex / serialize behavior) — emit main loops
+                    // never see them; only carrier lookups and metadata-dependent checks do.
+                    CollectInheritedBitFields(current, inheritedFields);
                     break;
                 }
                 // This intermediate base doesn't have [BitSerialize], collect its fields
@@ -118,7 +126,8 @@ internal static class TypeAnalyzer
             HasBitSerializableBaseType = hasBitSerializableBase,
             BaseBitLength = baseBitLength,
             BaseHasDynamicLength = baseHasDynamicLength,
-            HasDynamicLength = baseHasDynamicLength
+            HasDynamicLength = baseHasDynamicLength,
+            InheritedFields = inheritedFields
         };
 
         // Collect members: intermediate base fields first, then own declared members
@@ -711,7 +720,12 @@ internal static class TypeAnalyzer
             // bypassed in some future refactor.
             if (secondaryRelatedMemberName != null)
             {
-                var secCarrier = model.Fields.Find(f => f.MemberName == secondaryRelatedMemberName);
+                // v0.12.1: cross-inheritance carrier — fall back to InheritedFields when not in
+                // this type. Generated polymorphic deserialize reads `this.<carrier>` via property
+                // inheritance just like the runtime, so as long as the metadata is available the
+                // signed-twin / overflow logic stays correct.
+                var secCarrier = model.Fields.Find(f => f.MemberName == secondaryRelatedMemberName)
+                                 ?? model.InheritedFields.Find(f => f.MemberName == secondaryRelatedMemberName);
                 if (secCarrier != null)
                 {
                     // Codex review round-7 P2: when the carrier is an enum, MemberTypeName is the
@@ -1633,7 +1647,12 @@ internal static class TypeAnalyzer
             // consume). The list ByteLength path is fine even when the length field comes after,
             // because the list's count is independently derivable from the wire (consume-until-end),
             // but for a nested type we have no such fallback — the byte count IS the framing.
-            if (isNestedCarrier && f.RelatedMemberName != null)
+            //
+            // v0.12.1: inherited carriers always serialize first via base.Serialize / base.Deserialize,
+            // so cross-inheritance references trivially satisfy the ordering constraint and skip
+            // this check.
+            if (isNestedCarrier && f.RelatedMemberName != null
+                && model.InheritedFields.Find(x => x.MemberName == f.RelatedMemberName) == null)
             {
                 int relatedIdx = model.Fields.FindIndex(x => x.MemberName == f.RelatedMemberName);
                 int carrierIdx = model.Fields.FindIndex(x => x.MemberName == f.MemberName);
@@ -1732,14 +1751,21 @@ internal static class TypeAnalyzer
             foreach (var (referencedName, referenceKind) in referencedSlots)
             {
                 int relatedIdx = model.Fields.FindIndex(x => x.MemberName == referencedName);
-                // Codex review round-5 P1: BITS061 — a typo like `nameof(Lenght)` previously slipped
-                // through to codegen, where SerializerEmitter / DeserializerEmitter would emit
-                // `this.Lenght = …` and the user would see CS1061 instead of a BitSerializer
-                // diagnostic. Reject up-front so the cause (and the offending member / referenced
-                // name) are obvious. Covers primary RelatedMemberName + LengthFieldMemberName +
-                // SecondaryRelatedMemberName because they all funnel through referencedSlots.
+                // v0.12.1 (Issue: BITS061 误伤跨继承链): when the carrier isn't declared in this
+                // type, fall back to the inherited-fields list collected from [BitSerialize]
+                // ancestors. Cross-inheritance references are legitimate — generated code reads
+                // `this.<carrier>` via C# property inheritance — but the analyzer needs the
+                // metadata too so it can run the constant-pinning / kind validations against the
+                // real carrier shape instead of either silently passing or BITS061'ing the typo
+                // path. A genuine typo (`nameof(Lenght)`) still misses both lists and trips
+                // BITS061 below.
+                BitFieldModel? inheritedCarrier = null;
                 if (relatedIdx < 0)
+                    inheritedCarrier = model.InheritedFields.Find(f => f.MemberName == referencedName);
+
+                if (relatedIdx < 0 && inheritedCarrier == null)
                 {
+                    // Codex review round-5 P1: BITS061 — typo path still rejected.
                     return new AnalyzeResult
                     {
                         Diagnostic = Diagnostic.Create(
@@ -1748,7 +1774,7 @@ internal static class TypeAnalyzer
                             dep.MemberName, symbol.Name, referencedName, referenceKind)
                     };
                 }
-                if (relatedIdx >= dependentIdx)
+                if (relatedIdx >= 0 && relatedIdx >= dependentIdx)
                 {
                     return new AnalyzeResult
                     {
@@ -1758,6 +1784,9 @@ internal static class TypeAnalyzer
                             dep.MemberName, symbol.Name, referencedName)
                     };
                 }
+                // Inherited carriers always serialize/deserialize before any of this type's fields
+                // (base.Serialize / base.Deserialize runs first), so the BITS053 ordering check is
+                // satisfied vacuously — no additional check needed for the inherited branch.
 
                 // Codex review round-4 P2: the inverse of BITS044. The referenced carrier must NOT
                 // have [BitFieldValue(...)]. At serialize time EmitAutoBackfill / EmitLengthFieldStringBackfill
@@ -1769,21 +1798,24 @@ internal static class TypeAnalyzer
                 // BITS044 only catches the same-field case ([BitFieldValue] on a field that ALSO carries
                 // [BitFieldRelated]/[BitFieldCount]); the cross-field "carrier referenced by dependent"
                 // case has no diagnostic and silently corrupts wire output.
-                if (relatedIdx >= 0)
+                //
+                // v0.12.1: extends to inherited carriers — the same corruption pattern applies when
+                // the [BitFieldValue]-pinned carrier lives in a base class, because base.Serialize
+                // writes the constant and the derived class then back-fills the dependent's real
+                // size into that same property, only for the next call's base.Serialize re-overwrite
+                // (or in a round-trip scenario, the wire still carries an inconsistent pair).
+                var carrierForConstCheck = relatedIdx >= 0 ? model.Fields[relatedIdx] : inheritedCarrier;
+                if (carrierForConstCheck != null && carrierForConstCheck.HasConstantValue)
                 {
-                    var carrier = model.Fields[relatedIdx];
-                    if (carrier.HasConstantValue)
+                    return new AnalyzeResult
                     {
-                        return new AnalyzeResult
-                        {
-                            Diagnostic = Diagnostic.Create(
-                                DiagnosticDescriptors.FieldValueOnReferencedCarrier,
-                                symbol.Locations.FirstOrDefault(),
-                                carrier.MemberName, symbol.Name,
-                                $"0x{unchecked((ulong)carrier.ConstantValue):X}",
-                                dep.MemberName, referenceKind)
-                        };
-                    }
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.FieldValueOnReferencedCarrier,
+                            symbol.Locations.FirstOrDefault(),
+                            carrierForConstCheck.MemberName, symbol.Name,
+                            $"0x{unchecked((ulong)carrierForConstCheck.ConstantValue):X}",
+                            dep.MemberName, referenceKind)
+                    };
                 }
             }
         }
@@ -2404,6 +2436,141 @@ internal static class TypeAnalyzer
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// v0.12.1: walks the [BitSerialize] ancestor chain rooted at <paramref name="firstAncestor"/>
+    /// (which is itself [BitSerialize]) and synthesizes <see cref="BitFieldModel"/> stubs for
+    /// every member tagged with [BitField] / [BitFixedString] / etc. The stubs carry the metadata
+    /// fields that carrier-lookup callers read (MemberName / MemberType* / BitLength / IsEnum /
+    /// EnumUnderlyingTypeName / HasConstantValue / kind flags). They have <see
+    /// cref="BitFieldModel.IsInherited"/> = true so emit main loops skip them — base.Serialize /
+    /// base.Deserialize handle the actual wire I/O — and any layout-sensitive field
+    /// (BitStartIndex / FixedCount / RelatedMemberName / converter wiring) stays at default
+    /// because cross-inheritance carriers cannot participate in those rules from the derived
+    /// frame anyway.
+    /// </summary>
+    private static void CollectInheritedBitFields(INamedTypeSymbol firstAncestor, List<BitFieldModel> sink)
+    {
+        var seen = new HashSet<string>(System.StringComparer.Ordinal);
+        var t = firstAncestor;
+        while (t != null && t.SpecialType != SpecialType.System_Object)
+        {
+            if (HasAttribute(t, "BitSerializer.BitSerializeAttribute"))
+            {
+                foreach (var member in GetSerializableMembers(t))
+                {
+                    // Ignored members never participate in wire layout, so they can't be a carrier.
+                    if (HasAttribute(member, "BitSerializer.BitIgnoreAttribute")) continue;
+                    if (seen.Contains(member.Name)) continue; // derived-class new/shadow wins implicitly
+                    var memberType = GetMemberType(member);
+                    if (memberType == null) continue;
+
+                    var stub = BuildInheritedFieldStub(member, memberType);
+                    if (stub != null)
+                    {
+                        seen.Add(member.Name);
+                        sink.Add(stub);
+                    }
+                }
+            }
+            t = t.BaseType;
+        }
+    }
+
+    /// <summary>
+    /// Constructs a minimal <see cref="BitFieldModel"/> for an inherited member. Intentionally
+    /// covers only the metadata that downstream carrier-lookup callers read — full re-analysis of
+    /// the ancestor field would duplicate AnalyzeType's logic and risk drift. Returns null when
+    /// the member shape is one that isn't useful as a carrier (e.g. nested types — those can't be
+    /// referenced as count / byte-length carriers anyway).
+    /// </summary>
+    private static BitFieldModel? BuildInheritedFieldStub(ISymbol member, ITypeSymbol memberType)
+    {
+        var stub = new BitFieldModel
+        {
+            IsInherited = true,
+            MemberName = member.Name,
+            MemberTypeFullName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            IsProperty = member is IPropertySymbol,
+        };
+
+        // Detect category from attributes so lookup-time predicates (IsList, IsFixedString, etc.)
+        // can distinguish a numeric scalar carrier from a string / list / nested-type member that
+        // happens to share a name.
+        if (HasAttribute(member, "BitSerializer.BitFixedStringAttribute"))
+            stub.IsFixedString = true;
+        if (HasAttribute(member, "BitSerializer.BitTerminatedStringAttribute"))
+            stub.IsTerminatedString = true;
+        if (HasAttribute(member, "BitSerializer.BitLengthPrefixStringAttribute"))
+            stub.IsLengthPrefixString = true;
+        if (HasAttribute(member, "BitSerializer.BitLengthFieldStringAttribute"))
+            stub.IsLengthFieldString = true;
+
+        bool isListType = IsListType(memberType, out _, out _);
+
+        if (isListType)
+        {
+            stub.IsList = true;
+            stub.MemberTypeName = memberType.Name;
+        }
+        else if (memberType is ITypeParameterSymbol)
+        {
+            stub.IsTypeParameter = true;
+            stub.IsNestedType = true;
+            stub.MemberTypeName = memberType.Name;
+        }
+        else if (IsNumericOrEnum(memberType))
+        {
+            stub.IsNumericOrEnum = true;
+            if (memberType.TypeKind == TypeKind.Enum)
+            {
+                stub.IsEnum = true;
+                var underlying = ((INamedTypeSymbol)memberType).EnumUnderlyingType!;
+                stub.EnumUnderlyingTypeName = GetSimpleTypeName(underlying);
+                var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");
+                int? explicitBitLength = bitFieldAttr != null ? GetBitLengthFromAttribute(bitFieldAttr) : null;
+                stub.BitLength = explicitBitLength ?? GetDefaultBitLength(underlying);
+            }
+            else
+            {
+                var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");
+                int? explicitBitLength = bitFieldAttr != null ? GetBitLengthFromAttribute(bitFieldAttr) : null;
+                stub.BitLength = explicitBitLength ?? GetDefaultBitLength(memberType);
+            }
+            stub.MemberTypeName = GetSimpleTypeName(memberType);
+        }
+        else if (HasAttribute(memberType, "BitSerializer.BitSerializeAttribute"))
+        {
+            stub.IsNestedType = true;
+            stub.MemberTypeName = memberType.Name;
+        }
+        else
+        {
+            // Not a usable carrier shape; still expose the name so BITS061 distinguishes typo
+            // from "valid name but unusable as a carrier".
+            stub.MemberTypeName = memberType.Name;
+        }
+
+        // Track [BitFieldValue] presence so BITS054 (carrier referenced by dependent cannot pin a
+        // constant) catches the cross-inheritance variant of the same corruption pattern.
+        var fvAttr = GetAttribute(member, "BitSerializer.BitFieldValueAttribute");
+        if (fvAttr != null)
+            stub.HasConstantValue = true;
+
+        return stub;
+    }
+
+    /// <summary>
+    /// v0.12.1: carrier lookup helper. Searches the current type's <see cref="TypeModel.Fields"/>
+    /// first (preserves all existing behavior, including ordering-index semantics), then falls
+    /// back to <see cref="TypeModel.InheritedFields"/>. Returns the matching model or null.
+    /// </summary>
+    internal static BitFieldModel? FindFieldOrInherited(TypeModel model, string memberName)
+    {
+        var own = model.Fields.Find(f => f.MemberName == memberName);
+        if (own != null) return own;
+        return model.InheritedFields.Find(f => f.MemberName == memberName);
     }
 
     private static ITypeSymbol? GetMemberType(ISymbol member)

@@ -195,6 +195,19 @@ internal class BitFieldModel
     /// </summary>
     public bool NestedIsReferenceType { get; set; } = true;
 
+    /// <summary>
+    /// True when this model was synthesized from an ancestor [BitSerialize] class's [BitField]
+    /// member rather than declared in the current type. v0.12.1: lookup helpers fall back to
+    /// inherited fields so cross-inheritance [BitFieldRelated(nameof(BaseField))] references
+    /// resolve at analysis time the same way generated `this.BaseField` reads resolve at runtime
+    /// via C# property inheritance. Inherited fields are NOT iterated by the emit main loops
+    /// (the ancestor's generated Serialize/Deserialize handles them via base.* calls), so they
+    /// carry only the metadata needed by carrier-lookup callers (MemberName, MemberType*, BitLength,
+    /// IsEnum/EnumUnderlyingTypeName, HasConstantValue, category flags); fields like BitStartIndex
+    /// are not meaningful in the derived type's frame and stay zero.
+    /// </summary>
+    public bool IsInherited { get; set; }
+
     // True if the field's nested type (direct nested OR list element type) transitively contains
     // a [BitField(Endian = ...)] override. Computed during this field's analysis using the actual
     // ITypeSymbol, so types in referenced assemblies are seen too — review round-12 P1 closed the
