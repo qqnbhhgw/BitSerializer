@@ -484,4 +484,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor RelatedFieldNotFound = new(
+        "BITS061",
+        "[BitFieldRelated] target field does not exist in the enclosing type",
+        "Member '{0}' in '{1}' references '{2}' via [BitFieldRelated] ({3}), but '{1}' does not declare a field named '{2}'. Typos like `nameof(Lenght)` would otherwise pass analysis and fail the generated code with CS1061 at compile time; reject up front with a BitSerializer diagnostic so the cause is obvious",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

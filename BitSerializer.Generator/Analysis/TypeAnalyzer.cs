@@ -1700,7 +1700,23 @@ internal static class TypeAnalyzer
             foreach (var (referencedName, referenceKind) in referencedSlots)
             {
                 int relatedIdx = model.Fields.FindIndex(x => x.MemberName == referencedName);
-                if (relatedIdx >= 0 && relatedIdx >= dependentIdx)
+                // Codex review round-5 P1: BITS061 — a typo like `nameof(Lenght)` previously slipped
+                // through to codegen, where SerializerEmitter / DeserializerEmitter would emit
+                // `this.Lenght = …` and the user would see CS1061 instead of a BitSerializer
+                // diagnostic. Reject up-front so the cause (and the offending member / referenced
+                // name) are obvious. Covers primary RelatedMemberName + LengthFieldMemberName +
+                // SecondaryRelatedMemberName because they all funnel through referencedSlots.
+                if (relatedIdx < 0)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.RelatedFieldNotFound,
+                            symbol.Locations.FirstOrDefault(),
+                            dep.MemberName, symbol.Name, referencedName, referenceKind)
+                    };
+                }
+                if (relatedIdx >= dependentIdx)
                 {
                     return new AnalyzeResult
                     {
