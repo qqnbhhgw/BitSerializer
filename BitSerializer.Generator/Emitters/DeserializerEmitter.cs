@@ -874,8 +874,30 @@ internal static class DeserializerEmitter
         if (field.SecondaryRelatedMemberName != null && field.SecondaryRelationKind == 1 && bitIndexVar != null)
         {
             var name = field.MemberName;
-            string byteLenExpr = ReadFieldExpr(emittedWireLocals, field.SecondaryRelatedMemberName);
-            sb.AppendLine($"        long _polyDeclaredBits_{name} = (long)({byteLenExpr}) * 8;");
+            // Codex review round-2 P1: reinterpret the carrier's bit pattern as the UNSIGNED twin
+            // of its declared type before widening to long, otherwise an 8-bit signed carrier
+            // holding wire value 0xC8 sign-extends to -56 and the (now-negative) verify trips on
+            // any payload above the signed max (127 / 32767 / etc.). Same UnsignedTwinOf pipeline
+            // [BitLengthFieldString] uses — keep them in sync. Falls back to plain `long` cast when
+            // SecondaryRelatedFieldTypeName isn't cached (BITS053 secondary should make that
+            // unreachable, but stay defensive so we never emit broken code).
+            string carrierExpr = ReadFieldExpr(emittedWireLocals, field.SecondaryRelatedMemberName);
+            string byteLenExpr = field.SecondaryRelatedFieldTypeName != null
+                ? $"(long)({UnsignedTwinOf(field.SecondaryRelatedFieldTypeName)})({carrierExpr})"
+                : $"(long)({carrierExpr})";
+            sb.AppendLine($"        long _polyWire_{name} = {byteLenExpr};");
+
+            // Codex review round-2 P2: apply the SECONDARY binding's deserialize converter (wire →
+            // domain bytes) before computing the declared bit budget. Without this the polymorphic
+            // byte-length verify uses the raw wire value, but the serializer's secondary backfill
+            // routes through the same converter — so a length converter (offset / scale) makes the
+            // two sides disagree by exactly the transform. Mirror that here.
+            string bytesExpr = field.SecondaryValueConverterTypeFullName != null && field.SecondaryValueConverterHasDeserialize
+                ? (field.SecondaryValueConverterDeserializeHasContext
+                    ? $"global::System.Convert.ToInt64({field.SecondaryValueConverterTypeFullName}.OnDeserializeConvert((object)_polyWire_{name}, context))"
+                    : $"global::System.Convert.ToInt64({field.SecondaryValueConverterTypeFullName}.OnDeserializeConvert((object)_polyWire_{name}))")
+                : $"_polyWire_{name}";
+            sb.AppendLine($"        long _polyDeclaredBits_{name} = ({bytesExpr}) * 8;");
             sb.AppendLine($"        if (({bitIndexVar} - ({offsetExpr})) != _polyDeclaredBits_{name})");
             sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Polymorphic '{name}' deserialized {{({bitIndexVar} - ({offsetExpr}))}} bits but the byte-length field '{field.SecondaryRelatedMemberName}' declared {{_polyDeclaredBits_{name}}} bits. The wire payload size does not match the declared byte budget.\");");
         }

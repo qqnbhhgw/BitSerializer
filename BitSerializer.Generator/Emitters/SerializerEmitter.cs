@@ -95,13 +95,26 @@ internal static class SerializerEmitter
                         sb.AppendLine($"        if ((_polyBits_{name} & 7) != 0)");
                         sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Polymorphic '{name}' serializes to {{_polyBits_{name}}} bits which is not byte-aligned; the secondary [BitFieldRelated(ByteLength)] binding requires the runtime poly type's size to be a whole number of bytes.\");");
                         sb.AppendLine($"        int _polyBytes_{name} = _polyBits_{name} / 8;");
+
+                        // Codex review round-2 P2: route the domain byte count through the SECONDARY
+                        // binding's ValueConverter (when declared) before writing the wire value. The
+                        // converter is keyed off Secondary* model fields, not the primary set —
+                        // primary carries the discriminator-side converter (typically absent), and a
+                        // length converter (offset / scale / shift) on the ByteLength binding is the
+                        // common protocol pattern this multi-binding path was designed for.
+                        string wireRaw = field.SecondaryValueConverterTypeFullName != null && field.SecondaryValueConverterHasSerialize
+                            ? (field.SecondaryValueConverterSerializeHasContext
+                                ? $"{field.SecondaryValueConverterTypeFullName}.OnSerializeConvert((object)_polyBytes_{name}, context)"
+                                : $"{field.SecondaryValueConverterTypeFullName}.OnSerializeConvert((object)_polyBytes_{name})")
+                            : $"(object)_polyBytes_{name}";
+                        sb.AppendLine($"        long _polyWire_{name} = global::System.Convert.ToInt64({wireRaw});");
                         if (byteLenField.BitLength < 32)
                         {
                             long maxValue = (1L << byteLenField.BitLength) - 1;
-                            sb.AppendLine($"        if (_polyBytes_{name} > {maxValue})");
-                            sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Polymorphic '{name}' produced {{_polyBytes_{name}}} bytes which exceeds the maximum ({maxValue}) representable by the {byteLenField.BitLength}-bit byte-length field '{byteLenField.MemberName}'.\");");
+                            sb.AppendLine($"        if (_polyWire_{name} < 0 || _polyWire_{name} > {maxValue})");
+                            sb.AppendLine($"            throw new global::System.InvalidOperationException($\"Polymorphic '{name}' produced wire length {{_polyWire_{name}}} which cannot fit in the {byteLenField.BitLength}-bit byte-length field '{byteLenField.MemberName}'.\");");
                         }
-                        sb.AppendLine($"        this.{byteLenField.MemberName} = ({byteLenField.MemberTypeName})_polyBytes_{name};");
+                        sb.AppendLine($"        this.{byteLenField.MemberName} = ({byteLenField.MemberTypeName})_polyWire_{name};");
                     }
                 }
             }

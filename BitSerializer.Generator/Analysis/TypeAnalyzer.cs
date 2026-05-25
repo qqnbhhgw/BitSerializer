@@ -646,6 +646,21 @@ internal static class TypeAnalyzer
                 primaryConverterSym = countBind.ConverterSym;
                 secondaryRelatedMemberName = byteBind.Name;
                 secondaryRelationKind = 1;
+
+                // Codex review round-2 P2: preserve the secondary binding's ValueConverter (e.g.
+                // protocols that wire-encode byte-length with an offset / scale). Previously only
+                // the primary (Count) converter was kept, so byteBind.ConverterFullName was silently
+                // dropped — secondary backfill / verify ran without the user-declared transform.
+                field.SecondaryValueConverterTypeFullName = byteBind.ConverterFullName;
+                if (byteBind.ConverterSym != null)
+                {
+                    var secSerMethods = byteBind.ConverterSym.GetMembers("OnSerializeConvert").OfType<IMethodSymbol>().ToList();
+                    var secDeserMethods = byteBind.ConverterSym.GetMembers("OnDeserializeConvert").OfType<IMethodSymbol>().ToList();
+                    field.SecondaryValueConverterHasSerialize = secSerMethods.Count > 0;
+                    field.SecondaryValueConverterHasDeserialize = secDeserMethods.Count > 0;
+                    field.SecondaryValueConverterSerializeHasContext = secSerMethods.Any(m => m.Parameters.Length == 2);
+                    field.SecondaryValueConverterDeserializeHasContext = secDeserMethods.Any(m => m.Parameters.Length == 2);
+                }
             }
 
             field.RelatedMemberName = relatedMemberName;
@@ -653,6 +668,22 @@ internal static class TypeAnalyzer
             field.ValueConverterTypeFullName = valueConverterFullName;
             field.SecondaryRelatedMemberName = secondaryRelatedMemberName;
             field.SecondaryRelationKind = secondaryRelationKind;
+
+            // Codex review round-2 P1: cache the secondary carrier's primitive type name and bit
+            // width so EmitPolymorphicDeserialize can reinterpret signed carriers via UnsignedTwinOf
+            // (an 8-bit signed Length holding wire 0xC8 must be read as 200, not -56). Carrier must
+            // already exist in model.Fields because BITS053 secondary now rejects "carrier declared
+            // after dependent" layouts; the null-check below is defensive in case BITS053 is
+            // bypassed in some future refactor.
+            if (secondaryRelatedMemberName != null)
+            {
+                var secCarrier = model.Fields.Find(f => f.MemberName == secondaryRelatedMemberName);
+                if (secCarrier != null)
+                {
+                    field.SecondaryRelatedFieldTypeName = secCarrier.MemberTypeName;
+                    field.SecondaryRelatedFieldBitWidth = secCarrier.BitLength;
+                }
+            }
             // `relatedAttr` is referenced by code below (BITS007 polymorphic-missing-discriminator
             // check). Synthesize as a non-null sentinel when any [BitFieldRelated] is present so
             // existing logic keeps working.

@@ -167,6 +167,13 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.RelatedMemberName == y.RelatedMemberName
             && x.SecondaryRelatedMemberName == y.SecondaryRelatedMemberName
             && x.SecondaryRelationKind == y.SecondaryRelationKind
+            && x.SecondaryRelatedFieldTypeName == y.SecondaryRelatedFieldTypeName
+            && x.SecondaryRelatedFieldBitWidth == y.SecondaryRelatedFieldBitWidth
+            && x.SecondaryValueConverterTypeFullName == y.SecondaryValueConverterTypeFullName
+            && x.SecondaryValueConverterHasSerialize == y.SecondaryValueConverterHasSerialize
+            && x.SecondaryValueConverterHasDeserialize == y.SecondaryValueConverterHasDeserialize
+            && x.SecondaryValueConverterSerializeHasContext == y.SecondaryValueConverterSerializeHasContext
+            && x.SecondaryValueConverterDeserializeHasContext == y.SecondaryValueConverterDeserializeHasContext
             && x.ValueConverterTypeFullName == y.ValueConverterTypeFullName
             && x.IsPotentiallyDynamic == y.IsPotentiallyDynamic
             && x.IsFixedString == y.IsFixedString

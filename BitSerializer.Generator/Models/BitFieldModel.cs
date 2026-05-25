@@ -45,6 +45,32 @@ internal class BitFieldModel
     public string? SecondaryRelatedMemberName { get; set; }
     public int SecondaryRelationKind { get; set; }
 
+    /// <summary>
+    /// Cached primitive type name of the SECONDARY [BitFieldRelated] carrier (e.g. "byte", "sbyte",
+    /// "ushort"). Codex review round-2 P1: the deserializer must reinterpret signed carriers as
+    /// their unsigned twin before widening to long (an 8-bit signed carrier holding the wire value
+    /// 0xC8 reads as -56 and trips the post-deserialize byte-length verify; casting (byte)(sbyte) →
+    /// byte 200 → long 200 recovers the unsigned interpretation). Mirrors LengthFieldTypeName.
+    /// </summary>
+    public string? SecondaryRelatedFieldTypeName { get; set; }
+    /// <summary>Bit width of the secondary carrier (mirrors LengthFieldBitWidth; needed for overflow guards).</summary>
+    public int SecondaryRelatedFieldBitWidth { get; set; }
+
+    /// <summary>
+    /// Optional ValueConverter attached to the SECONDARY [BitFieldRelated] binding (almost always
+    /// a length converter for the ByteLength carrier — protocols that wire-encode length with an
+    /// offset / shift / scale).
+    /// Codex review round-2 P2: previously the analyzer always copied the primary (Count) binding's
+    /// converter and silently dropped any converter declared on the secondary (ByteLength) binding,
+    /// so protocols that encode length with a transform produced incompatible wire values while the
+    /// attribute was accepted.
+    /// </summary>
+    public string? SecondaryValueConverterTypeFullName { get; set; }
+    public bool SecondaryValueConverterHasSerialize { get; set; }
+    public bool SecondaryValueConverterHasDeserialize { get; set; }
+    public bool SecondaryValueConverterSerializeHasContext { get; set; }
+    public bool SecondaryValueConverterDeserializeHasContext { get; set; }
+
     public bool IsNestedType { get; set; }
     public bool IsTypeParameter { get; set; }
     public bool IsPolymorphic { get; set; }
