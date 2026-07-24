@@ -355,9 +355,7 @@ internal static class SerializerEmitter
                 && f.RelationKind != 1)
             {
                 var ma = $"this.{f.MemberName}";
-                var convertCall = f.ValueConverterSerializeHasContext
-                    ? $"{f.ValueConverterTypeFullName}.OnSerializeConvert((object){ma}, context)"
-                    : $"{f.ValueConverterTypeFullName}.OnSerializeConvert((object){ma})";
+                var convertCall = BuildSerializeConverterCall(f, ma);
                 sb.AppendLine($"        {ma} = ({f.MemberTypeFullName}){convertCall};");
             }
         }
@@ -927,7 +925,8 @@ internal static class SerializerEmitter
         sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
         sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Terminated string '{name}' requires a byte-aligned absolute bit offset, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary.\");");
         sb.AppendLine($"        int _strByteOffset_{name} = ({offsetExpr}) / 8;");
-        sb.AppendLine($"        int _strWriteLen_{name} = global::BitSerializer.BitStringHelper.Encode({memberAccess}, {GetBitStringEncodingExpression(field.StringEncodingName)}, bytes.Slice(_strByteOffset_{name}), stopAtNull: true);");
+        sb.AppendLine($"        int _strWriteLen_{name} = global::BitSerializer.BitStringHelper.GetByteCount({memberAccess}, {GetBitStringEncodingExpression(field.StringEncodingName)}, stopAtNull: true);");
+        sb.AppendLine($"        global::BitSerializer.BitStringHelper.Encode({memberAccess}, {GetBitStringEncodingExpression(field.StringEncodingName)}, bytes.Slice(_strByteOffset_{name}, _strWriteLen_{name}), stopAtNull: true);");
         sb.AppendLine($"        {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _strWriteLen_{name} * 8, 8, 0);");
         sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + (_strWriteLen_{name} + 1) * 8;");
     }
@@ -1005,11 +1004,18 @@ internal static class SerializerEmitter
     private static void EmitSerializeConverter(StringBuilder sb, BitFieldModel field, string memberAccess)
     {
         if (field.ValueConverterTypeFullName == null || !field.ValueConverterHasSerialize) return;
-        var convertCall = field.ValueConverterSerializeHasContext
-            ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess}, context)"
-            : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess})";
+        var convertCall = BuildSerializeConverterCall(field, memberAccess);
         sb.AppendLine($"        {memberAccess} = ({field.MemberTypeFullName}){convertCall};");
     }
+
+    private static string BuildSerializeConverterCall(BitFieldModel field, string valueExpression)
+        => field.ValueConverterIsStronglyTyped
+            ? field.ValueConverterIsContextTyped
+                ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert({valueExpression}, ({field.ValueConverterContextTypeFullName})context!)"
+                : $"{field.ValueConverterTypeFullName}.OnSerializeConvert({valueExpression})"
+            : field.ValueConverterSerializeHasContext
+                ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){valueExpression}, context)"
+                : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){valueExpression})";
 
     /// <summary>
     /// Maps a field's [BitField(Endian = ...)] override (0=Inherit, 1=Big, 2=Little) to the helper class.

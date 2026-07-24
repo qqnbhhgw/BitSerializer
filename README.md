@@ -94,6 +94,7 @@ OperationStatus readStatus =
 - `TryDeserializeInto` 复用顶层对象、嵌套对象、数组和 List。数值/值类型 List 须有足够 `Capacity`；引用类型 List 还须预先填充足够 `Count`，且每个元素对象非空；数组须有足够长度，引用元素也须预创建，否则返回 `DestinationTooSmall`。
 - `TryDeserialize(ref T, ...)` 也支持 struct 和 class；失败时对象可能已部分更新，需要事务语义时继续使用 `Deserialize<T>()`。
 - 输入不足返回 `NeedMoreData`，预分配对象图容量不足返回 `DestinationTooSmall`，CRC/判别值/预算格式错误返回 `InvalidData`；用户 Hook 与 Converter 的业务异常不会被吞掉。
+- 从 `0.13.0` 起，兼容 `Deserialize<T>()` 遇到未知多态判别值时抛 `InvalidDataException`（旧版本为 `InvalidOperationException`）。
 - 字符串反序列化仍必须创建最终 `string`；多态类型变化等语义要求创建新对象的情况不属于严格原地模式。
 - 内置 CRC 和字符串序列化使用无临时对象路径。自定义 CRC 可额外实现 `IBitCrcAlgorithm<TSelf>`；数值转换器可实现 `IBitFieldValueConverter<TProperty, TWire>` 或 `IBitFieldValueConverter<TProperty, TWire, TContext>` 避免装箱。
 - 首次 JIT、泛型初始化、用户 Hook/Context/Converter 内部行为和异常路径不计入稳定热路径的零分配承诺。

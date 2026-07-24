@@ -29,6 +29,10 @@ public static class BitSerializerLSB
         return OperationStatus.Done;
     }
 
+    /// <summary>
+    /// Deserializes into an existing value. A non-success status may leave it partially updated.
+    /// Use the allocating Deserialize API when transactional replacement is required.
+    /// </summary>
     public static OperationStatus TryDeserialize<T>(ReadOnlySpan<byte> source, ref T value, out int bytesConsumed)
         where T : IBitSerializable
     {
@@ -59,6 +63,10 @@ public static class BitSerializerLSB
         return OperationStatus.Done;
     }
 
+    /// <summary>
+    /// Deserializes into a reusable object graph. A non-success status may leave it partially updated.
+    /// Use the allocating Deserialize API when transactional replacement is required.
+    /// </summary>
     public static OperationStatus TryDeserializeInto<T>(ReadOnlySpan<byte> source, T destination, out int bytesConsumed)
         where T : class, IBitSerializable
     {
@@ -110,6 +118,7 @@ public static class BitSerializerLSB
         int requiredBytes = GetRequiredByteCount(obj);
         if (bytes.Length < requiredBytes)
             throw new ArgumentException($"Destination requires at least {requiredBytes} bytes.", nameof(bytes));
+        bytes[..requiredBytes].Clear();
         var ctx = obj.SerializeContext();
         obj.BeforeSerialize(ctx, bytes);
         obj.SerializeLSB(bytes, 0, ctx);

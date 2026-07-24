@@ -866,9 +866,10 @@ internal static class DeserializerEmitter
             {
                 string indexExpr = isArray ? $"_arrayIndex_{name}" : $"_listIndex_{name}";
                 string lengthExpr = isArray ? $"{memberAccess}.Length" : $"{memberAccess}.Count";
-                sb.AppendLine($"            if ({indexExpr} >= {lengthExpr}) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1);");
+                string sizeReason = isArray ? "has insufficient array length" : "has insufficient list count";
+                sb.AppendLine($"            if ({indexExpr} >= {lengthExpr}) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1, \"{sizeReason}\");");
                 sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = (global::BitSerializer.IBitSerializable){memberAccess}[{indexExpr}];");
-                sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1);");
+                sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1, $\"contains a null reusable element at index {{{indexExpr}}}\");");
             }
             else if (field.ListElementIsTypeParameter)
             {
@@ -901,7 +902,7 @@ internal static class DeserializerEmitter
             }
             else if (isArray && reuseExisting)
             {
-                sb.AppendLine($"            if (_arrayIndex_{name} >= {memberAccess}.Length) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", _arrayIndex_{name} + 1);");
+                sb.AppendLine($"            if (_arrayIndex_{name} >= {memberAccess}.Length) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", _arrayIndex_{name} + 1, \"has insufficient array length\");");
                 sb.AppendLine($"            {memberAccess}[_arrayIndex_{name}++] = ({elemTypeFullName})_elem;");
             }
             else if (isArray)
@@ -916,9 +917,10 @@ internal static class DeserializerEmitter
             {
                 string indexExpr = isArray ? $"_arrayIndex_{name}" : $"_listIndex_{name}";
                 string lengthExpr = isArray ? $"{memberAccess}.Length" : $"{memberAccess}.Count";
-                sb.AppendLine($"            if ({indexExpr} >= {lengthExpr}) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1);");
+                string sizeReason = isArray ? "has insufficient array length" : "has insufficient list count";
+                sb.AppendLine($"            if ({indexExpr} >= {lengthExpr}) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1, \"{sizeReason}\");");
                 sb.AppendLine($"            var _elem = {memberAccess}[{indexExpr}];");
-                sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1);");
+                sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1, $\"contains a null reusable element at index {{{indexExpr}}}\");");
             }
             else
             {
@@ -959,7 +961,7 @@ internal static class DeserializerEmitter
             }
             else if (isArray && reuseExisting)
             {
-                sb.AppendLine($"            if (_arrayIndex_{name} >= {memberAccess}.Length) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", _arrayIndex_{name} + 1);");
+                sb.AppendLine($"            if (_arrayIndex_{name} >= {memberAccess}.Length) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", _arrayIndex_{name} + 1, \"has insufficient array length\");");
                 sb.AppendLine($"            {memberAccess}[_arrayIndex_{name}++] = _elem;");
             }
             else if (isArray)
@@ -1013,13 +1015,14 @@ internal static class DeserializerEmitter
         if (field.IsArray)
         {
             sb.AppendLine($"        if ({memberAccess} == null || {memberAccess}.Length < {countExpr})");
-            sb.AppendLine($"            throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", {countExpr});");
+            sb.AppendLine($"            throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", {countExpr}, \"has insufficient array length\");");
         }
         else
         {
             string capacityProperty = field.ListElementIsNested && field.ListElementIsReferenceType ? "Count" : "Capacity";
             sb.AppendLine($"        if ({memberAccess} == null || {memberAccess}.{capacityProperty} < {countExpr})");
-            sb.AppendLine($"            throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", {countExpr});");
+            string reason = capacityProperty == "Count" ? "has insufficient list count" : "has insufficient list capacity";
+            sb.AppendLine($"            throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", {countExpr}, \"{reason}\");");
             if (!(field.ListElementIsNested && field.ListElementIsReferenceType))
                 sb.AppendLine($"        {memberAccess}.Clear();");
         }
@@ -1045,7 +1048,7 @@ internal static class DeserializerEmitter
         if (reuseExisting && field.ListElementIsReferenceType)
         {
             sb.AppendLine($"            var _elem = {memberAccess}[_i];");
-            sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", _i + 1);");
+            sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", _i + 1, $\"contains a null reusable element at index {{_i}}\");");
         }
         else
         {
@@ -1058,7 +1061,7 @@ internal static class DeserializerEmitter
         if (reuseExisting && field.ListElementIsReferenceType)
         {
             sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = (global::BitSerializer.IBitSerializable){memberAccess}[_i];");
-            sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", _i + 1);");
+            sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", _i + 1, $\"contains a null reusable element at index {{_i}}\");");
         }
         else if (field.ListElementIsTypeParameter)
         {
@@ -1398,7 +1401,9 @@ internal static class DeserializerEmitter
         // post-convert step in that mode.
         if (field.IsList && field.RelationKind == 1) return;
         var convertCall = field.ValueConverterIsStronglyTyped
-            ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({memberAccess})"
+            ? field.ValueConverterIsContextTyped
+                ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({memberAccess}, ({field.ValueConverterContextTypeFullName})context!)"
+                : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({memberAccess})"
             : field.ValueConverterDeserializeHasContext
                 ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess}, context)"
                 : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess})";

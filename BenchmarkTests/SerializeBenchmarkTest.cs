@@ -294,6 +294,19 @@ public partial class HighPerformanceStringData
 }
 
 [BitSerialize]
+public partial class HighPerformanceAsciiStringData
+{
+    [BitFixedString(32, Encoding = BitStringEncoding.ASCII)]
+    public string Fixed { get; set; } = "BitSerializer ASCII";
+
+    [BitTerminatedString(Encoding = BitStringEncoding.ASCII)]
+    public string Terminated { get; set; } = "zero allocation";
+
+    [BitLengthPrefixString(8, Encoding = BitStringEncoding.ASCII, MaxBytes = 32)]
+    public string LengthPrefixed { get; set; } = "length prefixed";
+}
+
+[BitSerialize]
 public partial class HighPerformanceCrcData
 {
     [BitField(8), BitCrcInclude(nameof(Crc))] public byte First { get; set; }
@@ -351,8 +364,10 @@ public class AllocationBenchmark
 {
     private readonly HighPerformanceStringData _stringData = new();
     private readonly HighPerformanceCrcData _crcData = new() { First = 0x12, Second = 0x34 };
+    private readonly HighPerformanceAsciiStringData _asciiStringData = new();
     private readonly byte[] _stringBuffer = new byte[32];
     private readonly byte[] _crcBuffer = new byte[4];
+    private readonly byte[] _asciiStringBuffer = new byte[64];
     private readonly HighPerformanceFeatureData _featureData = new();
     private readonly HighPerformanceFeatureData _featureDestination = new()
     {
@@ -376,6 +391,10 @@ public class AllocationBenchmark
     [Benchmark]
     public void FixedUtf8_TrySerialize()
         => BitSerializerMSB.TrySerialize(_stringData, _stringBuffer, out _);
+
+    [Benchmark]
+    public void AsciiStrings_TrySerialize()
+        => BitSerializerMSB.TrySerialize(_asciiStringData, _asciiStringBuffer, out _);
 
     [Benchmark]
     public void BuiltInCrc_TrySerialize()

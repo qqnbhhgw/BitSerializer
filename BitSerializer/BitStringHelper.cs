@@ -28,9 +28,8 @@ public static class BitStringHelper
         int byteLimit = maxBytes > 0 ? Math.Min(maxBytes, destination.Length) : destination.Length;
         if (encoding == BitStringEncoding.ASCII)
         {
-            textEncoding.GetEncoder().Convert(chars, destination[..byteLimit], true,
-                out _, out int bytesUsed, out _);
-            return bytesUsed;
+            int asciiCharCount = Math.Min(chars.Length, byteLimit);
+            return textEncoding.GetBytes(chars[..asciiCharCount], destination[..byteLimit]);
         }
 
         int charCount = GetPrefixCharCount(chars, textEncoding, byteLimit);

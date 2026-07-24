@@ -97,6 +97,56 @@ public partial class BitSerializerHighPerformanceTests
         public string Text { get; set; } = string.Empty;
     }
 
+    [BitSerialize]
+    public partial class AsciiStringHotPathData
+    {
+        [BitFixedString(16, Encoding = BitStringEncoding.ASCII)]
+        public string Fixed { get; set; } = string.Empty;
+
+        [BitTerminatedString(Encoding = BitStringEncoding.ASCII)]
+        public string Terminated { get; set; } = string.Empty;
+
+        [BitLengthPrefixString(8, Encoding = BitStringEncoding.ASCII, MaxBytes = 16)]
+        public string LengthPrefixed { get; set; } = string.Empty;
+    }
+
+    public sealed class ContextStringConverter : IBitFieldValueConverter<string, string, ConverterContext>
+    {
+        public static string OnSerializeConvert(string value, ConverterContext context) => context.Offset == 3 ? value : string.Empty;
+        public static string OnDeserializeConvert(string value, ConverterContext context) => context.Offset == 3 ? value : string.Empty;
+    }
+
+    public sealed class ContextListConverter : IBitFieldValueConverter<List<byte>, List<byte>, ConverterContext>
+    {
+        public static List<byte> OnSerializeConvert(List<byte> value, ConverterContext context)
+        {
+            value[0] += (byte)context.Offset;
+            return value;
+        }
+
+        public static List<byte> OnDeserializeConvert(List<byte> value, ConverterContext context)
+        {
+            value[0] -= (byte)context.Offset;
+            return value;
+        }
+    }
+
+    [BitSerialize]
+    public partial class ContextTypedNonPrimitiveConverterData
+    {
+        [BitFixedString(4, Padding = (byte)'_', Encoding = BitStringEncoding.ASCII), BitFieldRelated(null, typeof(ContextStringConverter))]
+        public string Text { get; set; } = "abc";
+
+        [BitField(8)] public byte Count { get; set; }
+
+        [BitField, BitFieldRelated(nameof(Count), typeof(ContextListConverter))]
+        public List<byte> Values { get; set; } = new() { 7 };
+
+        [BitIgnore] public ConverterContext Context { get; } = new() { Offset = 3 };
+        public object SerializeContext() => Context;
+        public object DeserializeContext() => Context;
+    }
+
     public sealed class WideWireConverter : IBitFieldValueConverter<byte, ushort>
     {
         public static ushort OnSerializeConvert(byte value) => (ushort)(0xAB00 | value);
@@ -182,6 +232,12 @@ public partial class BitSerializerHighPerformanceTests
     {
         [BitField, BitFieldCount(8, PadIfShort = true)]
         public List<byte> Values { get; set; } = new(8);
+    }
+
+    [BitSerialize]
+    public partial class PartialByteData
+    {
+        [BitField(1)] public byte Value { get; set; }
     }
 
     [BitSerialize]
@@ -283,6 +339,25 @@ public partial class BitSerializerHighPerformanceTests
 
         BitSerializerMSB.TryDeserializeInto(bytes, destination, out _)
             .ShouldBe(OperationStatus.DestinationTooSmall);
+    }
+
+    [Fact]
+    public void CapacityException_IdentifiesListArrayAndNullElementFailures()
+    {
+        var listException = Should.Throw<BitSerializationCapacityException>(() =>
+            ((IBitSerializable)new NestedListHotPathData { Values = new List<HotNestedData>() })
+            .DeserializeMSBInto(new byte[] { 1, 0, 7 }, 0, null, true));
+        listException.Message.ShouldContain("insufficient list count");
+
+        var arrayException = Should.Throw<BitSerializationCapacityException>(() =>
+            ((IBitSerializable)new ReferenceArrayHotPathData { Values = Array.Empty<HotNestedData>() })
+            .DeserializeMSBInto(new byte[] { 1, 0, 7 }, 0, null, true));
+        arrayException.Message.ShouldContain("insufficient array length");
+
+        var nullElementException = Should.Throw<BitSerializationCapacityException>(() =>
+            ((IBitSerializable)new NestedListHotPathData { Values = new List<HotNestedData> { null! } })
+            .DeserializeMSBInto(new byte[] { 1, 0, 7 }, 0, null, true));
+        nullElementException.Message.ShouldContain("null reusable element at index 0");
     }
 
     [Fact]
@@ -512,6 +587,18 @@ public partial class BitSerializerHighPerformanceTests
     }
 
     [Fact]
+    public void ContextTypedStringAndListConverters_RoundTripThroughTypedOverloads()
+    {
+        var source = new ContextTypedNonPrimitiveConverterData();
+        byte[] bytes = BitSerializerMSB.Serialize(source);
+        bytes.ShouldBe(new byte[] { (byte)'a', (byte)'b', (byte)'c', (byte)'_', 1, 10 });
+
+        var result = BitSerializerMSB.Deserialize<ContextTypedNonPrimitiveConverterData>(bytes);
+        result.Text.ShouldBe("abc");
+        result.Values.ShouldBe(new byte[] { 7 });
+    }
+
+    [Fact]
     public void TryDeserialize_UsesPreciseStatusAndPreservesBusinessExceptions()
     {
         var shortString = new LengthPrefixStringHotPathData();
@@ -589,6 +676,43 @@ public partial class BitSerializerHighPerformanceTests
     }
 
     [Fact]
+    public void CompatibilitySpanSerialize_ClearsRequiredRangeOnly()
+    {
+        var value = new PartialByteData { Value = 1 };
+        byte[] msb = Enumerable.Repeat((byte)0xFF, 3).ToArray();
+        byte[] lsb = Enumerable.Repeat((byte)0xFF, 3).ToArray();
+
+        BitSerializerMSB.Serialize(value, msb);
+        BitSerializerLSB.Serialize(value, lsb);
+
+        msb.ShouldBe(new byte[] { 0x80, 0xFF, 0xFF });
+        lsb.ShouldBe(new byte[] { 0x01, 0xFF, 0xFF });
+    }
+
+    [Fact]
+    public void RegistryCompatibilitySpanSerialize_ClearsRequiredRangeOnly()
+    {
+        var value = new PartialByteData { Value = 1 };
+        byte[] destination = Enumerable.Repeat((byte)0xFF, 3).ToArray();
+
+        BitSerializerMSB.Serialize(value, typeof(PartialByteData), destination);
+
+        destination.ShouldBe(new byte[] { 0x80, 0xFF, 0xFF });
+    }
+
+    [Fact]
+    public void TerminatedStringSerialize_DoesNotWritePastItsField()
+    {
+        var value = new TerminatedStringHotPathData { Text = "abc" };
+        byte[] destination = Enumerable.Repeat((byte)0xCC, 16).ToArray();
+
+        BitSerializerMSB.Serialize(value, destination);
+
+        destination[..4].ShouldBe(new byte[] { (byte)'a', (byte)'b', (byte)'c', 0 });
+        destination[4..].ShouldAllBe(item => item == 0xCC);
+    }
+
+    [Fact]
     public void StringAndBuiltInCrcSerialization_AreAllocationFreeAfterWarmup()
     {
         var stringData = new BitSerializerStringAndCustomTypeTests.FixedStringUtf8Data
@@ -599,11 +723,19 @@ public partial class BitSerializerHighPerformanceTests
         var stringBuffer = new byte[BitSerializerMSB.GetRequiredByteCount(stringData)];
         var crcData = new CrcHotPathData { First = 0x12, Second = 0x34 };
         var crcBuffer = new byte[BitSerializerMSB.GetRequiredByteCount(crcData)];
+        var asciiData = new AsciiStringHotPathData
+        {
+            Fixed = "fixed ASCII",
+            Terminated = "terminated ASCII",
+            LengthPrefixed = "length ASCII"
+        };
+        var asciiBuffer = new byte[BitSerializerMSB.GetRequiredByteCount(asciiData)];
 
         for (int index = 0; index < 100; index++)
         {
             BitSerializerMSB.TrySerialize(stringData, stringBuffer, out _);
             BitSerializerMSB.TrySerialize(crcData, crcBuffer, out _);
+            BitSerializerMSB.TrySerialize(asciiData, asciiBuffer, out _);
         }
 
         long before = GC.GetAllocatedBytesForCurrentThread();
@@ -611,6 +743,7 @@ public partial class BitSerializerHighPerformanceTests
         {
             BitSerializerMSB.TrySerialize(stringData, stringBuffer, out _);
             BitSerializerMSB.TrySerialize(crcData, crcBuffer, out _);
+            BitSerializerMSB.TrySerialize(asciiData, asciiBuffer, out _);
         }
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 

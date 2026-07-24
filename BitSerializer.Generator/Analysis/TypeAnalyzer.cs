@@ -772,7 +772,10 @@ internal static class TypeAnalyzer
                 {
                     var wireType = typedConverter.TypeArguments[1];
                     int wireBitWidth = GetDefaultBitLength(wireType);
-                    if (wireBitWidth > 0)
+                    bool isSameTypePostConverter = SymbolEqualityComparer.Default.Equals(wireType, memberType);
+                    // Scalar converters require an integral wire width. String/list/nested post-converters
+                    // transform the already decoded member value, so a same-type wire needs no bit width.
+                    if (wireBitWidth > 0 || isSameTypePostConverter)
                     {
                         field.ValueConverterIsStronglyTyped = true;
                         field.ValueConverterIsContextTyped = contextTypedConverter != null;
