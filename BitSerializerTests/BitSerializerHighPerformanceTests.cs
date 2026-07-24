@@ -227,6 +227,105 @@ public partial class BitSerializerHighPerformanceTests
         public HotNestedData? Value { get; set; }
     }
 
+    public sealed class ManualByteLengthPayload : IBitSerializable
+    {
+        public byte Value { get; set; }
+        public int BeforeDeserializeCalls { get; private set; }
+        public int AfterDeserializeCalls { get; private set; }
+
+        public int SerializeLSB(Span<byte> bytes, int bitOffset) => SerializeLSB(bytes, bitOffset, null);
+        public int SerializeMSB(Span<byte> bytes, int bitOffset) => SerializeMSB(bytes, bitOffset, null);
+        public int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset) => DeserializeLSB(bytes, bitOffset, null);
+        public int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset) => DeserializeMSB(bytes, bitOffset, null);
+        public int GetTotalBitLength() => 8;
+        public object DeserializeContext() => this;
+
+        public void BeforeDeserialize(object? context, ReadOnlySpan<byte> bytes)
+        {
+            ReferenceEquals(context, this).ShouldBeTrue();
+            BeforeDeserializeCalls++;
+        }
+
+        public void AfterDeserialize(object? context, ReadOnlySpan<byte> bytes)
+        {
+            ReferenceEquals(context, this).ShouldBeTrue();
+            AfterDeserializeCalls++;
+        }
+
+        public int SerializeLSB(Span<byte> bytes, int bitOffset, object? context)
+        {
+            BitHelperLSB.SetValueLength<byte>(bytes, bitOffset, 8, Value);
+            return 8;
+        }
+
+        public int SerializeMSB(Span<byte> bytes, int bitOffset, object? context)
+        {
+            BitHelperMSB.SetValueLength<byte>(bytes, bitOffset, 8, Value);
+            return 8;
+        }
+
+        public int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset, object? context)
+        {
+            Value = BitHelperLSB.ValueLength<byte>(bytes, bitOffset, 8);
+            return 8;
+        }
+
+        public int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset, object? context)
+        {
+            Value = BitHelperMSB.ValueLength<byte>(bytes, bitOffset, 8);
+            return 8;
+        }
+    }
+
+    [BitSerialize]
+    public partial class ManualByteLengthEnvelope
+    {
+        [BitField(8)] public byte Length { get; set; }
+
+        [BitField, BitFieldRelated(nameof(Length), RelationKind = BitRelationKind.ByteLength)]
+        public ManualByteLengthPayload Value { get; set; } = null!;
+    }
+
+    [BitSerialize]
+    public partial class NegativeNestedBudgetEnvelope
+    {
+        [BitField(8)] public sbyte Length { get; set; }
+
+        [BitField, BitFieldRelated(nameof(Length), RelationKind = BitRelationKind.ByteLength)]
+        public HotNestedData Value { get; set; } = null!;
+    }
+
+    [BitSerialize]
+    public partial class ContextByteLengthPayload
+    {
+        [BitField(8)] public byte Value { get; set; }
+        [BitIgnore] public int BeforeDeserializeCalls { get; private set; }
+        [BitIgnore] public int AfterDeserializeCalls { get; private set; }
+
+        public object DeserializeContext() => this;
+
+        public void BeforeDeserialize(object? context, ReadOnlySpan<byte> bytes)
+        {
+            ReferenceEquals(context, this).ShouldBeTrue();
+            BeforeDeserializeCalls++;
+        }
+
+        public void AfterDeserialize(object? context, ReadOnlySpan<byte> bytes)
+        {
+            ReferenceEquals(context, this).ShouldBeTrue();
+            AfterDeserializeCalls++;
+        }
+    }
+
+    [BitSerialize]
+    public partial class ContextByteLengthEnvelope
+    {
+        [BitField(8)] public byte Length { get; set; }
+
+        [BitField, BitFieldRelated(nameof(Length), RelationKind = BitRelationKind.ByteLength)]
+        public ContextByteLengthPayload Value { get; set; } = null!;
+    }
+
     [BitSerialize]
     public partial class TerminalPadData
     {
@@ -643,6 +742,73 @@ public partial class BitSerializerHighPerformanceTests
         BitSerializerMSB.TryDeserializeInto(new byte[] { 0, 0 }, zero, out _).ShouldBe(OperationStatus.Done);
         BitSerializerMSB.TryDeserializeInto(new byte[] { 0, 0 }, zero, out _).ShouldBe(OperationStatus.Done);
         zero.Value.ShouldBeNull();
+    }
+
+    [Fact]
+    public void TryDeserializeInto_ManualByteLengthNullTargetReturnsDestinationTooSmall()
+    {
+        var destination = new ManualByteLengthEnvelope();
+
+        BitSerializerMSB.TryDeserializeInto(new byte[] { 1, 0x7B }, destination, out int bytesConsumed)
+            .ShouldBe(OperationStatus.DestinationTooSmall);
+
+        bytesConsumed.ShouldBe(0);
+
+        var payload = new ManualByteLengthPayload();
+        destination.Value = payload;
+        BitSerializerMSB.TryDeserializeInto(new byte[] { 1, 0x7B }, destination, out bytesConsumed)
+            .ShouldBe(OperationStatus.Done);
+
+        bytesConsumed.ShouldBe(2);
+        payload.Value.ShouldBe((byte)0x7B);
+        payload.BeforeDeserializeCalls.ShouldBe(1);
+        payload.AfterDeserializeCalls.ShouldBe(1);
+    }
+
+    [Fact]
+    public void TryDeserializeInto_ManualByteLengthZeroBudgetAcceptsNullTarget()
+    {
+        var destination = new ManualByteLengthEnvelope();
+
+        BitSerializerMSB.TryDeserializeInto(new byte[] { 0 }, destination, out int bytesConsumed)
+            .ShouldBe(OperationStatus.Done);
+
+        bytesConsumed.ShouldBe(1);
+        destination.Value.ShouldBeNull();
+    }
+
+    [Fact]
+    public void TryDeserializeInto_ContextByteLengthChecksTargetBeforeHooks()
+    {
+        var missing = new ContextByteLengthEnvelope();
+        BitSerializerMSB.TryDeserializeInto(new byte[] { 1, 0x7B }, missing, out _)
+            .ShouldBe(OperationStatus.DestinationTooSmall);
+
+        var empty = new ContextByteLengthEnvelope();
+        BitSerializerMSB.TryDeserializeInto(new byte[] { 0 }, empty, out _)
+            .ShouldBe(OperationStatus.Done);
+        empty.Value.ShouldBeNull();
+
+        var payload = new ContextByteLengthPayload();
+        var destination = new ContextByteLengthEnvelope { Value = payload };
+        BitSerializerMSB.TryDeserializeInto(new byte[] { 1, 0x7B }, destination, out int bytesConsumed)
+            .ShouldBe(OperationStatus.Done);
+
+        bytesConsumed.ShouldBe(2);
+        payload.Value.ShouldBe((byte)0x7B);
+        payload.BeforeDeserializeCalls.ShouldBe(1);
+        payload.AfterDeserializeCalls.ShouldBe(1);
+    }
+
+    [Fact]
+    public void TryDeserializeInto_NegativeNestedBudgetReturnsInvalidData()
+    {
+        var destination = new NegativeNestedBudgetEnvelope { Value = new HotNestedData() };
+
+        BitSerializerMSB.TryDeserializeInto(new byte[] { 0xFF, 0, 0 }, destination, out int bytesConsumed)
+            .ShouldBe(OperationStatus.InvalidData);
+
+        bytesConsumed.ShouldBe(0);
     }
 
     [Fact]
