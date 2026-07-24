@@ -9,7 +9,7 @@ namespace BitSerializer.CrcAlgorithms;
 /// 改 256 项 ushort 查表后 ≈ 0.5-1ns/byte, DMI Serialize 路径从 2.55× 回归回到 v0.10 baseline.
 /// 表项由 type initializer 一次构造, 所有实例共享 (512 字节 ≈ 一条 cache line × 8, 零运行时构造开销).
 /// </summary>
-public sealed class CrcCcitt : IBitCrcAlgorithm
+public sealed class CrcCcitt : IBitCrcAlgorithm, IBitCrcAlgorithm<CrcCcitt>
 {
     /// <summary>
     /// 256 项查表 — table[i] = 把 byte i 当作 MSB-aligned 16-bit 量, 经过 8 次 0x1021 多项式
@@ -21,6 +21,16 @@ public sealed class CrcCcitt : IBitCrcAlgorithm
     private ushort _crc;
 
     public int BitWidth => 16;
+
+    public static int AlgorithmBitWidth => 16;
+
+    public static ulong Compute(ReadOnlySpan<byte> data, ulong initialValue)
+    {
+        ushort crc = (ushort)initialValue;
+        foreach (byte value in data)
+            crc = (ushort)((crc << 8) ^ Table[(byte)((crc >> 8) ^ value)]);
+        return crc;
+    }
 
     public void Reset(ulong initialValue) => _crc = (ushort)initialValue;
 

@@ -27,6 +27,7 @@ internal class CrcGroup : IEquatable<CrcGroup>
     public int BitWidth { get; set; }
     public ulong InitialValue { get; set; }
     public bool ValidateOnDeserialize { get; set; }
+    public bool SupportsStaticCompute { get; set; }
     /// <summary>Bit offset (within this type) of the CRC result field.</summary>
     public int CrcFieldBitOffset { get; set; }
     /// <summary>Bit length of the CRC result field.</summary>
@@ -59,6 +60,7 @@ internal class CrcGroup : IEquatable<CrcGroup>
             && BitWidth == other.BitWidth
             && InitialValue == other.InitialValue
             && ValidateOnDeserialize == other.ValidateOnDeserialize
+            && SupportsStaticCompute == other.SupportsStaticCompute
             && CrcFieldBitOffset == other.CrcFieldBitOffset
             && CrcFieldBitLength == other.CrcFieldBitLength
             && CrcFieldTypeName == other.CrcFieldTypeName
@@ -172,6 +174,7 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.MemberTypeFullName == y.MemberTypeFullName
             && x.IsList == y.IsList
             && x.IsNestedType == y.IsNestedType
+            && x.ListElementIsReferenceType == y.ListElementIsReferenceType
             && x.IsTypeParameter == y.IsTypeParameter
             && x.IsPolymorphic == y.IsPolymorphic
             && x.FixedCount == y.FixedCount
@@ -186,6 +189,11 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.SecondaryValueConverterSerializeHasContext == y.SecondaryValueConverterSerializeHasContext
             && x.SecondaryValueConverterDeserializeHasContext == y.SecondaryValueConverterDeserializeHasContext
             && x.ValueConverterTypeFullName == y.ValueConverterTypeFullName
+            && x.ValueConverterIsStronglyTyped == y.ValueConverterIsStronglyTyped
+            && x.ValueConverterIsContextTyped == y.ValueConverterIsContextTyped
+            && x.ValueConverterWireTypeFullName == y.ValueConverterWireTypeFullName
+            && x.ValueConverterContextTypeFullName == y.ValueConverterContextTypeFullName
+            && x.ValueConverterWireBitWidth == y.ValueConverterWireBitWidth
             && x.IsPotentiallyDynamic == y.IsPotentiallyDynamic
             && x.IsFixedString == y.IsFixedString
             && x.FixedStringByteLength == y.FixedStringByteLength
@@ -210,6 +218,7 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.CrcAlgorithmTypeFullName == y.CrcAlgorithmTypeFullName
             && x.CrcInitialValue == y.CrcInitialValue
             && x.CrcValidateOnDeserialize == y.CrcValidateOnDeserialize
+            && x.CrcSupportsStaticCompute == y.CrcSupportsStaticCompute
             && x.CrcWholeBuffer == y.CrcWholeBuffer
             && x.CrcSkipHeadBytes == y.CrcSkipHeadBytes
             && x.CrcSkipTailBytes == y.CrcSkipTailBytes

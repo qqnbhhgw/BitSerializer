@@ -500,4 +500,12 @@ internal static class DiagnosticDescriptors
         DiagnosticSeverity.Error,
         true);
 
+    public static readonly DiagnosticDescriptor ValueConverterWireTypeTooSmall = new(
+        "BITS063",
+        "Strongly typed converter wire type is too small",
+        "Member '{0}' in '{1}' uses converter wire type '{2}' ({3} bits), which cannot represent the declared {4}-bit field. Use a wire type at least as wide as the field.",
+        "BitSerializer",
+        DiagnosticSeverity.Error,
+        true);
+
 }

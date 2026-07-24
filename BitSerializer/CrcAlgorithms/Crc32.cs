@@ -7,13 +7,23 @@ namespace BitSerializer.CrcAlgorithms;
 /// 当使用默认 InitialValue = 0 时，Reset 会将其翻转为标准 0xFFFFFFFF。
 /// 若需自定义初始值，传入已翻转的值（即与 0xFFFFFFFF 异或后的值）。
 /// </summary>
-public sealed class Crc32 : IBitCrcAlgorithm
+public sealed class Crc32 : IBitCrcAlgorithm, IBitCrcAlgorithm<Crc32>
 {
     private static readonly uint[] Table = BuildTable();
 
     private uint _crc;
 
     public int BitWidth => 32;
+
+    public static int AlgorithmBitWidth => 32;
+
+    public static ulong Compute(ReadOnlySpan<byte> data, ulong initialValue)
+    {
+        uint crc = initialValue == 0 ? 0xFFFFFFFFu : (uint)initialValue;
+        foreach (byte value in data)
+            crc = Table[(crc ^ value) & 0xFF] ^ (crc >> 8);
+        return crc ^ 0xFFFFFFFFu;
+    }
 
     public void Reset(ulong initialValue)
     {

@@ -17,3 +17,13 @@ public interface IBitCrcAlgorithm
 
     ulong Result { get; }
 }
+
+/// <summary>
+/// Allocation-free one-shot CRC contract. Implement this in addition to
+/// <see cref="IBitCrcAlgorithm"/> to let generated code avoid creating an algorithm instance.
+/// </summary>
+public interface IBitCrcAlgorithm<TSelf> where TSelf : IBitCrcAlgorithm<TSelf>
+{
+    static abstract int AlgorithmBitWidth { get; }
+    static abstract ulong Compute(ReadOnlySpan<byte> data, ulong initialValue);
+}

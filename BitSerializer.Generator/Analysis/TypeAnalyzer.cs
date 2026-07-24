@@ -760,6 +760,36 @@ internal static class TypeAnalyzer
                 field.ValueConverterHasDeserialize = deserMethods.Count > 0;
                 field.ValueConverterSerializeHasContext = serMethods.Any(m => m.Parameters.Length == 2);
                 field.ValueConverterDeserializeHasContext = deserMethods.Any(m => m.Parameters.Length == 2);
+                var contextTypedConverter = primaryConverterSym.AllInterfaces.FirstOrDefault(i =>
+                    i.OriginalDefinition.ToDisplayString() == "BitSerializer.IBitFieldValueConverter<TProperty, TWire, TContext>"
+                    && i.TypeArguments.Length == 3
+                    && SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], memberType));
+                var typedConverter = contextTypedConverter ?? primaryConverterSym.AllInterfaces.FirstOrDefault(i =>
+                    i.OriginalDefinition.ToDisplayString() == "BitSerializer.IBitFieldValueConverter<TProperty, TWire>"
+                    && i.TypeArguments.Length == 2
+                    && SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], memberType));
+                if (typedConverter != null)
+                {
+                    var wireType = typedConverter.TypeArguments[1];
+                    int wireBitWidth = GetDefaultBitLength(wireType);
+                    if (wireBitWidth > 0)
+                    {
+                        field.ValueConverterIsStronglyTyped = true;
+                        field.ValueConverterIsContextTyped = contextTypedConverter != null;
+                        field.ValueConverterWireTypeFullName = wireType
+                            .ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                        field.ValueConverterWireBitWidth = wireBitWidth;
+                        if (contextTypedConverter != null)
+                        {
+                            field.ValueConverterContextTypeFullName = contextTypedConverter.TypeArguments[2]
+                                .ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                        }
+                        field.ValueConverterHasSerialize = true;
+                        field.ValueConverterHasDeserialize = true;
+                        field.ValueConverterSerializeHasContext = contextTypedConverter != null;
+                        field.ValueConverterDeserializeHasContext = contextTypedConverter != null;
+                    }
+                }
             }
 
             // Check for BitFieldCount
@@ -942,6 +972,7 @@ internal static class TypeAnalyzer
                 field.IsArray = isArray;
                 field.ListElementTypeName = elementType!.Name;
                 field.ListElementTypeFullName = elementType!.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                field.ListElementIsReferenceType = elementType.IsReferenceType;
 
                 if (IsNumericOrEnum(elementType!))
                 {
@@ -1083,6 +1114,19 @@ internal static class TypeAnalyzer
                 field.MemberTypeName = GetSimpleTypeName(memberType);
                 field.MemberTypeFullName = memberType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
                 currentBitIndex += field.BitLength;
+
+                if (field.ValueConverterIsStronglyTyped
+                    && field.ValueConverterWireBitWidth < field.BitLength)
+                {
+                    return new AnalyzeResult
+                    {
+                        Diagnostic = Diagnostic.Create(
+                            DiagnosticDescriptors.ValueConverterWireTypeTooSmall,
+                            member.Locations.FirstOrDefault(),
+                            member.Name, symbol.Name, field.ValueConverterWireTypeFullName,
+                            field.ValueConverterWireBitWidth, field.BitLength)
+                    };
+                }
             }
             else if (HasAttribute(memberType, "BitSerializer.BitSerializeAttribute"))
             {
@@ -1898,6 +1942,10 @@ internal static class TypeAnalyzer
                             crcField.MemberName, algoSym?.Name ?? "<unknown>")
                     };
                 }
+                crcField.CrcSupportsStaticCompute = algoSym.AllInterfaces.Any(i =>
+                    i.OriginalDefinition.ToDisplayString() == "BitSerializer.IBitCrcAlgorithm<TSelf>"
+                    && i.TypeArguments.Length == 1
+                    && SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], algoSym));
                 // Try to read BitWidth from a literal property getter if possible; otherwise assume matches field length
                 algoBitWidth = TryGetCrcBitWidth(algoSym) ?? crcField.BitLength;
                 if (algoBitWidth != crcField.BitLength)
@@ -2017,6 +2065,7 @@ internal static class TypeAnalyzer
                         BitWidth = crcField.BitLength,
                         InitialValue = crcField.CrcInitialValue,
                         ValidateOnDeserialize = crcField.CrcValidateOnDeserialize,
+                        SupportsStaticCompute = crcField.CrcSupportsStaticCompute,
                         CrcFieldBitOffset = crcField.BitStartIndex,
                         CrcFieldBitLength = crcField.BitLength,
                         CrcFieldTypeName = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName,
@@ -2122,6 +2171,7 @@ internal static class TypeAnalyzer
                     BitWidth = crcField.BitLength,
                     InitialValue = crcField.CrcInitialValue,
                     ValidateOnDeserialize = crcField.CrcValidateOnDeserialize,
+                    SupportsStaticCompute = crcField.CrcSupportsStaticCompute,
                     CrcFieldBitOffset = crcField.BitStartIndex,
                     CrcFieldBitLength = crcField.BitLength,
                     CrcFieldTypeName = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName,

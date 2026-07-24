@@ -13,6 +13,10 @@ public interface IBitSerializable
     int SerializeMSB(Span<byte> bytes, int bitOffset, object? context) => SerializeMSB(bytes, bitOffset);
     int DeserializeLSB(ReadOnlySpan<byte> bytes, int bitOffset, object? context) => DeserializeLSB(bytes, bitOffset);
     int DeserializeMSB(ReadOnlySpan<byte> bytes, int bitOffset, object? context) => DeserializeMSB(bytes, bitOffset);
+    int DeserializeLSBInto(ReadOnlySpan<byte> bytes, int bitOffset, object? context, bool reuseOnly)
+        => DeserializeLSB(bytes, bitOffset, context);
+    int DeserializeMSBInto(ReadOnlySpan<byte> bytes, int bitOffset, object? context, bool reuseOnly)
+        => DeserializeMSB(bytes, bitOffset, context);
     /// <summary>
     /// 返回序列化上下文对象，传递给嵌套类型的序列化方法和值转换器。
     /// 上下文仅用于辅助序列化逻辑（如值转换），不应改变总位长度。

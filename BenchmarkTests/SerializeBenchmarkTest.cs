@@ -206,6 +206,15 @@ public class SerializeBenchmark
     };
 
     private readonly byte[] _buffer = new byte[TotalBytes];
+    private readonly SerializeBenchmarkData _reuseData = new()
+    {
+        Sensor = new SensorReading(),
+        SensorArray = new List<SensorReading>
+        {
+            new(),
+            new(),
+        }
+    };
 
     [GlobalSetup]
     public void Setup()
@@ -220,6 +229,13 @@ public class SerializeBenchmark
     public void BitSerializer_Ser()
     {
         BitSerializerMSB.Serialize(_data, _buffer);
+    }
+
+    [Benchmark]
+    [BenchmarkCategory("Serialize")]
+    public void BitSerializer_TrySer()
+    {
+        BitSerializerMSB.TrySerialize(_data, _buffer, out _);
     }
 
     [Benchmark]
@@ -260,4 +276,124 @@ public class SerializeBenchmark
     {
         return BenchmarkDataSerializer.Deserialize(_buffer);
     }
+
+    [Benchmark]
+    [BenchmarkCategory("Deserialize")]
+    public SerializeBenchmarkData BitSerializer_TryDeInto()
+    {
+        BitSerializerMSB.TryDeserializeInto(_buffer, _reuseData, out _);
+        return _reuseData;
+    }
+}
+
+[BitSerialize]
+public partial class HighPerformanceStringData
+{
+    [BitFixedString(32, Encoding = BitStringEncoding.UTF8)]
+    public string Text { get; set; } = "BitSerializer zero allocation";
+}
+
+[BitSerialize]
+public partial class HighPerformanceCrcData
+{
+    [BitField(8), BitCrcInclude(nameof(Crc))] public byte First { get; set; }
+    [BitField(8), BitCrcInclude(nameof(Crc))] public byte Second { get; set; }
+    [BitField(16), BitCrc(typeof(BitSerializer.CrcAlgorithms.CrcCcitt))] public ushort Crc { get; set; }
+}
+
+public sealed class BenchmarkConverterContext
+{
+    public ushort Offset { get; init; } = 3;
+}
+
+public sealed class BenchmarkContextConverter : IBitFieldValueConverter<ushort, ushort, BenchmarkConverterContext>
+{
+    public static ushort OnSerializeConvert(ushort value, BenchmarkConverterContext context) => (ushort)(value + context.Offset);
+    public static ushort OnDeserializeConvert(ushort value, BenchmarkConverterContext context) => (ushort)(value - context.Offset);
+}
+
+[BitSerialize]
+public partial class HighPerformanceFeatureData
+{
+    [BitField(16), BitFieldRelated(null, typeof(BenchmarkContextConverter))]
+    public ushort Converted { get; set; } = 0x1234;
+
+    [BitField(8)] public byte Count { get; set; }
+
+    [BitField, BitFieldRelated(nameof(Count))]
+    public List<SensorReading> Values { get; set; } = new()
+    {
+        new() { SensorId = 1, Value = 0x2345 },
+        new() { SensorId = 2, Value = 0x6789 },
+    };
+
+    [BitIgnore] public BenchmarkConverterContext Context { get; } = new();
+    public object SerializeContext() => Context;
+    public object DeserializeContext() => Context;
+}
+
+[BitSerialize]
+public partial class HighPerformanceByteLengthData
+{
+    [BitField(8)] public byte Length { get; set; }
+
+    [BitField, BitFieldRelated(nameof(Length), RelationKind = BitRelationKind.ByteLength)]
+    public List<SensorReading> Values { get; set; } = new()
+    {
+        new() { SensorId = 1, Value = 0x2345 },
+        new() { SensorId = 2, Value = 0x6789 },
+    };
+}
+
+[SimpleJob(RuntimeMoniker.Net80, warmupCount: 4, iterationCount: 10)]
+[MemoryDiagnoser]
+public class AllocationBenchmark
+{
+    private readonly HighPerformanceStringData _stringData = new();
+    private readonly HighPerformanceCrcData _crcData = new() { First = 0x12, Second = 0x34 };
+    private readonly byte[] _stringBuffer = new byte[32];
+    private readonly byte[] _crcBuffer = new byte[4];
+    private readonly HighPerformanceFeatureData _featureData = new();
+    private readonly HighPerformanceFeatureData _featureDestination = new()
+    {
+        Values = new List<SensorReading> { new(), new() }
+    };
+    private readonly HighPerformanceByteLengthData _byteLengthData = new();
+    private readonly HighPerformanceByteLengthData _byteLengthDestination = new()
+    {
+        Values = new List<SensorReading> { new(), new() }
+    };
+    private readonly byte[] _featureBuffer = new byte[9];
+    private readonly byte[] _byteLengthBuffer = new byte[7];
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        BitSerializerMSB.TrySerialize(_featureData, _featureBuffer, out _);
+        BitSerializerMSB.TrySerialize(_byteLengthData, _byteLengthBuffer, out _);
+    }
+
+    [Benchmark]
+    public void FixedUtf8_TrySerialize()
+        => BitSerializerMSB.TrySerialize(_stringData, _stringBuffer, out _);
+
+    [Benchmark]
+    public void BuiltInCrc_TrySerialize()
+        => BitSerializerMSB.TrySerialize(_crcData, _crcBuffer, out _);
+
+    [Benchmark]
+    public void ContextConverterList_TrySerialize()
+        => BitSerializerMSB.TrySerialize(_featureData, _featureBuffer, out _);
+
+    [Benchmark]
+    public void ContextConverterList_TryDeserializeInto()
+        => BitSerializerMSB.TryDeserializeInto(_featureBuffer, _featureDestination, out _);
+
+    [Benchmark]
+    public void ByteLengthList_TrySerialize()
+        => BitSerializerMSB.TrySerialize(_byteLengthData, _byteLengthBuffer, out _);
+
+    [Benchmark]
+    public void ByteLengthList_TryDeserializeInto()
+        => BitSerializerMSB.TryDeserializeInto(_byteLengthBuffer, _byteLengthDestination, out _);
 }

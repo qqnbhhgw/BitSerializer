@@ -32,6 +32,7 @@ internal class BitFieldModel
     public string? ListElementTypeFullName { get; set; }
     public int ListElementBitLength { get; set; }
     public bool ListElementIsNested { get; set; }
+    public bool ListElementIsReferenceType { get; set; }
     public int? FixedCount { get; set; }
     public string? RelatedMemberName { get; set; }
 
@@ -80,6 +81,11 @@ internal class BitFieldModel
     public bool ValueConverterHasDeserialize { get; set; }
     public bool ValueConverterSerializeHasContext { get; set; }
     public bool ValueConverterDeserializeHasContext { get; set; }
+    public bool ValueConverterIsStronglyTyped { get; set; }
+    public bool ValueConverterIsContextTyped { get; set; }
+    public string? ValueConverterWireTypeFullName { get; set; }
+    public string? ValueConverterContextTypeFullName { get; set; }
+    public int ValueConverterWireBitWidth { get; set; }
     public int PolymorphicBitLength { get; set; }
     public bool IsPotentiallyDynamic { get; set; }
 
@@ -132,6 +138,7 @@ internal class BitFieldModel
     public string? CrcAlgorithmTypeFullName { get; set; }
     public ulong CrcInitialValue { get; set; }
     public bool CrcValidateOnDeserialize { get; set; }
+    public bool CrcSupportsStaticCompute { get; set; }
 
     // [BitCrc] WholeBuffer mode: CRC covers the entire type buffer, no [BitCrcInclude] required.
     public bool CrcWholeBuffer { get; set; }

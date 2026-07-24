@@ -49,6 +49,21 @@ public static class BitHelperLSB
         int startByte = startIndex >> 3;
         int startBit = startIndex & 7;
 
+        if (startBit == 0)
+        {
+            switch (bitCount)
+            {
+                case 8 when startByte < bytes.Length:
+                    return bytes[startByte];
+                case 16 when startByte + 2 <= bytes.Length:
+                    return BinaryPrimitives.ReadUInt16LittleEndian(bytes.Slice(startByte));
+                case 32 when startByte + 4 <= bytes.Length:
+                    return BinaryPrimitives.ReadUInt32LittleEndian(bytes.Slice(startByte));
+                case 64 when startByte + 8 <= bytes.Length:
+                    return BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(startByte));
+            }
+        }
+
         // 快速路径：单次 8 字节读取 + 移位 + 掩码
         if (startByte + 8 <= bytes.Length && startBit + bitCount <= 64)
         {
@@ -79,6 +94,25 @@ public static class BitHelperLSB
         int bitCount = endIndex - startIndex;
         int startByte = startIndex >> 3;
         int startBit = startIndex & 7;
+
+        if (startBit == 0)
+        {
+            switch (bitCount)
+            {
+                case 8 when startByte < bytes.Length:
+                    bytes[startByte] = (byte)value;
+                    return;
+                case 16 when startByte + 2 <= bytes.Length:
+                    BinaryPrimitives.WriteUInt16LittleEndian(bytes.Slice(startByte), (ushort)value);
+                    return;
+                case 32 when startByte + 4 <= bytes.Length:
+                    BinaryPrimitives.WriteUInt32LittleEndian(bytes.Slice(startByte), (uint)value);
+                    return;
+                case 64 when startByte + 8 <= bytes.Length:
+                    BinaryPrimitives.WriteUInt64LittleEndian(bytes.Slice(startByte), value);
+                    return;
+            }
+        }
 
         // 快速路径：单次 8 字节读-改-写
         if (startByte + 8 <= bytes.Length && startBit + bitCount <= 64)
@@ -156,6 +190,21 @@ public class BitHelperMSB
         int startByte = startIndex >> 3;
         int startBit = startIndex & 7;
 
+        if (startBit == 0)
+        {
+            switch (bitCount)
+            {
+                case 8 when startByte < bytes.Length:
+                    return bytes[startByte];
+                case 16 when startByte + 2 <= bytes.Length:
+                    return BinaryPrimitives.ReadUInt16BigEndian(bytes.Slice(startByte));
+                case 32 when startByte + 4 <= bytes.Length:
+                    return BinaryPrimitives.ReadUInt32BigEndian(bytes.Slice(startByte));
+                case 64 when startByte + 8 <= bytes.Length:
+                    return BinaryPrimitives.ReadUInt64BigEndian(bytes.Slice(startByte));
+            }
+        }
+
         // 快速路径：单次 8 字节读取
         if (startByte + 8 <= bytes.Length && startBit + bitCount <= 64)
         {
@@ -189,6 +238,25 @@ public class BitHelperMSB
         int bitCount = endIndex - startIndex;
         int startByte = startIndex >> 3;
         int startBit = startIndex & 7;
+
+        if (startBit == 0)
+        {
+            switch (bitCount)
+            {
+                case 8 when startByte < bytes.Length:
+                    bytes[startByte] = (byte)value;
+                    return;
+                case 16 when startByte + 2 <= bytes.Length:
+                    BinaryPrimitives.WriteUInt16BigEndian(bytes.Slice(startByte), (ushort)value);
+                    return;
+                case 32 when startByte + 4 <= bytes.Length:
+                    BinaryPrimitives.WriteUInt32BigEndian(bytes.Slice(startByte), (uint)value);
+                    return;
+                case 64 when startByte + 8 <= bytes.Length:
+                    BinaryPrimitives.WriteUInt64BigEndian(bytes.Slice(startByte), value);
+                    return;
+            }
+        }
 
         // 快速路径：单次 8 字节读-改-写
         if (startByte + 8 <= bytes.Length && startBit + bitCount <= 64)
