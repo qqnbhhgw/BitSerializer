@@ -8,7 +8,7 @@ namespace BitSerializer.CrcAlgorithms;
 /// reflected poly 用 right-shift 形式 (table[i] xor (crc >> 8)). 反射版本 table 项跟 CrcCcitt
 /// 不同, 但等价性测试方式一致.
 /// </summary>
-public sealed class Crc16Arc : IBitCrcAlgorithm
+public sealed class Crc16Arc : IBitCrcAlgorithm, IBitCrcAlgorithm<Crc16Arc>
 {
     /// <summary>
     /// 256 项查表 — table[i] = 把 byte i 经 8 次反射 0xA001 多项式 right-shift 后的 CRC,
@@ -20,6 +20,16 @@ public sealed class Crc16Arc : IBitCrcAlgorithm
     private ushort _crc;
 
     public int BitWidth => 16;
+
+    public static int AlgorithmBitWidth => 16;
+
+    public static ulong Compute(ReadOnlySpan<byte> data, ulong initialValue)
+    {
+        ushort crc = (ushort)initialValue;
+        foreach (byte value in data)
+            crc = (ushort)(Table[(byte)((crc ^ value) & 0xFF)] ^ (crc >> 8));
+        return crc;
+    }
 
     public void Reset(ulong initialValue) => _crc = (ushort)initialValue;
 

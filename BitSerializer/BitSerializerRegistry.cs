@@ -14,10 +14,17 @@ internal class TypeSerializer<T> : ITypeSerializer where T : IBitSerializable, n
         var result = new T();
         var ctx = result.DeserializeContext();
         result.BeforeDeserialize(ctx, bytes);
-        if (isMSB)
-            result.DeserializeMSB(bytes, 0, ctx);
-        else
-            result.DeserializeLSB(bytes, 0, ctx);
+        try
+        {
+            if (isMSB)
+                result.DeserializeMSB(bytes, 0, ctx);
+            else
+                result.DeserializeLSB(bytes, 0, ctx);
+        }
+        catch (BitSerializationNeedMoreDataException exception)
+        {
+            throw new System.IO.InvalidDataException(exception.Message, exception);
+        }
         result.AfterDeserialize(ctx, bytes);
         return result;
     }
@@ -25,6 +32,10 @@ internal class TypeSerializer<T> : ITypeSerializer where T : IBitSerializable, n
     public void Serialize(object obj, Span<byte> bytes, bool isMSB)
     {
         var typed = (T)obj;
+        int requiredBytes = (typed.GetTotalBitLength() + 7) / 8;
+        if (bytes.Length < requiredBytes)
+            throw new ArgumentException($"Destination requires at least {requiredBytes} bytes.", nameof(bytes));
+        bytes[..requiredBytes].Clear();
         var ctx = typed.SerializeContext();
         typed.BeforeSerialize(ctx, bytes);
         if (isMSB)

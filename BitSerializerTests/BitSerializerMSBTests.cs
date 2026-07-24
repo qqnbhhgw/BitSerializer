@@ -440,7 +440,7 @@ public partial class BitSerializerMSBTests
         byte[] bytes = { 0x63, 0x00, 0x00, 0x00 };
 
         var action = () => BitSerializerMSB.Deserialize<PolymorphicContainer>(bytes);
-        var exception = Should.Throw<InvalidOperationException>(action);
+        var exception = Should.Throw<InvalidDataException>(action);
         exception.Message.ShouldContain("No polymorphic type mapping found");
         exception.Message.ShouldContain("99");
     }

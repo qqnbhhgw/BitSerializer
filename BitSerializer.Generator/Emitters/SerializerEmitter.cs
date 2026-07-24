@@ -126,8 +126,11 @@ internal static class SerializerEmitter
                             ? (field.SecondaryValueConverterSerializeHasContext
                                 ? $"{field.SecondaryValueConverterTypeFullName}.OnSerializeConvert((object)_polyBytes_{name}, context)"
                                 : $"{field.SecondaryValueConverterTypeFullName}.OnSerializeConvert((object)_polyBytes_{name})")
-                            : $"(object)_polyBytes_{name}";
-                        sb.AppendLine($"        long _polyWire_{name} = global::System.Convert.ToInt64({wireRaw});");
+                            : $"_polyBytes_{name}";
+                        string wireValue = field.SecondaryValueConverterTypeFullName != null && field.SecondaryValueConverterHasSerialize
+                            ? $"global::System.Convert.ToInt64({wireRaw})"
+                            : $"(long){wireRaw}";
+                        sb.AppendLine($"        long _polyWire_{name} = {wireValue};");
                         // Codex review round-6 P2: 32-bit carriers also need bounds checking. Without
                         // it, an int carrier could accept _polyWire_ values outside [int.MinValue,
                         // int.MaxValue] and the explicit cast below would wrap silently in unchecked
@@ -165,36 +168,10 @@ internal static class SerializerEmitter
     /// </summary>
     private static void EmitLengthFieldStringBackfill(StringBuilder sb, BitFieldModel field, BitFieldModel lenField)
     {
-        var encoding = field.StringEncodingName == "UTF8"
-            ? "global::System.Text.Encoding.UTF8"
-            : "global::System.Text.Encoding.ASCII";
         var name = field.MemberName;
         long lengthMax = field.LengthFieldBitWidth == 32 ? uint.MaxValue : (1L << field.LengthFieldBitWidth) - 1;
 
-        // Encode once; the serializer body reuses _lfsBytes_/_lfsLen_ to avoid re-encoding.
-        sb.AppendLine($"        byte[] _lfsBytes_{name} = {encoding}.GetBytes(this.{name} ?? \"\");");
-
-        // Truncate to MaxBytes (with UTF-8 boundary safety). Identical algorithm to the
-        // [BitLengthPrefixString] path; see EmitLengthPrefixStringSerialize for rationale.
-        if (field.LengthFieldMaxBytes > 0)
-        {
-            sb.AppendLine($"        int _lfsLen_{name} = global::System.Math.Min(_lfsBytes_{name}.Length, {field.LengthFieldMaxBytes});");
-            if (field.StringEncodingName == "UTF8")
-            {
-                sb.AppendLine($"        if (_lfsLen_{name} < _lfsBytes_{name}.Length)");
-                sb.AppendLine("        {");
-                sb.AppendLine($"            int _lcs_{name} = _lfsLen_{name} - 1;");
-                sb.AppendLine($"            while (_lcs_{name} > 0 && (_lfsBytes_{name}[_lcs_{name}] & 0xC0) == 0x80) _lcs_{name}--;");
-                sb.AppendLine($"            byte _lead_{name} = _lfsBytes_{name}[_lcs_{name}];");
-                sb.AppendLine($"            int _seqLen_{name} = _lead_{name} < 0x80 ? 1 : (_lead_{name} & 0xE0) == 0xC0 ? 2 : (_lead_{name} & 0xF0) == 0xE0 ? 3 : (_lead_{name} & 0xF8) == 0xF0 ? 4 : 1;");
-                sb.AppendLine($"            if (_lcs_{name} + _seqLen_{name} > _lfsLen_{name}) _lfsLen_{name} = _lcs_{name};");
-                sb.AppendLine("        }");
-            }
-        }
-        else
-        {
-            sb.AppendLine($"        int _lfsLen_{name} = _lfsBytes_{name}.Length;");
-        }
+        sb.AppendLine($"        int _lfsLen_{name} = global::BitSerializer.BitStringHelper.GetByteCount(this.{name}, {GetBitStringEncodingExpression(field.StringEncodingName)}, {field.LengthFieldMaxBytes});");
 
         // Overflow against the length field's bit width (skip 32-bit: a managed string can never
         // overflow uint range).
@@ -267,9 +244,12 @@ internal static class SerializerEmitter
             ? (field.ValueConverterSerializeHasContext
                 ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object)_nbytes_{name}, context)"
                 : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object)_nbytes_{name})")
-            : $"(object)_nbytes_{name}";
+            : $"_nbytes_{name}";
 
-        sb.AppendLine($"        long _nwire_{name} = global::System.Convert.ToInt64({wireRaw});");
+        string wireValue = field.ValueConverterTypeFullName != null && field.ValueConverterHasSerialize
+            ? $"global::System.Convert.ToInt64({wireRaw})"
+            : $"(long){wireRaw}";
+        sb.AppendLine($"        long _nwire_{name} = {wireValue};");
         if (relatedField.BitLength < 32)
         {
             long maxValue = (1L << relatedField.BitLength) - 1;
@@ -322,10 +302,13 @@ internal static class SerializerEmitter
             ? (field.ValueConverterSerializeHasContext
                 ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object)_collBytes_{name}, context)"
                 : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object)_collBytes_{name})")
-            : $"(object)_collBytes_{name}";
+            : $"_collBytes_{name}";
 
         // Overflow check against the related field's bit width (only when < 32 bits).
-        sb.AppendLine($"        long _wire_{name} = global::System.Convert.ToInt64({wireRaw});");
+        string wireValue = field.ValueConverterTypeFullName != null && field.ValueConverterHasSerialize
+            ? $"global::System.Convert.ToInt64({wireRaw})"
+            : $"(long){wireRaw}";
+        sb.AppendLine($"        long _wire_{name} = {wireValue};");
         if (relatedField.BitLength < 32)
         {
             long maxValue = (1L << relatedField.BitLength) - 1;
@@ -363,18 +346,15 @@ internal static class SerializerEmitter
             }
         }
 
-        // Apply list-level value converters before backfill (converters may change list length).
-        // Skip when RelationKind=ByteLength: in that mode the converter is a length converter
-        // (wireLength <-> collectionByteLength), not a list-value transform.
+        // Apply converters that can change an auto-backfilled length before computing that length.
         foreach (var f in model.Fields)
         {
-            if (f.IsList && f.ValueConverterTypeFullName != null && f.ValueConverterHasSerialize
-                && f.RelationKind != 1)
+            bool convertsListValue = f.IsList && f.RelationKind != 1;
+            if ((convertsListValue || f.IsLengthFieldString)
+                && f.ValueConverterTypeFullName != null && f.ValueConverterHasSerialize)
             {
                 var ma = $"this.{f.MemberName}";
-                var convertCall = f.ValueConverterSerializeHasContext
-                    ? $"{f.ValueConverterTypeFullName}.OnSerializeConvert((object){ma}, context)"
-                    : $"{f.ValueConverterTypeFullName}.OnSerializeConvert((object){ma})";
+                var convertCall = BuildSerializeConverterCall(f, ma);
                 sb.AppendLine($"        {ma} = ({f.MemberTypeFullName}){convertCall};");
             }
         }
@@ -433,7 +413,6 @@ internal static class SerializerEmitter
             }
             else if (field.IsLengthFieldString)
             {
-                EmitSerializeConverter(sb, field, memberAccess);
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
                 EmitLengthFieldStringSerialize(sb, field, helper, fieldEndVar, offsetExpr);
             }
@@ -603,11 +582,19 @@ internal static class SerializerEmitter
                 sb.AppendLine($"            int _crcStart = (bitOffset / 8) + {crc.IncludeStartByte};");
                 sb.AppendLine($"            int _crcEnd   = (bitOffset / 8) + {crc.IncludeEndByte};");
             }
-            sb.AppendLine($"            var _crcAlgo = new {crc.AlgorithmTypeFullName}();");
-            sb.AppendLine($"            _crcAlgo.Reset({crc.InitialValue}UL);");
-            sb.AppendLine("            _crcAlgo.Update(bytes.Slice(_crcStart, _crcEnd - _crcStart));");
+            if (crc.SupportsStaticCompute)
+            {
+                sb.AppendLine($"            ulong _crcResult = {crc.AlgorithmTypeFullName}.Compute(bytes.Slice(_crcStart, _crcEnd - _crcStart), {crc.InitialValue}UL);");
+            }
+            else
+            {
+                sb.AppendLine($"            var _crcAlgo = new {crc.AlgorithmTypeFullName}();");
+                sb.AppendLine($"            _crcAlgo.Reset({crc.InitialValue}UL);");
+                sb.AppendLine("            _crcAlgo.Update(bytes.Slice(_crcStart, _crcEnd - _crcStart));");
+                sb.AppendLine("            ulong _crcResult = _crcAlgo.Result;");
+            }
             string castType = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName;
-            sb.AppendLine($"            {castType} _crcVal = ({castType})_crcAlgo.Result;");
+            sb.AppendLine($"            {castType} _crcVal = ({castType})_crcResult;");
             // CRC fields honor [BitField(Endian = ...)] just like any other primitive — the CRC block
             // runs after the field's initial write, so we must use the same helper as ResolveFieldHelper
             // would have chosen above, otherwise the rewrite silently undoes the per-field byte order.
@@ -670,7 +657,7 @@ internal static class SerializerEmitter
         if (field.HasConstantValue)
         {
             string literal = $"unchecked(({typeName}){field.ConstantValue}L)";
-            sb.AppendLine($"        {helper}.SetValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength}, {literal});");
+            EmitPrimitiveWrite(sb, field, helper, typeName, offsetExpr, literal);
             // Update the property so subsequent reads of the in-memory object see the pinned value.
             string assignedLiteral = field.IsEnum
                 ? $"({field.MemberTypeFullName})unchecked(({typeName}){field.ConstantValue}L)"
@@ -681,19 +668,53 @@ internal static class SerializerEmitter
 
         if (field.ValueConverterTypeFullName != null && field.ValueConverterHasSerialize)
         {
-            var convertCall = field.ValueConverterSerializeHasContext
-                ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess}, context)"
-                : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess})";
-            sb.AppendLine($"        {helper}.SetValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength}, ({typeName}){convertCall});");
+            var convertCall = field.ValueConverterIsStronglyTyped
+                ? field.ValueConverterIsContextTyped
+                    ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert({memberAccess}, ({field.ValueConverterContextTypeFullName})context!)"
+                    : $"{field.ValueConverterTypeFullName}.OnSerializeConvert({memberAccess})"
+                : field.ValueConverterSerializeHasContext
+                    ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess}, context)"
+                    : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess})";
+            var wireTypeName = field.ValueConverterWireTypeFullName ?? typeName;
+            EmitPrimitiveWrite(sb, field, helper, wireTypeName, offsetExpr, $"unchecked(({wireTypeName}){convertCall})");
         }
         else if (field.IsEnum)
         {
-            sb.AppendLine($"        {helper}.SetValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength}, ({typeName}){memberAccess});");
+            EmitPrimitiveWrite(sb, field, helper, typeName, offsetExpr, $"unchecked(({typeName}){memberAccess})");
         }
         else
         {
-            sb.AppendLine($"        {helper}.SetValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength}, {memberAccess});");
+            EmitPrimitiveWrite(sb, field, helper, typeName, offsetExpr, memberAccess);
         }
+    }
+
+    private static void EmitPrimitiveWrite(StringBuilder sb, BitFieldModel field, string helper, string typeName, string offsetExpr, string valueExpr)
+    {
+        if ((field.BitStartIndex & 7) != 0 || (field.BitLength != 8 && field.BitLength != 16 && field.BitLength != 32 && field.BitLength != 64))
+        {
+            sb.AppendLine($"        {helper}.SetValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength}, {valueExpr});");
+            return;
+        }
+
+        string byteOffset = $"({offsetExpr}) / 8";
+        sb.AppendLine($"        if ((({offsetExpr}) & 7) == 0)");
+        sb.AppendLine("        {");
+        if (field.BitLength == 8)
+        {
+            sb.AppendLine($"            bytes[{byteOffset}] = unchecked((byte)({valueExpr}));");
+            sb.AppendLine("        }");
+            sb.AppendLine("        else");
+            sb.AppendLine($"            {helper}.SetValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength}, {valueExpr});");
+            return;
+        }
+
+        string endian = helper.Contains("LSB") ? "LittleEndian" : "BigEndian";
+        string unsignedType = field.BitLength == 16 ? "ushort" : field.BitLength == 32 ? "uint" : "ulong";
+        string methodType = field.BitLength == 16 ? "UInt16" : field.BitLength == 32 ? "UInt32" : "UInt64";
+        sb.AppendLine($"            global::System.Buffers.Binary.BinaryPrimitives.Write{methodType}{endian}(bytes.Slice({byteOffset}), unchecked(({unsignedType})({valueExpr})));");
+        sb.AppendLine("        }");
+        sb.AppendLine("        else");
+        sb.AppendLine($"            {helper}.SetValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength}, {valueExpr});");
     }
 
     private static void EmitListSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
@@ -882,29 +903,14 @@ internal static class SerializerEmitter
 
     private static void EmitFixedStringSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string offsetExpr)
     {
-        var encoding = GetEncodingExpression(field.StringEncodingName);
         int byteLen = field.FixedStringByteLength;
         var name = field.MemberName;
 
         sb.AppendLine("        {");
-        sb.AppendLine($"            byte[] _strBytes_{name} = {encoding}.GetBytes({memberAccess} ?? \"\");");
-        sb.AppendLine($"            int _strLen_{name} = global::System.Math.Min(_strBytes_{name}.Length, {byteLen});");
-
-        // For UTF-8: ensure we don't split multi-byte characters
-        if (field.StringEncodingName == "UTF8")
-        {
-            sb.AppendLine($"            if (_strLen_{name} < _strBytes_{name}.Length)");
-            sb.AppendLine("            {");
-            sb.AppendLine($"                int _lcs_{name} = _strLen_{name} - 1;");
-            sb.AppendLine($"                while (_lcs_{name} > 0 && (_strBytes_{name}[_lcs_{name}] & 0xC0) == 0x80) _lcs_{name}--;");
-            sb.AppendLine($"                byte _lead_{name} = _strBytes_{name}[_lcs_{name}];");
-            sb.AppendLine($"                int _seqLen_{name} = _lead_{name} < 0x80 ? 1 : (_lead_{name} & 0xE0) == 0xC0 ? 2 : (_lead_{name} & 0xF0) == 0xE0 ? 3 : (_lead_{name} & 0xF8) == 0xF0 ? 4 : 1;");
-            sb.AppendLine($"                if (_lcs_{name} + _seqLen_{name} > _strLen_{name}) _strLen_{name} = _lcs_{name};");
-            sb.AppendLine("            }");
-        }
-
-        sb.AppendLine($"            for (int _si = 0; _si < _strLen_{name}; _si++)");
-        sb.AppendLine($"                {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si * 8, 8, _strBytes_{name}[_si]);");
+        sb.AppendLine($"            if ((({offsetExpr}) & 7) != 0)");
+        sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"Fixed string '{name}' requires a byte-aligned absolute bit offset, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary.\");");
+        sb.AppendLine($"            int _strByteOffset_{name} = ({offsetExpr}) / 8;");
+        sb.AppendLine($"            int _strLen_{name} = global::BitSerializer.BitStringHelper.Encode({memberAccess}, {GetBitStringEncodingExpression(field.StringEncodingName)}, bytes.Slice(_strByteOffset_{name}, {byteLen}), {byteLen});");
         sb.AppendLine($"            for (int _si = _strLen_{name}; _si < {byteLen}; _si++)");
         sb.AppendLine($"                {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si * 8, 8, {field.FixedStringPadding});");
         sb.AppendLine("        }");
@@ -912,14 +918,13 @@ internal static class SerializerEmitter
 
     private static void EmitTerminatedStringSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
     {
-        var encoding = GetEncodingExpression(field.StringEncodingName);
         var name = field.MemberName;
 
-        sb.AppendLine($"        byte[] _strBytes_{name} = {encoding}.GetBytes({memberAccess} ?? \"\");");
-        sb.AppendLine($"        int _strWriteLen_{name} = global::System.Array.IndexOf(_strBytes_{name}, (byte)0);");
-        sb.AppendLine($"        if (_strWriteLen_{name} < 0) _strWriteLen_{name} = _strBytes_{name}.Length;");
-        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _strWriteLen_{name}; _si_{name}++)");
-        sb.AppendLine($"            {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si_{name} * 8, 8, _strBytes_{name}[_si_{name}]);");
+        sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Terminated string '{name}' requires a byte-aligned absolute bit offset, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary.\");");
+        sb.AppendLine($"        int _strByteOffset_{name} = ({offsetExpr}) / 8;");
+        sb.AppendLine($"        int _strWriteLen_{name} = global::BitSerializer.BitStringHelper.GetByteCount({memberAccess}, {GetBitStringEncodingExpression(field.StringEncodingName)}, stopAtNull: true);");
+        sb.AppendLine($"        global::BitSerializer.BitStringHelper.Encode({memberAccess}, {GetBitStringEncodingExpression(field.StringEncodingName)}, bytes.Slice(_strByteOffset_{name}, _strWriteLen_{name}), stopAtNull: true);");
         sb.AppendLine($"        {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _strWriteLen_{name} * 8, 8, 0);");
         sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + (_strWriteLen_{name} + 1) * 8;");
     }
@@ -932,7 +937,6 @@ internal static class SerializerEmitter
     /// </summary>
     private static void EmitLengthPrefixStringSerialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr)
     {
-        var encoding = GetEncodingExpression(field.StringEncodingName);
         var name = field.MemberName;
         int lengthBits = field.LengthPrefixBits;
         int maxBytes = field.LengthPrefixMaxBytes;
@@ -945,28 +949,7 @@ internal static class SerializerEmitter
         sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
         sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' requires a byte-aligned absolute bit offset, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary (the containing type was nested at a non-byte bitOffset).\");");
 
-        sb.AppendLine($"        byte[] _strBytes_{name} = {encoding}.GetBytes({memberAccess} ?? \"\");");
-
-        // Truncate to MaxBytes (with UTF-8 boundary safety).
-        if (maxBytes > 0)
-        {
-            sb.AppendLine($"        int _strLen_{name} = global::System.Math.Min(_strBytes_{name}.Length, {maxBytes});");
-            if (field.StringEncodingName == "UTF8")
-            {
-                sb.AppendLine($"        if (_strLen_{name} < _strBytes_{name}.Length)");
-                sb.AppendLine("        {");
-                sb.AppendLine($"            int _lcs_{name} = _strLen_{name} - 1;");
-                sb.AppendLine($"            while (_lcs_{name} > 0 && (_strBytes_{name}[_lcs_{name}] & 0xC0) == 0x80) _lcs_{name}--;");
-                sb.AppendLine($"            byte _lead_{name} = _strBytes_{name}[_lcs_{name}];");
-                sb.AppendLine($"            int _seqLen_{name} = _lead_{name} < 0x80 ? 1 : (_lead_{name} & 0xE0) == 0xC0 ? 2 : (_lead_{name} & 0xF0) == 0xE0 ? 3 : (_lead_{name} & 0xF8) == 0xF0 ? 4 : 1;");
-                sb.AppendLine($"            if (_lcs_{name} + _seqLen_{name} > _strLen_{name}) _strLen_{name} = _lcs_{name};");
-                sb.AppendLine("        }");
-            }
-        }
-        else
-        {
-            sb.AppendLine($"        int _strLen_{name} = _strBytes_{name}.Length;");
-        }
+        sb.AppendLine($"        int _strLen_{name} = global::BitSerializer.BitStringHelper.GetByteCount({memberAccess}, {GetBitStringEncodingExpression(field.StringEncodingName)}, {maxBytes});");
 
         // Bounds check against LengthBits capacity (skip for 32-bit: int.MaxValue < uint.MaxValue
         // so a managed string can never overflow a 32-bit length prefix — comparison would warn).
@@ -979,8 +962,7 @@ internal static class SerializerEmitter
         // Write length prefix and bytes.
         string lenType = lengthBits == 8 ? "byte" : lengthBits == 16 ? "ushort" : "uint";
         sb.AppendLine($"        {helper}.SetValueLength<{lenType}>(bytes, {offsetExpr}, {lengthBits}, ({lenType})_strLen_{name});");
-        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _strLen_{name}; _si_{name}++)");
-        sb.AppendLine($"            {helper}.SetValueLength<byte>(bytes, {offsetExpr} + {lengthBits} + _si_{name} * 8, 8, _strBytes_{name}[_si_{name}]);");
+        sb.AppendLine($"        global::BitSerializer.BitStringHelper.Encode({memberAccess}, {GetBitStringEncodingExpression(field.StringEncodingName)}, bytes.Slice((({offsetExpr}) + {lengthBits}) / 8, _strLen_{name}), {maxBytes});");
         sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {lengthBits} + _strLen_{name} * 8;");
     }
 
@@ -1001,8 +983,7 @@ internal static class SerializerEmitter
         sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
         sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-field string '{name}' requires a byte-aligned absolute bit offset, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary (the containing type was nested at a non-byte bitOffset).\");");
 
-        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _lfsLen_{name}; _si_{name}++)");
-        sb.AppendLine($"            {helper}.SetValueLength<byte>(bytes, {offsetExpr} + _si_{name} * 8, 8, _lfsBytes_{name}[_si_{name}]);");
+        sb.AppendLine($"        global::BitSerializer.BitStringHelper.Encode(this.{name}, {GetBitStringEncodingExpression(field.StringEncodingName)}, bytes.Slice(({offsetExpr}) / 8, _lfsLen_{name}), {field.LengthFieldMaxBytes});");
         sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + _lfsLen_{name} * 8;");
     }
 
@@ -1013,14 +994,26 @@ internal static class SerializerEmitter
             : "global::System.Text.Encoding.ASCII";
     }
 
+    private static string GetBitStringEncodingExpression(string encodingName)
+        => encodingName == "UTF8"
+            ? "global::BitSerializer.BitStringEncoding.UTF8"
+            : "global::BitSerializer.BitStringEncoding.ASCII";
+
     private static void EmitSerializeConverter(StringBuilder sb, BitFieldModel field, string memberAccess)
     {
         if (field.ValueConverterTypeFullName == null || !field.ValueConverterHasSerialize) return;
-        var convertCall = field.ValueConverterSerializeHasContext
-            ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess}, context)"
-            : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){memberAccess})";
+        var convertCall = BuildSerializeConverterCall(field, memberAccess);
         sb.AppendLine($"        {memberAccess} = ({field.MemberTypeFullName}){convertCall};");
     }
+
+    private static string BuildSerializeConverterCall(BitFieldModel field, string valueExpression)
+        => field.ValueConverterIsStronglyTyped
+            ? field.ValueConverterIsContextTyped
+                ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert({valueExpression}, ({field.ValueConverterContextTypeFullName})context!)"
+                : $"{field.ValueConverterTypeFullName}.OnSerializeConvert({valueExpression})"
+            : field.ValueConverterSerializeHasContext
+                ? $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){valueExpression}, context)"
+                : $"{field.ValueConverterTypeFullName}.OnSerializeConvert((object){valueExpression})";
 
     /// <summary>
     /// Maps a field's [BitField(Endian = ...)] override (0=Inherit, 1=Big, 2=Little) to the helper class.
@@ -1045,6 +1038,8 @@ internal static class SerializerEmitter
                || field.IsTerminatedString
                || field.IsLengthPrefixString
                || field.IsLengthFieldString
+               || (field.RelationKind == 1 && field.RelatedMemberName != null
+                   && (field.IsNestedType || field.IsTypeParameter))
                || (field.IsList && !field.FixedCount.HasValue)
                || (field.IsList && field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0)
                || (field.IsList && field.ListElementHasDynamicLength);

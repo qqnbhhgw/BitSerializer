@@ -74,6 +74,33 @@ byte[] lsbBytes = BitSerializerLSB.Serialize(packet);
 var lsbResult = BitSerializerLSB.Deserialize<Packet>(lsbBytes);
 ```
 
+### 高性能与零额外分配 API
+
+`BitSerializerMSB` 和 `BitSerializerLSB` 提供相同的高性能入口：
+
+```csharp
+int size = BitSerializerMSB.GetRequiredByteCount(packet);
+Span<byte> buffer = stackalloc byte[size];
+
+OperationStatus writeStatus =
+    BitSerializerMSB.TrySerialize(packet, buffer, out int bytesWritten);
+
+var reusable = new Packet();
+OperationStatus readStatus =
+    BitSerializerMSB.TryDeserializeInto(buffer, reusable, out int bytesConsumed);
+```
+
+- `TrySerialize` 不扩容；目标过小时返回 `DestinationTooSmall`，成功时稳定热路径不产生库内临时分配。
+- `TryDeserializeInto` 复用顶层对象、嵌套对象、数组和 List。数值/值类型 List 须有足够 `Capacity`；引用类型 List 还须预先填充足够 `Count`，且每个元素对象非空；数组须有足够长度，引用元素也须预创建，否则返回 `DestinationTooSmall`。
+- `TryDeserialize(ref T, ...)` 也支持 struct 和 class；失败时对象可能已部分更新，需要事务语义时继续使用 `Deserialize<T>()`。
+- 输入不足返回 `NeedMoreData`，预分配对象图容量不足返回 `DestinationTooSmall`，CRC/判别值/预算格式错误返回 `InvalidData`；用户 Hook 与 Converter 的业务异常不会被吞掉。
+- 从 `0.13.0` 起，兼容 `Deserialize<T>()` 遇到未知多态判别值时抛 `InvalidDataException`（旧版本为 `InvalidOperationException`）。
+- 字符串反序列化仍必须创建最终 `string`；多态类型变化等语义要求创建新对象的情况不属于严格原地模式。
+- 内置 CRC 和字符串序列化使用无临时对象路径。自定义 CRC 可额外实现 `IBitCrcAlgorithm<TSelf>`；数值转换器可实现 `IBitFieldValueConverter<TProperty, TWire>` 或 `IBitFieldValueConverter<TProperty, TWire, TContext>` 避免装箱。
+- 首次 JIT、泛型初始化、用户 Hook/Context/Converter 内部行为和异常路径不计入稳定热路径的零分配承诺。
+
+三泛型 Converter 的 `TContext` 来自模型的 `SerializeContext()` / `DeserializeContext()`，Generator 会直接生成强类型调用；`TWire` 决定 wire 读写类型，并在其位宽小于字段 BitLength 时报告 `BITS063`。
+
 > **MSB vs LSB**：两者的 API 完全一致，区别仅在于字节内的位序方向。MSB 适用于网络协议（大端序），LSB 适用于硬件寄存器、部分嵌入式协议（小端序）。
 
 ### 自动推断位长
@@ -857,6 +884,7 @@ Source Generator 会在编译期检查常见错误并报告诊断信息：
 | `BITS050` | `[BitLengthFieldString]` 的 `MaxBytes` 必须 ≥ 0（`0` = 不限） |
 | `BITS051` | `[BitFieldRelated(ByteLength)]` 嵌套类型的静态位长必须是 8 的倍数 |
 | `BITS052` | `[BitFieldRelated(ByteLength)]` 嵌套类型的长度字段必须先于嵌套字段声明 |
+| `BITS063` | 强类型 Converter 的 `TWire` 位宽小于字段 BitLength |
 
 例如，以下代码会触发 `BITS006` 编译错误：
 

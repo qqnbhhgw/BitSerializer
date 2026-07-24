@@ -30,3 +30,21 @@ public interface IBitFieldValueConverter
     /// </summary>
     static virtual object OnSerializeConvert(object propertyValue, object? context) => propertyValue;
 }
+
+/// <summary>
+/// Strongly typed value converter used by generated high-performance paths.
+/// </summary>
+public interface IBitFieldValueConverter<TProperty, TWire>
+{
+    static abstract TWire OnSerializeConvert(TProperty value);
+    static abstract TProperty OnDeserializeConvert(TWire value);
+}
+
+/// <summary>
+/// Strongly typed value converter with a caller-owned reusable context.
+/// </summary>
+public interface IBitFieldValueConverter<TProperty, TWire, TContext>
+{
+    static abstract TWire OnSerializeConvert(TProperty value, TContext context);
+    static abstract TProperty OnDeserializeConvert(TWire value, TContext context);
+}

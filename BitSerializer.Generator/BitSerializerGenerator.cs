@@ -110,6 +110,8 @@ public class BitSerializerGenerator : IIncrementalGenerator
         sb.Append(SerializerEmitter.EmitDelegationMethod(model, "MSB"));
         sb.Append(DeserializerEmitter.EmitDelegationMethod(model, "LSB"));
         sb.Append(DeserializerEmitter.EmitDelegationMethod(model, "MSB"));
+        sb.Append(DeserializerEmitter.EmitIntoMethod(model, "LSB"));
+        sb.Append(DeserializerEmitter.EmitIntoMethod(model, "MSB"));
         sb.AppendLine();
 
         // Partial methods for user context access
@@ -174,7 +176,19 @@ public class BitSerializerGenerator : IIncrementalGenerator
 
         foreach (var field in model.Fields)
         {
-            if (field.IsTypeParameter)
+            if ((field.IsNestedType || field.IsTypeParameter)
+                && field.RelationKind == 1
+                && field.NestedIsReferenceType)
+            {
+                bool isStaticNested = !field.IsPotentiallyDynamic
+                                      && !field.IsTypeParameter
+                                      && field.BitLength > 0;
+                string nestedBits = isStaticNested
+                    ? field.BitLength.ToString()
+                    : $"((global::BitSerializer.IBitSerializable)this.{field.MemberName}).GetTotalBitLength()";
+                dynamicParts.Add($"(this.{field.MemberName} == null ? 0 : {nestedBits})");
+            }
+            else if (field.IsTypeParameter)
             {
                 // Type parameter: bit length unknown at compile time, use interface dispatch
                 dynamicParts.Add($"((global::BitSerializer.IBitSerializable)this.{field.MemberName}).GetTotalBitLength()");
@@ -222,12 +236,8 @@ public class BitSerializerGenerator : IIncrementalGenerator
             }
             else if (field.IsTerminatedString)
             {
-                var encoding = GetEncodingExpression(field.StringEncodingName);
-                var tsVar = $"_ts_{field.MemberName}";
-                preStatements.Add($"        string {tsVar} = this.{field.MemberName} ?? \"\";");
-                preStatements.Add($"        int _tsNul_{field.MemberName} = {tsVar}.IndexOf('\\0');");
-                preStatements.Add($"        if (_tsNul_{field.MemberName} >= 0) {tsVar} = {tsVar}.Substring(0, _tsNul_{field.MemberName});");
-                dynamicParts.Add($"({encoding}.GetByteCount({tsVar}) + 1) * 8");
+                var encodingName = GetBitStringEncodingExpression(field.StringEncodingName);
+                dynamicParts.Add($"(global::BitSerializer.BitStringHelper.GetByteCount(this.{field.MemberName}, {encodingName}, stopAtNull: true) + 1) * 8");
             }
             else if (field.IsLengthPrefixString)
             {
@@ -239,28 +249,9 @@ public class BitSerializerGenerator : IIncrementalGenerator
                 // (e.g. "北京" (6 bytes) with MaxBytes=4 → writes 3 bytes, keeping only "北"). We have
                 // to encode once and apply the same rollback here, otherwise GetByteCount over-reports.
                 // For ASCII or when MaxBytes is unset, GetByteCount alone is precise.
-                var encoding = GetEncodingExpression(field.StringEncodingName);
                 var lpsBytesVar = $"_lpsBytes_{field.MemberName}";
-                if (field.LengthPrefixMaxBytes > 0 && field.StringEncodingName == "UTF8")
-                {
-                    var rawBytesVar = $"_lpsRaw_{field.MemberName}";
-                    preStatements.Add($"        byte[] {rawBytesVar} = {encoding}.GetBytes(this.{field.MemberName} ?? \"\");");
-                    preStatements.Add($"        int {lpsBytesVar} = global::System.Math.Min({rawBytesVar}.Length, {field.LengthPrefixMaxBytes});");
-                    preStatements.Add($"        if ({lpsBytesVar} < {rawBytesVar}.Length)");
-                    preStatements.Add("        {");
-                    preStatements.Add($"            int _lcsT_{field.MemberName} = {lpsBytesVar} - 1;");
-                    preStatements.Add($"            while (_lcsT_{field.MemberName} > 0 && ({rawBytesVar}[_lcsT_{field.MemberName}] & 0xC0) == 0x80) _lcsT_{field.MemberName}--;");
-                    preStatements.Add($"            byte _leadT_{field.MemberName} = {rawBytesVar}[_lcsT_{field.MemberName}];");
-                    preStatements.Add($"            int _seqLenT_{field.MemberName} = _leadT_{field.MemberName} < 0x80 ? 1 : (_leadT_{field.MemberName} & 0xE0) == 0xC0 ? 2 : (_leadT_{field.MemberName} & 0xF0) == 0xE0 ? 3 : (_leadT_{field.MemberName} & 0xF8) == 0xF0 ? 4 : 1;");
-                    preStatements.Add($"            if (_lcsT_{field.MemberName} + _seqLenT_{field.MemberName} > {lpsBytesVar}) {lpsBytesVar} = _lcsT_{field.MemberName};");
-                    preStatements.Add("        }");
-                }
-                else
-                {
-                    preStatements.Add($"        int {lpsBytesVar} = {encoding}.GetByteCount(this.{field.MemberName} ?? \"\");");
-                    if (field.LengthPrefixMaxBytes > 0)
-                        preStatements.Add($"        if ({lpsBytesVar} > {field.LengthPrefixMaxBytes}) {lpsBytesVar} = {field.LengthPrefixMaxBytes};");
-                }
+                var encodingName = GetBitStringEncodingExpression(field.StringEncodingName);
+                preStatements.Add($"        int {lpsBytesVar} = global::BitSerializer.BitStringHelper.GetByteCount(this.{field.MemberName}, {encodingName}, {field.LengthPrefixMaxBytes});");
                 dynamicParts.Add($"{field.LengthPrefixBits} + {lpsBytesVar} * 8");
             }
             else if (field.IsLengthFieldString)
@@ -268,28 +259,9 @@ public class BitSerializerGenerator : IIncrementalGenerator
                 // Mirror of the LengthPrefixString branch above, minus the inline-prefix bits — the
                 // length lives in a peer field whose own BitLength already contributes to staticBits.
                 // Same UTF-8 boundary rollback semantics apply.
-                var encoding = GetEncodingExpression(field.StringEncodingName);
                 var lfsBytesVar = $"_lfsBytesT_{field.MemberName}";
-                if (field.LengthFieldMaxBytes > 0 && field.StringEncodingName == "UTF8")
-                {
-                    var rawBytesVar = $"_lfsRawT_{field.MemberName}";
-                    preStatements.Add($"        byte[] {rawBytesVar} = {encoding}.GetBytes(this.{field.MemberName} ?? \"\");");
-                    preStatements.Add($"        int {lfsBytesVar} = global::System.Math.Min({rawBytesVar}.Length, {field.LengthFieldMaxBytes});");
-                    preStatements.Add($"        if ({lfsBytesVar} < {rawBytesVar}.Length)");
-                    preStatements.Add("        {");
-                    preStatements.Add($"            int _lcsLT_{field.MemberName} = {lfsBytesVar} - 1;");
-                    preStatements.Add($"            while (_lcsLT_{field.MemberName} > 0 && ({rawBytesVar}[_lcsLT_{field.MemberName}] & 0xC0) == 0x80) _lcsLT_{field.MemberName}--;");
-                    preStatements.Add($"            byte _leadLT_{field.MemberName} = {rawBytesVar}[_lcsLT_{field.MemberName}];");
-                    preStatements.Add($"            int _seqLenLT_{field.MemberName} = _leadLT_{field.MemberName} < 0x80 ? 1 : (_leadLT_{field.MemberName} & 0xE0) == 0xC0 ? 2 : (_leadLT_{field.MemberName} & 0xF0) == 0xE0 ? 3 : (_leadLT_{field.MemberName} & 0xF8) == 0xF0 ? 4 : 1;");
-                    preStatements.Add($"            if (_lcsLT_{field.MemberName} + _seqLenLT_{field.MemberName} > {lfsBytesVar}) {lfsBytesVar} = _lcsLT_{field.MemberName};");
-                    preStatements.Add("        }");
-                }
-                else
-                {
-                    preStatements.Add($"        int {lfsBytesVar} = {encoding}.GetByteCount(this.{field.MemberName} ?? \"\");");
-                    if (field.LengthFieldMaxBytes > 0)
-                        preStatements.Add($"        if ({lfsBytesVar} > {field.LengthFieldMaxBytes}) {lfsBytesVar} = {field.LengthFieldMaxBytes};");
-                }
+                var encodingName = GetBitStringEncodingExpression(field.StringEncodingName);
+                preStatements.Add($"        int {lfsBytesVar} = global::BitSerializer.BitStringHelper.GetByteCount(this.{field.MemberName}, {encodingName}, {field.LengthFieldMaxBytes});");
                 dynamicParts.Add($"{lfsBytesVar} * 8");
             }
             else if (field.IsPotentiallyDynamic)
@@ -321,4 +293,9 @@ public class BitSerializerGenerator : IIncrementalGenerator
             ? "global::System.Text.Encoding.UTF8"
             : "global::System.Text.Encoding.ASCII";
     }
+
+    private static string GetBitStringEncodingExpression(string encodingName)
+        => encodingName == "UTF8"
+            ? "global::BitSerializer.BitStringEncoding.UTF8"
+            : "global::BitSerializer.BitStringEncoding.ASCII";
 }

@@ -7,13 +7,22 @@ namespace BitSerializer.Generator.Emitters;
 internal static class DeserializerEmitter
 {
     public static string EmitMethod(TypeModel model, string bitOrder)
+        => EmitMethod(model, bitOrder, false);
+
+    public static string EmitIntoMethod(TypeModel model, string bitOrder)
+        => EmitMethod(model, bitOrder, true);
+
+    private static string EmitMethod(TypeModel model, string bitOrder, bool reuseExisting)
     {
         var helper = bitOrder == "LSB" ? "global::BitSerializer.BitHelperLSB" : "global::BitSerializer.BitHelperMSB";
-        var methodName = $"Deserialize{bitOrder}";
+        var deserializeMethod = $"Deserialize{bitOrder}";
+        var methodName = reuseExisting ? $"Deserialize{bitOrder}Into" : deserializeMethod;
 
         var sb = new StringBuilder();
         var newKeyword = model.HasBitSerializableBaseType ? "new " : "";
-        sb.AppendLine($"    public {newKeyword}int {methodName}(global::System.ReadOnlySpan<byte> bytes, int bitOffset, object? context)");
+        string reuseParameter = reuseExisting ? ", bool reuseOnly" : "";
+        bool terminalPadIfShort = model.Fields.Count > 0 && model.Fields[model.Fields.Count - 1].PadIfShort;
+        sb.AppendLine($"    public {newKeyword}int {methodName}(global::System.ReadOnlySpan<byte> bytes, int bitOffset, object? context{reuseParameter})");
         sb.AppendLine("    {");
         sb.AppendLine("        OnDeserializing(context);");
 
@@ -45,13 +54,15 @@ internal static class DeserializerEmitter
         {
             if (model.BaseHasDynamicLength)
             {
-                sb.AppendLine($"        int _baseEndBit = bitOffset + base.{methodName}(bytes, bitOffset, context);");
+                string baseArgs = reuseExisting ? "bytes, bitOffset, context, reuseOnly" : "bytes, bitOffset, context";
+                sb.AppendLine($"        int _baseEndBit = bitOffset + base.{methodName}({baseArgs});");
                 runtimeOffsetVar = "_baseEndBit";
                 runtimeStaticEnd = model.BaseBitLength;
             }
             else
             {
-                sb.AppendLine($"        base.{methodName}(bytes, bitOffset, context);");
+                string baseArgs = reuseExisting ? "bytes, bitOffset, context, reuseOnly" : "bytes, bitOffset, context";
+                sb.AppendLine($"        base.{methodName}({baseArgs});");
             }
         }
 
@@ -108,7 +119,7 @@ internal static class DeserializerEmitter
             else if (field.IsList)
             {
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
-                EmitListDeserialize(sb, field, helper, memberAccess, fieldEndVar, bitOrder, offsetExpr, emittedWireLocals);
+                EmitListDeserialize(sb, field, helper, memberAccess, fieldEndVar, bitOrder, offsetExpr, emittedWireLocals, reuseExisting);
                 EmitDeserializeConverter(sb, field, memberAccess);
             }
             else if (field.IsPolymorphic)
@@ -116,26 +127,42 @@ internal static class DeserializerEmitter
                 if (usesRuntimeBitLength)
                 {
                     fieldEndVar = $"_bitIndex_{field.MemberName}";
-                    EmitPolymorphicDeserialize(sb, field, helper, memberAccess, bitOrder, offsetExpr, fieldEndVar, emittedWireLocals);
+                    EmitPolymorphicDeserialize(sb, field, helper, memberAccess, bitOrder, offsetExpr, fieldEndVar, emittedWireLocals, reuseExisting);
                 }
                 else
                 {
-                    EmitPolymorphicDeserialize(sb, field, helper, memberAccess, bitOrder, offsetExpr, null, emittedWireLocals);
+                    EmitPolymorphicDeserialize(sb, field, helper, memberAccess, bitOrder, offsetExpr, null, emittedWireLocals, reuseExisting);
                 }
                 EmitDeserializeConverter(sb, field, memberAccess);
             }
             else if (field.IsTypeParameter)
             {
-                sb.AppendLine($"        {memberAccess} = ({field.MemberTypeName})global::System.Activator.CreateInstance(typeof({field.MemberTypeName}))!;");
-                fieldEndVar = $"_bitIndex_{field.MemberName}";
-                if (field.RelationKind == 1 && field.RelatedMemberName != null)
+                if (reuseExisting)
                 {
-                    string typeParamCall = $"((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr}, context)";
-                    EmitNestedByteLengthRead(sb, field, helper, memberAccess, fieldEndVar, offsetExpr, methodName, typeParamCall, emittedWireLocals);
+                    if (field.NestedIsReferenceType && !(field.RelationKind == 1 && field.RelatedMemberName != null))
+                    {
+                        sb.AppendLine($"        if ({memberAccess} == null)");
+                        sb.AppendLine($"            throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", 1);");
+                    }
                 }
                 else
                 {
-                    sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + ((global::BitSerializer.IBitSerializable){memberAccess}).{methodName}(bytes, {offsetExpr}, context);");
+                    sb.AppendLine($"        {memberAccess} = ({field.MemberTypeName})global::System.Activator.CreateInstance(typeof({field.MemberTypeName}))!;");
+                }
+                fieldEndVar = $"_bitIndex_{field.MemberName}";
+                if (field.RelationKind == 1 && field.RelatedMemberName != null)
+                {
+                    string typeParamCall = reuseExisting
+                        ? $"((global::BitSerializer.IBitSerializable){memberAccess}).{deserializeMethod}Into(bytes, {offsetExpr}, context, reuseOnly)"
+                        : $"((global::BitSerializer.IBitSerializable){memberAccess}).{deserializeMethod}(bytes, {offsetExpr}, context)";
+                    EmitNestedByteLengthRead(sb, field, helper, memberAccess, fieldEndVar, offsetExpr, deserializeMethod, typeParamCall, emittedWireLocals, reuseExisting);
+                }
+                else
+                {
+                    string call = reuseExisting
+                        ? $"((global::BitSerializer.IBitSerializable){memberAccess}).{deserializeMethod}Into(bytes, {offsetExpr}, context, reuseOnly)"
+                        : $"((global::BitSerializer.IBitSerializable){memberAccess}).{deserializeMethod}(bytes, {offsetExpr}, context)";
+                    sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {call};");
                 }
                 EmitDeserializeConverter(sb, field, memberAccess);
             }
@@ -147,53 +174,90 @@ internal static class DeserializerEmitter
                     // Declaring the local as the interface type boxes value types; after the
                     // call mutates the boxed copy we cast back to unbox the updated value.
                     var localVar = $"_nested_{field.MemberName}";
-                    sb.AppendLine($"        global::BitSerializer.IBitSerializable {localVar} = new {field.MemberTypeFullName}();");
+                    if (reuseExisting)
+                    {
+                        if (field.NestedIsReferenceType && !(field.RelationKind == 1 && field.RelatedMemberName != null))
+                        {
+                            sb.AppendLine($"        if ({memberAccess} == null)");
+                            sb.AppendLine($"            throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", 1);");
+                        }
+                        sb.AppendLine($"        global::BitSerializer.IBitSerializable? {localVar} = (global::BitSerializer.IBitSerializable?){memberAccess};");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"        global::BitSerializer.IBitSerializable {localVar} = new {field.MemberTypeFullName}();");
+                    }
                     string ctxArg = "context";
-                    if (field.NestedHasOwnContext)
+                    bool manualByteLengthWithContext = field.NestedHasOwnContext
+                        && field.RelationKind == 1 && field.RelatedMemberName != null;
+                    if (field.NestedHasOwnContext && !manualByteLengthWithContext)
                     {
                         sb.AppendLine($"        int _nestedBitOff_{field.MemberName} = {offsetExpr};");
-                        sb.AppendLine($"        var _nestedCtx_{field.MemberName} = {localVar}.DeserializeContext();");
+                        sb.AppendLine($"        var _nestedCtx_{field.MemberName} = {localVar}!.DeserializeContext();");
                         sb.AppendLine($"        {localVar}.BeforeDeserialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
                         ctxArg = $"_nestedCtx_{field.MemberName}";
                     }
                     if (field.RelationKind == 1 && field.RelatedMemberName != null)
                     {
                         fieldEndVar = $"_bitIndex_{field.MemberName}";
-                        EmitNestedByteLengthReadInterface(sb, field, fieldEndVar, offsetExpr, methodName, localVar, ctxArg, emittedWireLocals);
+                        EmitNestedByteLengthReadInterface(sb, field, fieldEndVar, offsetExpr, deserializeMethod, localVar, ctxArg, emittedWireLocals, reuseExisting, manualByteLengthWithContext);
                     }
                     else if (usesRuntimeBitLength)
                     {
                         fieldEndVar = $"_bitIndex_{field.MemberName}";
-                        sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {localVar}.{methodName}(bytes, {offsetExpr}, {ctxArg});");
+                        string call = reuseExisting
+                            ? $"{localVar}!.{deserializeMethod}Into(bytes, {offsetExpr}, {ctxArg}, reuseOnly)"
+                            : $"{localVar}!.{deserializeMethod}(bytes, {offsetExpr}, {ctxArg})";
+                        sb.AppendLine($"        int {fieldEndVar} = {offsetExpr} + {call};");
                     }
                     else
                     {
-                        sb.AppendLine($"        {localVar}.{methodName}(bytes, {offsetExpr}, {ctxArg});");
+                        string call = reuseExisting
+                            ? $"{localVar}!.{deserializeMethod}Into(bytes, {offsetExpr}, {ctxArg}, reuseOnly)"
+                            : $"{localVar}!.{deserializeMethod}(bytes, {offsetExpr}, {ctxArg})";
+                        sb.AppendLine($"        {call};");
                     }
-                    if (field.NestedHasOwnContext)
+                    if (field.NestedHasOwnContext && !manualByteLengthWithContext)
                     {
-                        sb.AppendLine($"        {localVar}.AfterDeserialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
+                        sb.AppendLine($"        {localVar}!.AfterDeserialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
                     }
-                    sb.AppendLine($"        {memberAccess} = ({field.MemberTypeFullName}){localVar};");
+                    sb.AppendLine($"        {memberAccess} = ({field.MemberTypeFullName}){localVar}!;");
                 }
                 else
                 {
-                    sb.AppendLine($"        {memberAccess} = new {field.MemberTypeFullName}();");
+                    if (reuseExisting && field.NestedIsReferenceType && !(field.RelationKind == 1 && field.RelatedMemberName != null))
+                    {
+                        sb.AppendLine($"        if ({memberAccess} == null)");
+                        sb.AppendLine("        {");
+                        sb.AppendLine($"            if (reuseOnly) throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", 1);");
+                        sb.AppendLine($"            {memberAccess} = new {field.MemberTypeFullName}();");
+                        sb.AppendLine("        }");
+                    }
+                    else if (!reuseExisting)
+                    {
+                        sb.AppendLine($"        {memberAccess} = new {field.MemberTypeFullName}();");
+                    }
                     string ctxArg = "context";
                     string ibsExpr = $"(global::BitSerializer.IBitSerializable){memberAccess}";
-                    if (field.NestedHasOwnContext)
+                    bool nestedByteLengthWithContext = field.NestedHasOwnContext
+                        && field.RelationKind == 1 && field.RelatedMemberName != null;
+                    if (nestedByteLengthWithContext)
+                        ctxArg = $"_nestedCtx_{field.MemberName}";
+                    if (field.NestedHasOwnContext && !nestedByteLengthWithContext)
                     {
                         sb.AppendLine($"        int _nestedBitOff_{field.MemberName} = {offsetExpr};");
                         sb.AppendLine($"        var _nestedCtx_{field.MemberName} = ({ibsExpr}).DeserializeContext();");
                         sb.AppendLine($"        ({ibsExpr}).BeforeDeserialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
                         ctxArg = $"_nestedCtx_{field.MemberName}";
                     }
-                    string callExpr = $"{memberAccess}.{methodName}(bytes, {offsetExpr}, {ctxArg})";
+                    string callExpr = reuseExisting
+                        ? $"{memberAccess}.{deserializeMethod}Into(bytes, {offsetExpr}, {ctxArg}, reuseOnly)"
+                        : $"{memberAccess}.{deserializeMethod}(bytes, {offsetExpr}, {ctxArg})";
 
                     if (field.RelationKind == 1 && field.RelatedMemberName != null)
                     {
                         fieldEndVar = $"_bitIndex_{field.MemberName}";
-                        EmitNestedByteLengthRead(sb, field, helper, memberAccess, fieldEndVar, offsetExpr, methodName, callExpr, emittedWireLocals);
+                        EmitNestedByteLengthRead(sb, field, helper, memberAccess, fieldEndVar, offsetExpr, deserializeMethod, callExpr, emittedWireLocals, reuseExisting, nestedByteLengthWithContext);
                     }
                     else if (usesRuntimeBitLength)
                     {
@@ -204,7 +268,7 @@ internal static class DeserializerEmitter
                     {
                         sb.AppendLine($"        {callExpr};");
                     }
-                    if (field.NestedHasOwnContext)
+                    if (field.NestedHasOwnContext && !nestedByteLengthWithContext)
                     {
                         sb.AppendLine($"        ({ibsExpr}).AfterDeserialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
                     }
@@ -283,11 +347,19 @@ internal static class DeserializerEmitter
                 sb.AppendLine($"            int _crcStart = (bitOffset / 8) + {crc.IncludeStartByte};");
                 sb.AppendLine($"            int _crcEnd   = (bitOffset / 8) + {crc.IncludeEndByte};");
             }
-            sb.AppendLine($"            var _crcAlgo = new {crc.AlgorithmTypeFullName}();");
-            sb.AppendLine($"            _crcAlgo.Reset({crc.InitialValue}UL);");
-            sb.AppendLine("            _crcAlgo.Update(bytes.Slice(_crcStart, _crcEnd - _crcStart));");
+            if (crc.SupportsStaticCompute)
+            {
+                sb.AppendLine($"            ulong _crcResult = {crc.AlgorithmTypeFullName}.Compute(bytes.Slice(_crcStart, _crcEnd - _crcStart), {crc.InitialValue}UL);");
+            }
+            else
+            {
+                sb.AppendLine($"            var _crcAlgo = new {crc.AlgorithmTypeFullName}();");
+                sb.AppendLine($"            _crcAlgo.Reset({crc.InitialValue}UL);");
+                sb.AppendLine("            _crcAlgo.Update(bytes.Slice(_crcStart, _crcEnd - _crcStart));");
+                sb.AppendLine("            ulong _crcResult = _crcAlgo.Result;");
+            }
             string castType = crcField.IsEnum ? crcField.EnumUnderlyingTypeName! : crcField.MemberTypeName;
-            sb.AppendLine($"            {castType} _crcExpected = ({castType})_crcAlgo.Result;");
+            sb.AppendLine($"            {castType} _crcExpected = ({castType})_crcResult;");
             string actualExpr = crcField.IsEnum
                 ? $"({castType})this.{crcField.MemberName}"
                 : $"this.{crcField.MemberName}";
@@ -302,11 +374,17 @@ internal static class DeserializerEmitter
             int trailingBits = model.TotalBitLength - runtimeStaticEnd;
             if (trailingBits > 0)
                 returnExpr = $"{runtimeOffsetVar} + {trailingBits}";
-            sb.AppendLine($"        return {returnExpr} - bitOffset;");
+            string consumedExpr = $"{returnExpr} - bitOffset";
+            if (terminalPadIfShort)
+                consumedExpr = $"global::System.Math.Min({consumedExpr}, global::System.Math.Max(0, bytes.Length * 8 - bitOffset))";
+            sb.AppendLine($"        return {consumedExpr};");
         }
         else
         {
-            sb.AppendLine($"        return {model.TotalBitLength};");
+            string consumedExpr = model.TotalBitLength.ToString();
+            if (terminalPadIfShort)
+                consumedExpr = $"global::System.Math.Min({consumedExpr}, global::System.Math.Max(0, bytes.Length * 8 - bitOffset))";
+            sb.AppendLine($"        return {consumedExpr};");
         }
 
         sb.AppendLine("    }");
@@ -336,7 +414,7 @@ internal static class DeserializerEmitter
         {
             string name = field.MemberName;
             string expected = $"unchecked(({typeName}){field.ConstantValue}L)";
-            sb.AppendLine($"        {typeName} _fixedVal_{name} = {helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength});");
+            sb.AppendLine($"        {typeName} _fixedVal_{name} = {BuildPrimitiveRead(field, helper, typeName, offsetExpr)};");
             if (field.ConstantValueVerify)
             {
                 sb.AppendLine($"        if (_fixedVal_{name} != {expected})");
@@ -358,20 +436,25 @@ internal static class DeserializerEmitter
         string valueExpr;
         if (field.ValueConverterTypeFullName != null && field.ValueConverterHasDeserialize)
         {
-            var rawValue = $"(object){helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength})";
-            var convertCall = field.ValueConverterDeserializeHasContext
-                ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({rawValue}, context)"
-                : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({rawValue})";
+            var typedRawValue = BuildPrimitiveRead(field, helper, field.ValueConverterWireTypeFullName ?? typeName, offsetExpr);
+            var rawValue = $"(object){BuildPrimitiveRead(field, helper, typeName, offsetExpr)}";
+            var convertCall = field.ValueConverterIsStronglyTyped
+                ? field.ValueConverterIsContextTyped
+                    ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({typedRawValue}, ({field.ValueConverterContextTypeFullName})context!)"
+                    : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({typedRawValue})"
+                : field.ValueConverterDeserializeHasContext
+                    ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({rawValue}, context)"
+                    : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({rawValue})";
             var castType = field.IsEnum ? field.MemberTypeFullName : typeName;
             valueExpr = $"({castType}){convertCall}";
         }
         else if (field.IsEnum)
         {
-            valueExpr = $"({field.MemberTypeFullName}){helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength})";
+            valueExpr = $"({field.MemberTypeFullName}){BuildPrimitiveRead(field, helper, typeName, offsetExpr)}";
         }
         else
         {
-            valueExpr = $"{helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength})";
+            valueExpr = BuildPrimitiveRead(field, helper, typeName, offsetExpr);
         }
 
         if (cacheWire)
@@ -448,7 +531,7 @@ internal static class DeserializerEmitter
         _ => typeName, // already unsigned, or unknown — leave as-is (BITS046/047 prevents arrival)
     };
 
-    private static void EmitListDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string bitOrder, string offsetExpr, HashSet<string>? emittedWireLocals = null)
+    private static void EmitListDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string bitOrder, string offsetExpr, HashSet<string>? emittedWireLocals = null, bool reuseExisting = false)
     {
         int elemBits = field.ListElementBitLength;
         var deserializeMethod = $"Deserialize{bitOrder}";
@@ -466,7 +549,7 @@ internal static class DeserializerEmitter
             && field.RelatedMemberName != null)
         {
             EmitListDeserializeByteLength(sb, field, helper, memberAccess, bitIndexVar, offsetExpr,
-                elemBits, elemTypeFullName!, hasCtx, ctxArg, deserializeMethod, emittedWireLocals);
+                elemBits, elemTypeFullName!, hasCtx, ctxArg, deserializeMethod, emittedWireLocals, reuseExisting);
             return;
         }
 
@@ -476,10 +559,7 @@ internal static class DeserializerEmitter
             sb.AppendLine($"        int _crStart_{field.MemberName} = {offsetExpr};");
             sb.AppendLine($"        int _crRemainBits_{field.MemberName} = bytes.Length * 8 - _crStart_{field.MemberName};");
             sb.AppendLine($"        int _crCount_{field.MemberName} = _crRemainBits_{field.MemberName} > 0 ? _crRemainBits_{field.MemberName} / {elemBits} : 0;");
-            if (field.IsArray)
-                sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[_crCount_{field.MemberName}];");
-            else
-                sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>(_crCount_{field.MemberName});");
+            EmitCollectionPreparation(sb, field, memberAccess, elemTypeFullName!, $"_crCount_{field.MemberName}", reuseExisting);
             sb.AppendLine($"        int {bitIndexVar} = _crStart_{field.MemberName};");
             sb.AppendLine($"        for (int _i = 0; _i < _crCount_{field.MemberName}; _i++)");
             sb.AppendLine("        {");
@@ -489,6 +569,7 @@ internal static class DeserializerEmitter
                 sb.AppendLine($"            {memberAccess}.Add({helper}.ValueLength<{elemTypeFullName}>(bytes, {bitIndexVar}, {elemBits}));");
             sb.AppendLine($"            {bitIndexVar} += {elemBits};");
             sb.AppendLine("        }");
+            EmitCollectionFinalization(sb, field, memberAccess, $"_crCount_{field.MemberName}", reuseExisting);
             return;
         }
 
@@ -499,11 +580,9 @@ internal static class DeserializerEmitter
             sb.AppendLine($"        int _pfsAvailBits_{field.MemberName} = bytes.Length * 8 - ({offsetExpr});");
             sb.AppendLine($"        int _pfsAvailElems_{field.MemberName} = _pfsAvailBits_{field.MemberName} > 0 ? _pfsAvailBits_{field.MemberName} / {elemBits} : 0;");
             sb.AppendLine($"        if (_pfsAvailElems_{field.MemberName} > {field.FixedCount.Value}) _pfsAvailElems_{field.MemberName} = {field.FixedCount.Value};");
-            if (field.IsArray)
-                sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[{field.FixedCount.Value}];");
-            else
+            EmitCollectionPreparation(sb, field, memberAccess, elemTypeFullName!, field.FixedCount.Value.ToString(), reuseExisting);
+            if (!field.IsArray)
             {
-                sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({field.FixedCount.Value});");
                 sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++) {memberAccess}.Add(default({elemTypeFullName}));");
             }
             sb.AppendLine($"        for (int _i = 0; _i < _pfsAvailElems_{field.MemberName}; _i++)");
@@ -514,6 +593,7 @@ internal static class DeserializerEmitter
                 sb.AppendLine($"            {memberAccess}[_i] = {helper}.ValueLength<{elemTypeFullName}>(bytes, {offsetExpr} + _i * {elemBits}, {elemBits});");
             sb.AppendLine("        }");
             sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {field.FixedCount.Value * elemBits};");
+            EmitCollectionFinalization(sb, field, memberAccess, field.FixedCount.Value.ToString(), reuseExisting);
             return;
         }
 
@@ -522,19 +602,20 @@ internal static class DeserializerEmitter
             if (field.FixedCount.HasValue && elemBits > 0)
             {
                 // Fixed-count manual IBitSerializable with declared element width: use fixed stride
-                if (field.IsArray)
-                    sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[{field.FixedCount.Value}];");
-                else
-                    sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({field.FixedCount.Value});");
+                EmitCollectionPreparation(sb, field, memberAccess, elemTypeFullName!, field.FixedCount.Value.ToString(), reuseExisting);
                 sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
                 sb.AppendLine("        {");
-                sb.AppendLine(field.ListElementIsTypeParameter
-                    ? $"            global::BitSerializer.IBitSerializable _elem = ({elemTypeFullName})global::System.Activator.CreateInstance(typeof({elemTypeFullName}))!;"
-                    : $"            global::BitSerializer.IBitSerializable _elem = new {elemTypeFullName}();");
+                EmitManualElementCreation(sb, field, memberAccess, elemTypeFullName!, reuseExisting);
                 if (hasCtx) EmitDeserializeElementContextBefore(sb, "_elem", $"{offsetExpr} + _i * {elemBits}");
-                sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {offsetExpr} + _i * {elemBits}, {ctxArg});");
+                string call = reuseExisting && field.ListElementIsReferenceType
+                    ? $"_elem.{deserializeMethod}Into(bytes, {offsetExpr} + _i * {elemBits}, {ctxArg}, reuseOnly)"
+                    : $"_elem.{deserializeMethod}(bytes, {offsetExpr} + _i * {elemBits}, {ctxArg})";
+                sb.AppendLine($"            {call};");
                 if (hasCtx) EmitDeserializeElementContextAfter(sb, "_elem");
-                if (field.IsArray)
+                if (reuseExisting && field.ListElementIsReferenceType)
+                {
+                }
+                else if (field.IsArray)
                     sb.AppendLine($"            {memberAccess}[_i] = ({elemTypeFullName})_elem;");
                 else
                     sb.AppendLine($"            {memberAccess}.Add(({elemTypeFullName})_elem);");
@@ -548,30 +629,28 @@ internal static class DeserializerEmitter
                 if (field.FixedCount.HasValue)
                 {
                     countExpr = field.FixedCount.Value.ToString();
-                    if (field.IsArray)
-                        sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[{field.FixedCount.Value}];");
-                    else
-                        sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({field.FixedCount.Value});");
+                    EmitCollectionPreparation(sb, field, memberAccess, elemTypeFullName!, field.FixedCount.Value.ToString(), reuseExisting);
                 }
                 else
                 {
                     countExpr = $"_listCount_{field.MemberName}";
                     sb.AppendLine($"        int {countExpr} = (int)({ReadFieldExpr(emittedWireLocals, field.RelatedMemberName!)});");
-                    if (field.IsArray)
-                        sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[{countExpr}];");
-                    else
-                        sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({countExpr});");
+                    EmitCollectionPreparation(sb, field, memberAccess, elemTypeFullName!, countExpr, reuseExisting);
                 }
                 sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
                 sb.AppendLine($"        for (int _i = 0; _i < {countExpr}; _i++)");
                 sb.AppendLine("        {");
-                sb.AppendLine(field.ListElementIsTypeParameter
-                    ? $"            global::BitSerializer.IBitSerializable _elem = ({elemTypeFullName})global::System.Activator.CreateInstance(typeof({elemTypeFullName}))!;"
-                    : $"            global::BitSerializer.IBitSerializable _elem = new {elemTypeFullName}();");
+                EmitManualElementCreation(sb, field, memberAccess, elemTypeFullName!, reuseExisting);
                 if (hasCtx) EmitDeserializeElementContextBefore(sb, "_elem", bitIndexVar);
-                sb.AppendLine($"            {bitIndexVar} += _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+                string call = reuseExisting && field.ListElementIsReferenceType
+                    ? $"_elem.{deserializeMethod}Into(bytes, {bitIndexVar}, {ctxArg}, reuseOnly)"
+                    : $"_elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg})";
+                sb.AppendLine($"            {bitIndexVar} += {call};");
                 if (hasCtx) EmitDeserializeElementContextAfter(sb, "_elem");
-                if (field.IsArray)
+                if (reuseExisting && field.ListElementIsReferenceType)
+                {
+                }
+                else if (field.IsArray)
                     sb.AppendLine($"            {memberAccess}[_i] = ({elemTypeFullName})_elem;");
                 else
                     sb.AppendLine($"            {memberAccess}.Add(({elemTypeFullName})_elem);");
@@ -580,25 +659,24 @@ internal static class DeserializerEmitter
         }
         else if (field.FixedCount.HasValue)
         {
-            if (field.IsArray)
-            {
-                sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[{field.FixedCount.Value}];");
-            }
-            else
-            {
-                sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>({field.FixedCount.Value});");
-            }
+            EmitCollectionPreparation(sb, field, memberAccess, elemTypeFullName!, field.FixedCount.Value.ToString(), reuseExisting);
             if (field.ListElementHasDynamicLength)
             {
                 // Dynamic nested elements: use runtime offset tracking via return value
                 sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
                 sb.AppendLine($"        for (int _i = 0; _i < {field.FixedCount.Value}; _i++)");
                 sb.AppendLine("        {");
-                sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+                EmitNestedElementCreation(sb, field, memberAccess, elemTypeFullName!, reuseExisting);
                 if (hasCtx) EmitDeserializeElementContextBefore(sb, ibsElem, bitIndexVar);
-                sb.AppendLine($"            {bitIndexVar} += _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+                string call = reuseExisting && field.ListElementIsReferenceType
+                    ? $"_elem.{deserializeMethod}Into(bytes, {bitIndexVar}, {ctxArg}, reuseOnly)"
+                    : $"_elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg})";
+                sb.AppendLine($"            {bitIndexVar} += {call};");
                 if (hasCtx) EmitDeserializeElementContextAfter(sb, ibsElem);
-                if (field.IsArray)
+                if (reuseExisting && field.ListElementIsReferenceType)
+                {
+                }
+                else if (field.IsArray)
                     sb.AppendLine($"            {memberAccess}[_i] = _elem;");
                 else
                     sb.AppendLine($"            {memberAccess}.Add(_elem);");
@@ -610,11 +688,17 @@ internal static class DeserializerEmitter
                 sb.AppendLine("        {");
                 if (field.ListElementIsNested)
                 {
-                    sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+                    EmitNestedElementCreation(sb, field, memberAccess, elemTypeFullName!, reuseExisting);
                     if (hasCtx) EmitDeserializeElementContextBefore(sb, ibsElem, $"{offsetExpr} + _i * {elemBits}");
-                    sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {offsetExpr} + _i * {elemBits}, {ctxArg});");
+                    string call = reuseExisting && field.ListElementIsReferenceType
+                        ? $"_elem.{deserializeMethod}Into(bytes, {offsetExpr} + _i * {elemBits}, {ctxArg}, reuseOnly)"
+                        : $"_elem.{deserializeMethod}(bytes, {offsetExpr} + _i * {elemBits}, {ctxArg})";
+                    sb.AppendLine($"            {call};");
                     if (hasCtx) EmitDeserializeElementContextAfter(sb, ibsElem);
-                    if (field.IsArray)
+                    if (reuseExisting && field.ListElementIsReferenceType)
+                    {
+                    }
+                    else if (field.IsArray)
                         sb.AppendLine($"            {memberAccess}[_i] = _elem;");
                     else
                         sb.AppendLine($"            {memberAccess}.Add(_elem);");
@@ -633,35 +717,40 @@ internal static class DeserializerEmitter
         else
         {
             sb.AppendLine($"        int _listCount_{field.MemberName} = (int)({ReadFieldExpr(emittedWireLocals, field.RelatedMemberName!)});");
-            if (field.IsArray)
-            {
-                sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[_listCount_{field.MemberName}];");
-            }
-            else
-            {
-                sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>(_listCount_{field.MemberName});");
-            }
+            EmitCollectionPreparation(sb, field, memberAccess, elemTypeFullName!, $"_listCount_{field.MemberName}", reuseExisting);
             sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
             sb.AppendLine($"        for (int _i = 0; _i < _listCount_{field.MemberName}; _i++)");
             sb.AppendLine("        {");
             if (field.ListElementHasDynamicLength)
             {
-                sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+                EmitNestedElementCreation(sb, field, memberAccess, elemTypeFullName!, reuseExisting);
                 if (hasCtx) EmitDeserializeElementContextBefore(sb, ibsElem, bitIndexVar);
-                sb.AppendLine($"            {bitIndexVar} += _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+                string call = reuseExisting && field.ListElementIsReferenceType
+                    ? $"_elem.{deserializeMethod}Into(bytes, {bitIndexVar}, {ctxArg}, reuseOnly)"
+                    : $"_elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg})";
+                sb.AppendLine($"            {bitIndexVar} += {call};");
                 if (hasCtx) EmitDeserializeElementContextAfter(sb, ibsElem);
-                if (field.IsArray)
+                if (reuseExisting && field.ListElementIsReferenceType)
+                {
+                }
+                else if (field.IsArray)
                     sb.AppendLine($"            {memberAccess}[_i] = _elem;");
                 else
                     sb.AppendLine($"            {memberAccess}.Add(_elem);");
             }
             else if (field.ListElementIsNested)
             {
-                sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+                EmitNestedElementCreation(sb, field, memberAccess, elemTypeFullName!, reuseExisting);
                 if (hasCtx) EmitDeserializeElementContextBefore(sb, ibsElem, bitIndexVar);
-                sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+                string call = reuseExisting && field.ListElementIsReferenceType
+                    ? $"_elem.{deserializeMethod}Into(bytes, {bitIndexVar}, {ctxArg}, reuseOnly)"
+                    : $"_elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg})";
+                sb.AppendLine($"            {call};");
                 if (hasCtx) EmitDeserializeElementContextAfter(sb, ibsElem);
-                if (field.IsArray)
+                if (reuseExisting && field.ListElementIsReferenceType)
+                {
+                }
+                else if (field.IsArray)
                     sb.AppendLine($"            {memberAccess}[_i] = _elem;");
                 else
                     sb.AppendLine($"            {memberAccess}.Add(_elem);");
@@ -677,6 +766,11 @@ internal static class DeserializerEmitter
             }
             sb.AppendLine("        }");
         }
+
+        string finalCountExpr = field.FixedCount.HasValue
+            ? field.FixedCount.Value.ToString()
+            : $"_listCount_{field.MemberName}";
+        EmitCollectionFinalization(sb, field, memberAccess, finalCountExpr, reuseExisting);
     }
 
     /// <summary>
@@ -689,7 +783,7 @@ internal static class DeserializerEmitter
         StringBuilder sb, BitFieldModel field, string helper, string memberAccess,
         string bitIndexVar, string offsetExpr,
         int elemBits, string elemTypeFullName, bool hasCtx, string ctxArg, string deserializeMethod,
-        HashSet<string>? emittedWireLocals = null)
+        HashSet<string>? emittedWireLocals = null, bool reuseExisting = false)
     {
         var name = field.MemberName;
         var ibsElem = $"(global::BitSerializer.IBitSerializable)_elem";
@@ -707,7 +801,7 @@ internal static class DeserializerEmitter
         sb.AppendLine($"        int _budgetBytes_{name} = {budgetExpr};");
         sb.AppendLine($"        if (_budgetBytes_{name} < 0) throw new global::System.IO.InvalidDataException($\"Byte-length budget for '{name}' is negative ({{_budgetBytes_{name}}}).\");");
         sb.AppendLine($"        int _endBit_{name} = {offsetExpr} + _budgetBytes_{name} * 8;");
-        sb.AppendLine($"        if (_endBit_{name} > bytes.Length * 8) throw new global::System.IO.InvalidDataException($\"Byte-length budget for '{name}' ({{_budgetBytes_{name}}} bytes) exceeds the remaining data ({{bytes.Length - ({offsetExpr}) / 8}} bytes).\");");
+        sb.AppendLine($"        if (_endBit_{name} > bytes.Length * 8) throw new global::BitSerializer.BitSerializationNeedMoreDataException($\"Byte-length budget for '{name}' ({{_budgetBytes_{name}}} bytes) exceeds the remaining data ({{bytes.Length - ({offsetExpr}) / 8}} bytes).\");");
         sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
 
         // byte[] / numeric/enum element: fixed element width; budget must divide elemBits.
@@ -715,10 +809,7 @@ internal static class DeserializerEmitter
         {
             sb.AppendLine($"        if ((_budgetBytes_{name} * 8) % {elemBits} != 0) throw new global::System.IO.InvalidDataException($\"Byte-length budget for '{name}' ({{_budgetBytes_{name}}} bytes) is not a multiple of the {elemBits}-bit element size.\");");
             sb.AppendLine($"        int _elemCount_{name} = (_budgetBytes_{name} * 8) / {elemBits};");
-            if (field.IsArray)
-                sb.AppendLine($"        {memberAccess} = new {elemTypeFullName}[_elemCount_{name}];");
-            else
-                sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>(_elemCount_{name});");
+            EmitCollectionPreparation(sb, field, memberAccess, elemTypeFullName, $"_elemCount_{name}", reuseExisting);
             sb.AppendLine($"        for (int _i = 0; _i < _elemCount_{name}; _i++)");
             sb.AppendLine("        {");
             if (field.IsArray)
@@ -727,6 +818,7 @@ internal static class DeserializerEmitter
                 sb.AppendLine($"            {memberAccess}.Add({helper}.ValueLength<{elemTypeFullName}>(bytes, {bitIndexVar}, {elemBits}));");
             sb.AppendLine($"            {bitIndexVar} += {elemBits};");
             sb.AppendLine("        }");
+            EmitCollectionFinalization(sb, field, memberAccess, $"_elemCount_{name}", reuseExisting);
             return;
         }
 
@@ -742,12 +834,32 @@ internal static class DeserializerEmitter
         bool nestedStaticElem = !manualElem && !nestedDynamicElem;
         bool isArray = field.IsArray;
 
-        // Arrays with budget-driven nested elements: collect into a List first, then copy.
+        // Nested arrays have no upfront element count. Compatibility mode keeps the historical
+        // collector; strict mode writes into the caller-provided array and checks each slot.
         string collector = isArray ? $"_buf_{name}" : memberAccess;
-        if (isArray)
+        if (isArray && !reuseExisting)
             sb.AppendLine($"        var {collector} = new global::System.Collections.Generic.List<{elemTypeFullName}>();");
+        else if (isArray)
+        {
+            sb.AppendLine($"        if ({memberAccess} == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", 1);");
+            sb.AppendLine($"        int _arrayIndex_{name} = 0;");
+        }
         else
-            sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>();");
+        {
+            if (!reuseExisting)
+            {
+                sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elemTypeFullName}>();");
+            }
+            else if (field.ListElementIsReferenceType)
+            {
+                sb.AppendLine($"        if ({memberAccess} == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", 1);");
+                sb.AppendLine($"        int _listIndex_{name} = 0;");
+            }
+            else
+            {
+                EmitCollectionPreparation(sb, field, memberAccess, elemTypeFullName, "0", true);
+            }
+        }
 
         sb.AppendLine($"        while ({bitIndexVar} < _endBit_{name})");
         sb.AppendLine("        {");
@@ -756,14 +868,30 @@ internal static class DeserializerEmitter
         {
             // Interface-typed local so struct elements are boxed exactly once; the
             // Deserialize call mutates the box and we unbox back to the concrete type on Add.
-            if (field.ListElementIsTypeParameter)
+            if (reuseExisting && field.ListElementIsReferenceType)
+            {
+                string indexExpr = isArray ? $"_arrayIndex_{name}" : $"_listIndex_{name}";
+                string lengthExpr = isArray ? $"{memberAccess}.Length" : $"{memberAccess}.Count";
+                string sizeReason = isArray ? "has insufficient array length" : "has insufficient list count";
+                sb.AppendLine($"            if ({indexExpr} >= {lengthExpr}) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1, \"{sizeReason}\");");
+                sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = (global::BitSerializer.IBitSerializable){memberAccess}[{indexExpr}];");
+                sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1, $\"contains a null reusable element at index {{{indexExpr}}}\");");
+            }
+            else if (field.ListElementIsTypeParameter)
+            {
                 sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = ({elemTypeFullName})global::System.Activator.CreateInstance(typeof({elemTypeFullName}))!;");
+            }
             else
+            {
                 sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = new {elemTypeFullName}();");
+            }
 
             if (hasCtx) EmitDeserializeElementContextBefore(sb, "_elem", bitIndexVar);
 
-            sb.AppendLine($"            int _consumed_{name} = _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+            string manualCall = reuseExisting && field.ListElementIsReferenceType
+                ? $"_elem.{deserializeMethod}Into(bytes, {bitIndexVar}, {ctxArg}, reuseOnly)"
+                : $"_elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg})";
+            sb.AppendLine($"            int _consumed_{name} = {manualCall};");
             sb.AppendLine($"            if (_consumed_{name} <= 0) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' reported 0 consumed bits; byte-length budget loop cannot advance (element type may be zero-sized or its Deserialize returned a non-positive value).\");");
             sb.AppendLine($"            if ({bitIndexVar} + _consumed_{name} > _endBit_{name}) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' overruns the {{_budgetBytes_{name}}}-byte budget.\");");
             sb.AppendLine($"            {bitIndexVar} += _consumed_{name};");
@@ -771,7 +899,19 @@ internal static class DeserializerEmitter
             if (hasCtx) EmitDeserializeElementContextAfter(sb, "_elem");
 
             // Unbox back to the concrete element type.
-            if (isArray)
+            if (reuseExisting && field.ListElementIsReferenceType)
+            {
+                if (isArray)
+                    sb.AppendLine($"            _arrayIndex_{name}++;");
+                else
+                    sb.AppendLine($"            _listIndex_{name}++;");
+            }
+            else if (isArray && reuseExisting)
+            {
+                sb.AppendLine($"            if (_arrayIndex_{name} >= {memberAccess}.Length) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", _arrayIndex_{name} + 1, \"has insufficient array length\");");
+                sb.AppendLine($"            {memberAccess}[_arrayIndex_{name}++] = ({elemTypeFullName})_elem;");
+            }
+            else if (isArray)
                 sb.AppendLine($"            {collector}.Add(({elemTypeFullName})_elem);");
             else
                 sb.AppendLine($"            {memberAccess}.Add(({elemTypeFullName})_elem);");
@@ -779,13 +919,28 @@ internal static class DeserializerEmitter
         else
         {
             // Generated [BitSerialize] type (always a class) — concrete-typed local, no boxing concern.
-            sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+            if (reuseExisting && field.ListElementIsReferenceType)
+            {
+                string indexExpr = isArray ? $"_arrayIndex_{name}" : $"_listIndex_{name}";
+                string lengthExpr = isArray ? $"{memberAccess}.Length" : $"{memberAccess}.Count";
+                string sizeReason = isArray ? "has insufficient array length" : "has insufficient list count";
+                sb.AppendLine($"            if ({indexExpr} >= {lengthExpr}) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1, \"{sizeReason}\");");
+                sb.AppendLine($"            var _elem = {memberAccess}[{indexExpr}];");
+                sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", {indexExpr} + 1, $\"contains a null reusable element at index {{{indexExpr}}}\");");
+            }
+            else
+            {
+                sb.AppendLine($"            var _elem = new {elemTypeFullName}();");
+            }
 
             if (hasCtx) EmitDeserializeElementContextBefore(sb, ibsElem, bitIndexVar);
 
             if (nestedDynamicElem)
             {
-                sb.AppendLine($"            int _consumed_{name} = _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+                string call = reuseExisting && field.ListElementIsReferenceType
+                    ? $"_elem.{deserializeMethod}Into(bytes, {bitIndexVar}, {ctxArg}, reuseOnly)"
+                    : $"_elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg})";
+                sb.AppendLine($"            int _consumed_{name} = {call};");
                 sb.AppendLine($"            if (_consumed_{name} <= 0) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' reported 0 consumed bits; byte-length budget loop cannot advance.\");");
                 sb.AppendLine($"            if ({bitIndexVar} + _consumed_{name} > _endBit_{name}) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' overruns the {{_budgetBytes_{name}}}-byte budget.\");");
                 sb.AppendLine($"            {bitIndexVar} += _consumed_{name};");
@@ -794,13 +949,28 @@ internal static class DeserializerEmitter
             {
                 // Static-stride nested element — BITS026 has already rejected elemBits <= 0 or non-byte-aligned.
                 sb.AppendLine($"            if ({bitIndexVar} + {elemBits} > _endBit_{name}) throw new global::System.IO.InvalidDataException($\"Element at offset {{{bitIndexVar}}} in '{name}' overruns the {{_budgetBytes_{name}}}-byte budget.\");");
-                sb.AppendLine($"            _elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg});");
+                string call = reuseExisting && field.ListElementIsReferenceType
+                    ? $"_elem.{deserializeMethod}Into(bytes, {bitIndexVar}, {ctxArg}, reuseOnly)"
+                    : $"_elem.{deserializeMethod}(bytes, {bitIndexVar}, {ctxArg})";
+                sb.AppendLine($"            {call};");
                 sb.AppendLine($"            {bitIndexVar} += {elemBits};");
             }
 
             if (hasCtx) EmitDeserializeElementContextAfter(sb, ibsElem);
 
-            if (isArray)
+            if (reuseExisting && field.ListElementIsReferenceType)
+            {
+                if (isArray)
+                    sb.AppendLine($"            _arrayIndex_{name}++;");
+                else
+                    sb.AppendLine($"            _listIndex_{name}++;");
+            }
+            else if (isArray && reuseExisting)
+            {
+                sb.AppendLine($"            if (_arrayIndex_{name} >= {memberAccess}.Length) throw new global::BitSerializer.BitSerializationCapacityException(\"{name}\", _arrayIndex_{name} + 1, \"has insufficient array length\");");
+                sb.AppendLine($"            {memberAccess}[_arrayIndex_{name}++] = _elem;");
+            }
+            else if (isArray)
                 sb.AppendLine($"            {collector}.Add(_elem);");
             else
                 sb.AppendLine($"            {memberAccess}.Add(_elem);");
@@ -810,8 +980,103 @@ internal static class DeserializerEmitter
 
         sb.AppendLine($"        if ({bitIndexVar} != _endBit_{name}) throw new global::System.IO.InvalidDataException($\"Byte-length budget for '{name}' left {{_endBit_{name} - {bitIndexVar}}} bit(s) of unread data.\");");
 
-        if (isArray)
+        if (reuseExisting && (isArray || field.ListElementIsReferenceType))
+        {
+            string countExpr = isArray ? $"_arrayIndex_{name}" : $"_listIndex_{name}";
+            EmitCollectionFinalization(sb, field, memberAccess, countExpr, true);
+        }
+
+        if (isArray && !reuseExisting)
             sb.AppendLine($"        {memberAccess} = {collector}.ToArray();");
+    }
+
+    private static string BuildPrimitiveRead(BitFieldModel field, string helper, string typeName, string offsetExpr)
+    {
+        string requiredEnd = $"({offsetExpr}) + {field.BitLength}";
+        string insufficient = $"{requiredEnd} > bytes.Length * 8";
+        string needMore = $"throw new global::BitSerializer.BitSerializationNeedMoreDataException(\"Field '{field.MemberName}' requires {field.BitLength} bits.\")";
+        if ((field.BitStartIndex & 7) != 0 || (field.BitLength != 8 && field.BitLength != 16 && field.BitLength != 32 && field.BitLength != 64))
+            return $"({insufficient} ? {needMore} : {helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength}))";
+
+        string byteOffset = $"({offsetExpr}) / 8";
+        if (field.BitLength == 8)
+            return $"({insufficient} ? {needMore} : ((({offsetExpr}) & 7) == 0 ? ({typeName})bytes[{byteOffset}] : {helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength})))";
+
+        string endian = helper.Contains("LSB") ? "LittleEndian" : "BigEndian";
+        string methodType = field.BitLength == 16 ? "UInt16" : field.BitLength == 32 ? "UInt32" : "UInt64";
+        return $"({insufficient} ? {needMore} : ((({offsetExpr}) & 7) == 0 ? unchecked(({typeName})global::System.Buffers.Binary.BinaryPrimitives.Read{methodType}{endian}(bytes.Slice({byteOffset}))) : {helper}.ValueLength<{typeName}>(bytes, {offsetExpr}, {field.BitLength})))";
+    }
+
+    private static void EmitCollectionPreparation(StringBuilder sb, BitFieldModel field, string memberAccess, string elementType, string countExpr, bool reuseExisting)
+    {
+        if (!reuseExisting)
+        {
+            if (field.IsArray)
+                sb.AppendLine($"        {memberAccess} = new {elementType}[{countExpr}];");
+            else
+                sb.AppendLine($"        {memberAccess} = new global::System.Collections.Generic.List<{elementType}>({countExpr});");
+            return;
+        }
+
+        if (field.IsArray)
+        {
+            sb.AppendLine($"        if ({memberAccess} == null || {memberAccess}.Length < {countExpr})");
+            sb.AppendLine($"            throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", {countExpr}, \"has insufficient array length\");");
+        }
+        else
+        {
+            string capacityProperty = field.ListElementIsNested && field.ListElementIsReferenceType ? "Count" : "Capacity";
+            sb.AppendLine($"        if ({memberAccess} == null || {memberAccess}.{capacityProperty} < {countExpr})");
+            string reason = capacityProperty == "Count" ? "has insufficient list count" : "has insufficient list capacity";
+            sb.AppendLine($"            throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", {countExpr}, \"{reason}\");");
+            if (!(field.ListElementIsNested && field.ListElementIsReferenceType))
+                sb.AppendLine($"        {memberAccess}.Clear();");
+        }
+    }
+
+    private static void EmitCollectionFinalization(StringBuilder sb, BitFieldModel field, string memberAccess, string countExpr, bool reuseExisting)
+    {
+        if (!reuseExisting)
+            return;
+
+        if (field.IsArray)
+        {
+            sb.AppendLine($"        if ({memberAccess}.Length > {countExpr}) global::System.Array.Clear({memberAccess}, {countExpr}, {memberAccess}.Length - ({countExpr}));");
+        }
+        else if (field.ListElementIsReferenceType)
+        {
+            sb.AppendLine($"        if ({memberAccess}.Count > {countExpr}) {memberAccess}.RemoveRange({countExpr}, {memberAccess}.Count - ({countExpr}));");
+        }
+    }
+
+    private static void EmitNestedElementCreation(StringBuilder sb, BitFieldModel field, string memberAccess, string elementType, bool reuseExisting)
+    {
+        if (reuseExisting && field.ListElementIsReferenceType)
+        {
+            sb.AppendLine($"            var _elem = {memberAccess}[_i];");
+            sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", _i + 1, $\"contains a null reusable element at index {{_i}}\");");
+        }
+        else
+        {
+            sb.AppendLine($"            var _elem = new {elementType}();");
+        }
+    }
+
+    private static void EmitManualElementCreation(StringBuilder sb, BitFieldModel field, string memberAccess, string elementType, bool reuseExisting)
+    {
+        if (reuseExisting && field.ListElementIsReferenceType)
+        {
+            sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = (global::BitSerializer.IBitSerializable){memberAccess}[_i];");
+            sb.AppendLine($"            if (_elem == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", _i + 1, $\"contains a null reusable element at index {{_i}}\");");
+        }
+        else if (field.ListElementIsTypeParameter)
+        {
+            sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = ({elementType})global::System.Activator.CreateInstance(typeof({elementType}))!;");
+        }
+        else
+        {
+            sb.AppendLine($"            global::BitSerializer.IBitSerializable _elem = new {elementType}();");
+        }
     }
 
     private static void EmitDeserializeElementContextBefore(StringBuilder sb, string elemIbsExpr, string elemBitOffsetExpr, string indent = "            ")
@@ -826,7 +1091,7 @@ internal static class DeserializerEmitter
         sb.AppendLine($"{indent}({elemIbsExpr}).AfterDeserialize(_elemCtx, bytes.Slice(_elemBitOff / 8));");
     }
 
-    private static void EmitPolymorphicDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitOrder, string offsetExpr, string? bitIndexVar = null, HashSet<string>? emittedWireLocals = null)
+    private static void EmitPolymorphicDeserialize(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitOrder, string offsetExpr, string? bitIndexVar = null, HashSet<string>? emittedWireLocals = null, bool reuseExisting = false)
     {
         var deserializeMethod = $"Deserialize{bitOrder}";
 
@@ -845,21 +1110,38 @@ internal static class DeserializerEmitter
         {
             sb.AppendLine($"            case {mapping.TypeId}:");
             sb.AppendLine("            {");
-            sb.AppendLine($"                var _poly = new {mapping.ConcreteTypeFullName}();");
-            if (bitIndexVar != null)
+            if (reuseExisting)
             {
-                sb.AppendLine($"                {bitIndexVar} += _poly.{deserializeMethod}(bytes, {offsetExpr}, context);");
+                sb.AppendLine($"                if ({memberAccess} is not {mapping.ConcreteTypeFullName} _poly)");
+                sb.AppendLine("                {");
+                sb.AppendLine($"                    if (reuseOnly) throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", 1);");
+                sb.AppendLine($"                    _poly = new {mapping.ConcreteTypeFullName}();");
+                sb.AppendLine("                }");
             }
             else
             {
-                sb.AppendLine($"                _poly.{deserializeMethod}(bytes, {offsetExpr}, context);");
+                sb.AppendLine($"                var _poly = new {mapping.ConcreteTypeFullName}();");
+            }
+            if (bitIndexVar != null)
+            {
+                string call = reuseExisting
+                    ? $"_poly.{deserializeMethod}Into(bytes, {offsetExpr}, context, reuseOnly)"
+                    : $"_poly.{deserializeMethod}(bytes, {offsetExpr}, context)";
+                sb.AppendLine($"                {bitIndexVar} += {call};");
+            }
+            else
+            {
+                string call = reuseExisting
+                    ? $"_poly.{deserializeMethod}Into(bytes, {offsetExpr}, context, reuseOnly)"
+                    : $"_poly.{deserializeMethod}(bytes, {offsetExpr}, context)";
+                sb.AppendLine($"                {call};");
             }
             sb.AppendLine($"                {memberAccess} = _poly;");
             sb.AppendLine("                break;");
             sb.AppendLine("            }");
         }
         sb.AppendLine("            default:");
-        sb.AppendLine($"                throw new global::System.InvalidOperationException($\"No polymorphic type mapping found for discriminator value '{{(int)({discriminatorExpr})}}'\");");
+        sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"No polymorphic type mapping found for discriminator value '{{(int)({discriminatorExpr})}}'\");");
         sb.AppendLine("        }");
 
         // v0.12.0: when the polymorphic field has a SECONDARY [BitFieldRelated(ByteLength)]
@@ -910,12 +1192,13 @@ internal static class DeserializerEmitter
         var name = field.MemberName;
 
         sb.AppendLine("        {");
-        sb.AppendLine($"            byte[] _strBytes_{name} = new byte[{byteLen}];");
-        sb.AppendLine($"            for (int _si = 0; _si < {byteLen}; _si++)");
-        sb.AppendLine($"                _strBytes_{name}[_si] = {helper}.ValueLength<byte>(bytes, {offsetExpr} + _si * 8, 8);");
+        sb.AppendLine($"            if ((({offsetExpr}) & 7) != 0)");
+        sb.AppendLine($"                throw new global::System.IO.InvalidDataException($\"Fixed string '{name}' requires a byte-aligned absolute bit offset on Deserialize, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary.\");");
+        sb.AppendLine($"            if (({offsetExpr}) + {byteLen * 8} > bytes.Length * 8) throw new global::BitSerializer.BitSerializationNeedMoreDataException(\"Fixed string '{name}' is shorter than its {byteLen}-byte field.\");");
+        sb.AppendLine($"            global::System.ReadOnlySpan<byte> _strBytes_{name} = bytes.Slice(({offsetExpr}) / 8, {byteLen});");
         sb.AppendLine($"            int _strEnd_{name} = {byteLen};");
         sb.AppendLine($"            while (_strEnd_{name} > 0 && _strBytes_{name}[_strEnd_{name} - 1] == {field.FixedStringPadding}) _strEnd_{name}--;");
-        sb.AppendLine($"            {memberAccess} = {encoding}.GetString(_strBytes_{name}, 0, _strEnd_{name});");
+        sb.AppendLine($"            {memberAccess} = global::BitSerializer.BitStringHelper.Decode(_strBytes_{name}.Slice(0, _strEnd_{name}), {GetBitStringEncodingExpression(field.StringEncodingName)});");
         sb.AppendLine("        }");
     }
 
@@ -924,16 +1207,14 @@ internal static class DeserializerEmitter
         var encoding = GetEncodingExpression(field.StringEncodingName);
         var name = field.MemberName;
 
-        sb.AppendLine($"        var _strList_{name} = new global::System.Collections.Generic.List<byte>();");
-        sb.AppendLine($"        byte _b_{name};");
-        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr};");
-        sb.AppendLine($"        while ((_b_{name} = {helper}.ValueLength<byte>(bytes, {bitIndexVar}, 8)) != 0)");
-        sb.AppendLine("        {");
-        sb.AppendLine($"            _strList_{name}.Add(_b_{name});");
-        sb.AppendLine($"            {bitIndexVar} += 8;");
-        sb.AppendLine("        }");
-        sb.AppendLine($"        {bitIndexVar} += 8;");
-        sb.AppendLine($"        {memberAccess} = {encoding}.GetString(_strList_{name}.ToArray());");
+        sb.AppendLine($"        if ((({offsetExpr}) & 7) != 0)");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Terminated string '{name}' requires a byte-aligned absolute bit offset on Deserialize, but got {{({offsetExpr}) & 7}} extra bits past the byte boundary.\");");
+        sb.AppendLine($"        int _strByteOffset_{name} = ({offsetExpr}) / 8;");
+        sb.AppendLine($"        if (_strByteOffset_{name} > bytes.Length) throw new global::BitSerializer.BitSerializationNeedMoreDataException(\"Terminated string '{name}' starts beyond the available data.\");");
+        sb.AppendLine($"        int _strTerminator_{name} = bytes.Slice(_strByteOffset_{name}).IndexOf((byte)0);");
+        sb.AppendLine($"        if (_strTerminator_{name} < 0) throw new global::BitSerializer.BitSerializationNeedMoreDataException(\"Terminated string '{name}' has no terminator.\");");
+        sb.AppendLine($"        {memberAccess} = global::BitSerializer.BitStringHelper.Decode(bytes.Slice(_strByteOffset_{name}, _strTerminator_{name}), {GetBitStringEncodingExpression(field.StringEncodingName)});");
+        sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + (_strTerminator_{name} + 1) * 8;");
     }
 
     /// <summary>
@@ -956,12 +1237,13 @@ internal static class DeserializerEmitter
 
         // Read prefix into a 64-bit local so 32-bit values with high bit set don't go negative,
         // and so the buffer-size arithmetic below doesn't overflow.
+        sb.AppendLine($"        if (({offsetExpr}) + {lengthBits} > bytes.Length * 8) throw new global::BitSerializer.BitSerializationNeedMoreDataException(\"Length-prefix string '{name}' is missing its {lengthBits}-bit prefix.\");");
         sb.AppendLine($"        long _strLenRaw_{name} = (long){helper}.ValueLength<{lenType}>(bytes, {offsetExpr}, {lengthBits});");
         // Compute remaining bytes after the length prefix. (offsetExpr + lengthBits) is bit-aligned
         // for byte-aligned LengthBits ∈ {8,16,32}, but use bit-level arithmetic for safety.
         sb.AppendLine($"        long _strRemBits_{name} = (long)bytes.Length * 8 - ({offsetExpr} + {lengthBits});");
-        sb.AppendLine($"        if (_strLenRaw_{name} < 0 || _strLenRaw_{name} * 8 > _strRemBits_{name})");
-        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' declares {{_strLenRaw_{name}}} bytes, but only {{_strRemBits_{name} / 8}} bytes remain in the buffer after the {lengthBits}-bit length prefix.\");");
+        sb.AppendLine($"        if (_strLenRaw_{name} * 8 > _strRemBits_{name})");
+        sb.AppendLine($"            throw new global::BitSerializer.BitSerializationNeedMoreDataException($\"Length-prefix string '{name}' declares {{_strLenRaw_{name}}} bytes, but only {{System.Math.Max(0, _strRemBits_{name} / 8)}} bytes remain in the buffer after the {lengthBits}-bit length prefix.\");");
         // Review round-9 P1: enforce MaxBytes on deserialize too. Serializer caps the encoded payload
         // at MaxBytes, so any wire value larger than MaxBytes violates the declared field contract —
         // accepting it would force allocations bigger than this model can ever produce. Reject before
@@ -972,10 +1254,7 @@ internal static class DeserializerEmitter
             sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-prefix string '{name}' declares {{_strLenRaw_{name}}} bytes, exceeding the declared MaxBytes = {field.LengthPrefixMaxBytes} cap.\");");
         }
         sb.AppendLine($"        int _strLen_{name} = (int)_strLenRaw_{name};");
-        sb.AppendLine($"        byte[] _strBytes_{name} = new byte[_strLen_{name}];");
-        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _strLen_{name}; _si_{name}++)");
-        sb.AppendLine($"            _strBytes_{name}[_si_{name}] = {helper}.ValueLength<byte>(bytes, {offsetExpr} + {lengthBits} + _si_{name} * 8, 8);");
-        sb.AppendLine($"        {memberAccess} = {encoding}.GetString(_strBytes_{name});");
+        sb.AppendLine($"        {memberAccess} = global::BitSerializer.BitStringHelper.Decode(bytes.Slice((({offsetExpr}) + {lengthBits}) / 8, _strLen_{name}), {GetBitStringEncodingExpression(field.StringEncodingName)});");
         sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + {lengthBits} + _strLen_{name} * 8;");
     }
 
@@ -985,7 +1264,7 @@ internal static class DeserializerEmitter
     /// validates against the remaining buffer, then calls the regular nested deserialize and
     /// verifies the actual bits consumed match the declared byte count exactly.
     /// </summary>
-    private static void EmitNestedByteLengthRead(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr, string methodName, string nestedCallExpr, HashSet<string>? emittedWireLocals = null)
+    private static void EmitNestedByteLengthRead(StringBuilder sb, BitFieldModel field, string helper, string memberAccess, string bitIndexVar, string offsetExpr, string methodName, string nestedCallExpr, HashSet<string>? emittedWireLocals = null, bool reuseExisting = false, bool hasOwnContext = false)
     {
         EmitNestedByteLengthSetup(sb, field, offsetExpr, emittedWireLocals);
         // Codex review round-7 P2 symmetry: serializer's null-guarded path writes 0 bytes. Mirror
@@ -1002,7 +1281,20 @@ internal static class DeserializerEmitter
         if (field.NestedIsReferenceType)
         {
             sb.AppendLine($"        if (_nbudgetBytes_{field.MemberName} == 0) {{ {memberAccess} = null; }}");
-            sb.AppendLine($"        else {{ _ncons_{field.MemberName} = {nestedCallExpr}; }}");
+            sb.AppendLine("        else");
+            sb.AppendLine("        {");
+            if (reuseExisting)
+                sb.AppendLine($"            if ({memberAccess} == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", 1);");
+            if (hasOwnContext)
+            {
+                sb.AppendLine($"            int _nestedBitOff_{field.MemberName} = {offsetExpr};");
+                sb.AppendLine($"            var _nestedCtx_{field.MemberName} = ((global::BitSerializer.IBitSerializable){memberAccess}).DeserializeContext();");
+                sb.AppendLine($"            ((global::BitSerializer.IBitSerializable){memberAccess}).BeforeDeserialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
+            }
+            sb.AppendLine($"            _ncons_{field.MemberName} = {nestedCallExpr};");
+            if (hasOwnContext)
+                sb.AppendLine($"            ((global::BitSerializer.IBitSerializable){memberAccess}).AfterDeserialize(_nestedCtx_{field.MemberName}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
+            sb.AppendLine("        }");
         }
         else
         {
@@ -1012,20 +1304,30 @@ internal static class DeserializerEmitter
     }
 
     /// <summary>Manual IBitSerializable variant of <see cref="EmitNestedByteLengthRead"/>.</summary>
-    private static void EmitNestedByteLengthReadInterface(StringBuilder sb, BitFieldModel field, string bitIndexVar, string offsetExpr, string methodName, string interfaceLocal, string ctxArg, HashSet<string>? emittedWireLocals = null)
+    private static void EmitNestedByteLengthReadInterface(StringBuilder sb, BitFieldModel field, string bitIndexVar, string offsetExpr, string methodName, string interfaceLocal, string ctxArg, HashSet<string>? emittedWireLocals = null, bool reuseExisting = false, bool hasOwnContext = false)
     {
         EmitNestedByteLengthSetup(sb, field, offsetExpr, emittedWireLocals);
-        // Round-7 P2 symmetry: same null + 0-budget short-circuit as the non-interface variant.
-        // `interfaceLocal` was already assigned to a fresh instance by the caller; we leave that
-        // local alone (the property assignment is done by the caller after this returns).
-        //
-        // No NestedIsReferenceType branch needed here: the interface path operates on the locally
-        // boxed `interfaceLocal`, which the caller always assigns regardless of underlying type.
-        // Value-type manual IBitSerializable carriers still get their pre-created default instance
-        // when budget==0; the caller's `memberAccess = (T)interfaceLocal;` unboxes that safely.
+        // Reference carriers may be null only for a zero-byte budget. A positive budget requires
+        // a reusable object before any context hook or deserialize call runs. Value types are boxed.
         sb.AppendLine($"        int _ncons_{field.MemberName} = 0;");
         sb.AppendLine($"        if (_nbudgetBytes_{field.MemberName} > 0)");
-        sb.AppendLine($"            _ncons_{field.MemberName} = {interfaceLocal}.{methodName}(bytes, {offsetExpr}, {ctxArg});");
+        sb.AppendLine("        {");
+        if (reuseExisting && field.NestedIsReferenceType)
+            sb.AppendLine($"            if ({interfaceLocal} == null) throw new global::BitSerializer.BitSerializationCapacityException(\"{field.MemberName}\", 1);");
+        if (hasOwnContext)
+        {
+            ctxArg = $"_nestedCtx_{field.MemberName}";
+            sb.AppendLine($"            int _nestedBitOff_{field.MemberName} = {offsetExpr};");
+            sb.AppendLine($"            var {ctxArg} = {interfaceLocal}!.DeserializeContext();");
+            sb.AppendLine($"            {interfaceLocal}.BeforeDeserialize({ctxArg}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
+        }
+        string call = reuseExisting
+            ? $"{interfaceLocal}!.{methodName}Into(bytes, {offsetExpr}, {ctxArg}, reuseOnly)"
+            : $"{interfaceLocal}!.{methodName}(bytes, {offsetExpr}, {ctxArg})";
+        sb.AppendLine($"            _ncons_{field.MemberName} = {call};");
+        if (hasOwnContext)
+            sb.AppendLine($"            {interfaceLocal}.AfterDeserialize({ctxArg}, bytes.Slice(_nestedBitOff_{field.MemberName} / 8));");
+        sb.AppendLine("        }");
         EmitNestedByteLengthVerify(sb, field, bitIndexVar, offsetExpr);
     }
 
@@ -1043,8 +1345,10 @@ internal static class DeserializerEmitter
             : $"_nwireRaw_{name}";
         sb.AppendLine($"        long _nbudgetBytes_{name} = {bytesExpr};");
         sb.AppendLine($"        long _nbudgetRemBits_{name} = (long)bytes.Length * 8 - ({offsetExpr});");
-        sb.AppendLine($"        if (_nbudgetBytes_{name} < 0 || _nbudgetBytes_{name} * 8 > _nbudgetRemBits_{name})");
-        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Nested '{name}' declares {{_nbudgetBytes_{name}}} bytes (from field '{field.RelatedMemberName}'), but only {{_nbudgetRemBits_{name} / 8}} bytes remain in the buffer.\");");
+        sb.AppendLine($"        if (_nbudgetBytes_{name} < 0)");
+        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Nested '{name}' has a negative byte budget ({{_nbudgetBytes_{name}}}) from field '{field.RelatedMemberName}'.\");");
+        sb.AppendLine($"        if (_nbudgetBytes_{name} > _nbudgetRemBits_{name} / 8)");
+        sb.AppendLine($"            throw new global::BitSerializer.BitSerializationNeedMoreDataException($\"Nested '{name}' declares {{_nbudgetBytes_{name}}} bytes (from field '{field.RelatedMemberName}'), but only {{_nbudgetRemBits_{name} / 8}} bytes remain in the buffer.\");");
     }
 
     private static void EmitNestedByteLengthVerify(StringBuilder sb, BitFieldModel field, string bitIndexVar, string offsetExpr)
@@ -1084,8 +1388,8 @@ internal static class DeserializerEmitter
         string unsignedTwin = UnsignedTwinOf(field.LengthFieldTypeName);
         sb.AppendLine($"        long _lfsLenRaw_{name} = (long)({unsignedTwin})({ReadFieldExpr(emittedWireLocals, field.LengthFieldMemberName!)});");
         sb.AppendLine($"        long _lfsRemBits_{name} = (long)bytes.Length * 8 - ({offsetExpr});");
-        sb.AppendLine($"        if (_lfsLenRaw_{name} < 0 || _lfsLenRaw_{name} * 8 > _lfsRemBits_{name})");
-        sb.AppendLine($"            throw new global::System.IO.InvalidDataException($\"Length-field string '{name}' declares {{_lfsLenRaw_{name}}} bytes (from field '{field.LengthFieldMemberName}'), but only {{_lfsRemBits_{name} / 8}} bytes remain in the buffer.\");");
+        sb.AppendLine($"        if (_lfsLenRaw_{name} * 8 > _lfsRemBits_{name})");
+        sb.AppendLine($"            throw new global::BitSerializer.BitSerializationNeedMoreDataException($\"Length-field string '{name}' declares {{_lfsLenRaw_{name}}} bytes (from field '{field.LengthFieldMemberName}'), but only {{System.Math.Max(0, _lfsRemBits_{name} / 8)}} bytes remain in the buffer.\");");
 
         // Symmetric MaxBytes enforcement: the serializer caps the encoded payload at MaxBytes; any
         // wire value > MaxBytes is a violation, reject before allocating.
@@ -1096,10 +1400,7 @@ internal static class DeserializerEmitter
         }
 
         sb.AppendLine($"        int _lfsLen_{name} = (int)_lfsLenRaw_{name};");
-        sb.AppendLine($"        byte[] _lfsBytes_{name} = new byte[_lfsLen_{name}];");
-        sb.AppendLine($"        for (int _si_{name} = 0; _si_{name} < _lfsLen_{name}; _si_{name}++)");
-        sb.AppendLine($"            _lfsBytes_{name}[_si_{name}] = {helper}.ValueLength<byte>(bytes, {offsetExpr} + _si_{name} * 8, 8);");
-        sb.AppendLine($"        {memberAccess} = {encoding}.GetString(_lfsBytes_{name});");
+        sb.AppendLine($"        {memberAccess} = global::BitSerializer.BitStringHelper.Decode(bytes.Slice(({offsetExpr}) / 8, _lfsLen_{name}), {GetBitStringEncodingExpression(field.StringEncodingName)});");
         sb.AppendLine($"        int {bitIndexVar} = {offsetExpr} + _lfsLen_{name} * 8;");
     }
 
@@ -1110,6 +1411,11 @@ internal static class DeserializerEmitter
             : "global::System.Text.Encoding.ASCII";
     }
 
+    private static string GetBitStringEncodingExpression(string encodingName)
+        => encodingName == "UTF8"
+            ? "global::BitSerializer.BitStringEncoding.UTF8"
+            : "global::BitSerializer.BitStringEncoding.ASCII";
+
     private static void EmitDeserializeConverter(StringBuilder sb, BitFieldModel field, string memberAccess)
     {
         if (field.ValueConverterTypeFullName == null || !field.ValueConverterHasDeserialize) return;
@@ -1117,9 +1423,13 @@ internal static class DeserializerEmitter
         // is applied on the related wire field (not the collection value). Skip the list-value
         // post-convert step in that mode.
         if (field.IsList && field.RelationKind == 1) return;
-        var convertCall = field.ValueConverterDeserializeHasContext
-            ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess}, context)"
-            : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess})";
+        var convertCall = field.ValueConverterIsStronglyTyped
+            ? field.ValueConverterIsContextTyped
+                ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({memberAccess}, ({field.ValueConverterContextTypeFullName})context!)"
+                : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert({memberAccess})"
+            : field.ValueConverterDeserializeHasContext
+                ? $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess}, context)"
+                : $"{field.ValueConverterTypeFullName}.OnDeserializeConvert((object){memberAccess})";
         sb.AppendLine($"        {memberAccess} = ({field.MemberTypeFullName}){convertCall};");
     }
 
@@ -1157,6 +1467,8 @@ internal static class DeserializerEmitter
                || field.IsTerminatedString
                || field.IsLengthPrefixString
                || field.IsLengthFieldString
+               || (field.RelationKind == 1 && field.RelatedMemberName != null
+                   && (field.IsNestedType || field.IsTypeParameter))
                || (field.IsList && !field.FixedCount.HasValue)
                || (field.IsList && field.ListElementIsManualBitSerializable && field.ListElementBitLength == 0)
                || (field.IsList && field.ListElementHasDynamicLength);
