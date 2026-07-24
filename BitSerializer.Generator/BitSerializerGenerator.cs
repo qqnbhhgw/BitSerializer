@@ -176,7 +176,19 @@ public class BitSerializerGenerator : IIncrementalGenerator
 
         foreach (var field in model.Fields)
         {
-            if (field.IsTypeParameter)
+            if ((field.IsNestedType || field.IsTypeParameter)
+                && field.RelationKind == 1
+                && field.NestedIsReferenceType)
+            {
+                bool isStaticNested = !field.IsPotentiallyDynamic
+                                      && !field.IsTypeParameter
+                                      && field.BitLength > 0;
+                string nestedBits = isStaticNested
+                    ? field.BitLength.ToString()
+                    : $"((global::BitSerializer.IBitSerializable)this.{field.MemberName}).GetTotalBitLength()";
+                dynamicParts.Add($"(this.{field.MemberName} == null ? 0 : {nestedBits})");
+            }
+            else if (field.IsTypeParameter)
             {
                 // Type parameter: bit length unknown at compile time, use interface dispatch
                 dynamicParts.Add($"((global::BitSerializer.IBitSerializable)this.{field.MemberName}).GetTotalBitLength()");

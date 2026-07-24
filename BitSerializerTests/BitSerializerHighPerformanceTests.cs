@@ -97,6 +97,23 @@ public partial class BitSerializerHighPerformanceTests
         public string Text { get; set; } = string.Empty;
     }
 
+    public sealed class ShrinkingStringConverter : IBitFieldValueConverter<string, string>
+    {
+        public static string OnSerializeConvert(string value) => "W";
+        public static string OnDeserializeConvert(string value) => value == "W" ? "property" : value;
+    }
+
+    [BitSerialize]
+    public partial class ConvertedLengthFieldStringData
+    {
+        [BitField(8)] public byte Length { get; set; }
+
+        [BitLengthFieldString(nameof(Length), Encoding = BitStringEncoding.ASCII, MaxBytes = 16)]
+        [BitField]
+        [BitFieldRelated(null, typeof(ShrinkingStringConverter))]
+        public string Text { get; set; } = "property";
+    }
+
     [BitSerialize]
     public partial class AsciiStringHotPathData
     {
@@ -112,8 +129,11 @@ public partial class BitSerializerHighPerformanceTests
 
     public sealed class ContextStringConverter : IBitFieldValueConverter<string, string, ConverterContext>
     {
-        public static string OnSerializeConvert(string value, ConverterContext context) => context.Offset == 3 ? value : string.Empty;
-        public static string OnDeserializeConvert(string value, ConverterContext context) => context.Offset == 3 ? value : string.Empty;
+        public static string OnSerializeConvert(string value, ConverterContext context)
+            => context.Offset == 3 ? value.ToUpperInvariant() : string.Empty;
+
+        public static string OnDeserializeConvert(string value, ConverterContext context)
+            => context.Offset == 3 ? value.ToLowerInvariant() : string.Empty;
     }
 
     public sealed class ContextListConverter : IBitFieldValueConverter<List<byte>, List<byte>, ConverterContext>
@@ -404,6 +424,43 @@ public partial class BitSerializerHighPerformanceTests
     }
 
     [Fact]
+    public void TrySerialize_NullByteLengthNestedUsesActualSize()
+    {
+        var value = new ZeroLengthNestedData();
+        var msb = new byte[1];
+        var lsb = new byte[1];
+
+        BitSerializerMSB.GetRequiredByteCount(value).ShouldBe(1);
+        BitSerializerLSB.GetRequiredByteCount(value).ShouldBe(1);
+        BitSerializerMSB.TrySerialize(value, msb, out int msbWritten).ShouldBe(OperationStatus.Done);
+        BitSerializerLSB.TrySerialize(value, lsb, out int lsbWritten).ShouldBe(OperationStatus.Done);
+
+        msbWritten.ShouldBe(1);
+        lsbWritten.ShouldBe(1);
+        msb.ShouldBe(new byte[] { 0 });
+        lsb.ShouldBe(new byte[] { 0 });
+    }
+
+    [Fact]
+    public void LengthFieldStringConverterRunsBeforeBackfill()
+    {
+        var msbValue = new ConvertedLengthFieldStringData();
+        var lsbValue = new ConvertedLengthFieldStringData();
+        var msb = new byte[BitSerializerMSB.GetRequiredByteCount(msbValue)];
+        var lsb = new byte[BitSerializerLSB.GetRequiredByteCount(lsbValue)];
+
+        BitSerializerMSB.TrySerialize(msbValue, msb, out int msbWritten).ShouldBe(OperationStatus.Done);
+        BitSerializerLSB.TrySerialize(lsbValue, lsb, out int lsbWritten).ShouldBe(OperationStatus.Done);
+
+        msbWritten.ShouldBe(2);
+        lsbWritten.ShouldBe(2);
+        msb[..2].ShouldBe(new byte[] { 1, (byte)'W' });
+        lsb[..2].ShouldBe(new byte[] { 1, (byte)'W' });
+        BitSerializerMSB.Deserialize<ConvertedLengthFieldStringData>(msb.AsSpan(0, msbWritten)).Text.ShouldBe("property");
+        BitSerializerLSB.Deserialize<ConvertedLengthFieldStringData>(lsb.AsSpan(0, lsbWritten)).Text.ShouldBe("property");
+    }
+
+    [Fact]
     public void TryDeserializeInto_ReusesNestedObjectAndListStorage()
     {
         var source = CreateHotPathData();
@@ -690,7 +747,7 @@ public partial class BitSerializerHighPerformanceTests
     {
         var source = new ContextTypedNonPrimitiveConverterData();
         byte[] bytes = BitSerializerMSB.Serialize(source);
-        bytes.ShouldBe(new byte[] { (byte)'a', (byte)'b', (byte)'c', (byte)'_', 1, 10 });
+        bytes.ShouldBe(new byte[] { (byte)'A', (byte)'B', (byte)'C', (byte)'_', 1, 10 });
 
         var result = BitSerializerMSB.Deserialize<ContextTypedNonPrimitiveConverterData>(bytes);
         result.Text.ShouldBe("abc");

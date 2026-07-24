@@ -23,9 +23,11 @@ public static class BitSerializerLSB
         target.Clear();
         var ctx = obj.SerializeContext();
         obj.BeforeSerialize(ctx, target);
-        obj.SerializeLSB(target, 0, ctx);
+        int bitsWritten = obj.SerializeLSB(target, 0, ctx);
         obj.AfterSerialize(ctx, target);
-        bytesWritten = requiredBytes;
+        if (bitsWritten < 0 || bitsWritten > (long)target.Length * 8)
+            throw new InvalidOperationException($"Serializer returned {bitsWritten} bits for a {target.Length}-byte destination.");
+        bytesWritten = (bitsWritten + 7) / 8;
         return OperationStatus.Done;
     }
 

@@ -346,13 +346,12 @@ internal static class SerializerEmitter
             }
         }
 
-        // Apply list-level value converters before backfill (converters may change list length).
-        // Skip when RelationKind=ByteLength: in that mode the converter is a length converter
-        // (wireLength <-> collectionByteLength), not a list-value transform.
+        // Apply converters that can change an auto-backfilled length before computing that length.
         foreach (var f in model.Fields)
         {
-            if (f.IsList && f.ValueConverterTypeFullName != null && f.ValueConverterHasSerialize
-                && f.RelationKind != 1)
+            bool convertsListValue = f.IsList && f.RelationKind != 1;
+            if ((convertsListValue || f.IsLengthFieldString)
+                && f.ValueConverterTypeFullName != null && f.ValueConverterHasSerialize)
             {
                 var ma = $"this.{f.MemberName}";
                 var convertCall = BuildSerializeConverterCall(f, ma);
@@ -414,7 +413,6 @@ internal static class SerializerEmitter
             }
             else if (field.IsLengthFieldString)
             {
-                EmitSerializeConverter(sb, field, memberAccess);
                 fieldEndVar = $"_bitIndex_{field.MemberName}";
                 EmitLengthFieldStringSerialize(sb, field, helper, fieldEndVar, offsetExpr);
             }

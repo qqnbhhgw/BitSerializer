@@ -189,6 +189,10 @@ internal class BitFieldModelComparer : IEqualityComparer<BitFieldModel>
             && x.SecondaryValueConverterSerializeHasContext == y.SecondaryValueConverterSerializeHasContext
             && x.SecondaryValueConverterDeserializeHasContext == y.SecondaryValueConverterDeserializeHasContext
             && x.ValueConverterTypeFullName == y.ValueConverterTypeFullName
+            && x.ValueConverterHasSerialize == y.ValueConverterHasSerialize
+            && x.ValueConverterHasDeserialize == y.ValueConverterHasDeserialize
+            && x.ValueConverterSerializeHasContext == y.ValueConverterSerializeHasContext
+            && x.ValueConverterDeserializeHasContext == y.ValueConverterDeserializeHasContext
             && x.ValueConverterIsStronglyTyped == y.ValueConverterIsStronglyTyped
             && x.ValueConverterIsContextTyped == y.ValueConverterIsContextTyped
             && x.ValueConverterWireTypeFullName == y.ValueConverterWireTypeFullName

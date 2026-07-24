@@ -238,6 +238,7 @@ internal static class TypeAnalyzer
                 field.BitLength = byteLen * 8;
                 field.MemberTypeName = "string";
                 field.MemberTypeFullName = "string";
+                PopulateStringValueConverterMetadata(member, memberType, field);
                 currentBitIndex += field.BitLength;
                 model.Fields.Add(field);
                 continue;
@@ -356,6 +357,7 @@ internal static class TypeAnalyzer
                 field.BitLength = 0; // dynamic
                 field.MemberTypeName = "string";
                 field.MemberTypeFullName = "string";
+                PopulateStringValueConverterMetadata(member, memberType, field);
                 model.HasDynamicLength = true;
 
                 // Preserve [BitCrcInclude] so the CRC aggregator sees this field.
@@ -488,6 +490,7 @@ internal static class TypeAnalyzer
                 field.BitLength = 0; // dynamic
                 field.MemberTypeName = "string";
                 field.MemberTypeFullName = "string";
+                PopulateStringValueConverterMetadata(member, memberType, field);
                 model.HasDynamicLength = true;
 
                 // Preserve [BitCrcInclude] so the CRC aggregator sees this field.
@@ -527,6 +530,7 @@ internal static class TypeAnalyzer
                 field.BitLength = 0;
                 field.MemberTypeName = "string";
                 field.MemberTypeFullName = "string";
+                PopulateStringValueConverterMetadata(member, memberType, field);
                 model.HasDynamicLength = true;
 
                 // Preserve [BitCrcInclude] on terminated strings so the CRC aggregator sees them.
@@ -754,45 +758,7 @@ internal static class TypeAnalyzer
             // converters are not supported in the multi-binding mode).
             if (valueConverterFullName != null && primaryConverterSym != null)
             {
-                var serMethods = primaryConverterSym.GetMembers("OnSerializeConvert").OfType<IMethodSymbol>().ToList();
-                var deserMethods = primaryConverterSym.GetMembers("OnDeserializeConvert").OfType<IMethodSymbol>().ToList();
-                field.ValueConverterHasSerialize = serMethods.Count > 0;
-                field.ValueConverterHasDeserialize = deserMethods.Count > 0;
-                field.ValueConverterSerializeHasContext = serMethods.Any(m => m.Parameters.Length == 2);
-                field.ValueConverterDeserializeHasContext = deserMethods.Any(m => m.Parameters.Length == 2);
-                var contextTypedConverter = primaryConverterSym.AllInterfaces.FirstOrDefault(i =>
-                    i.OriginalDefinition.ToDisplayString() == "BitSerializer.IBitFieldValueConverter<TProperty, TWire, TContext>"
-                    && i.TypeArguments.Length == 3
-                    && SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], memberType));
-                var typedConverter = contextTypedConverter ?? primaryConverterSym.AllInterfaces.FirstOrDefault(i =>
-                    i.OriginalDefinition.ToDisplayString() == "BitSerializer.IBitFieldValueConverter<TProperty, TWire>"
-                    && i.TypeArguments.Length == 2
-                    && SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], memberType));
-                if (typedConverter != null)
-                {
-                    var wireType = typedConverter.TypeArguments[1];
-                    int wireBitWidth = GetDefaultBitLength(wireType);
-                    bool isSameTypePostConverter = SymbolEqualityComparer.Default.Equals(wireType, memberType);
-                    // Scalar converters require an integral wire width. String/list/nested post-converters
-                    // transform the already decoded member value, so a same-type wire needs no bit width.
-                    if (wireBitWidth > 0 || isSameTypePostConverter)
-                    {
-                        field.ValueConverterIsStronglyTyped = true;
-                        field.ValueConverterIsContextTyped = contextTypedConverter != null;
-                        field.ValueConverterWireTypeFullName = wireType
-                            .ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                        field.ValueConverterWireBitWidth = wireBitWidth;
-                        if (contextTypedConverter != null)
-                        {
-                            field.ValueConverterContextTypeFullName = contextTypedConverter.TypeArguments[2]
-                                .ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                        }
-                        field.ValueConverterHasSerialize = true;
-                        field.ValueConverterHasDeserialize = true;
-                        field.ValueConverterSerializeHasContext = contextTypedConverter != null;
-                        field.ValueConverterDeserializeHasContext = contextTypedConverter != null;
-                    }
-                }
+                PopulateValueConverterMetadata(field, memberType, primaryConverterSym);
             }
 
             // Check for BitFieldCount
@@ -1597,6 +1563,13 @@ internal static class TypeAnalyzer
                         f.MemberName, symbol.Name)
                 };
             }
+
+            // A nullable reference payload serializes to zero bytes when it is null, even when
+            // its nested type has a compile-time fixed width. Treat that layout as dynamic so
+            // GetTotalBitLength mirrors the serializer's null guard (and parent types propagate
+            // the same runtime-sized contract).
+            if (isNestedCarrier && f.NestedIsReferenceType)
+                model.HasDynamicLength = true;
 
             // BITS025: conflicts with FixedCount or ConsumeRemaining (list-only; nested types don't
             // have FixedCount, but guard anyway to keep the predicate uniform).
@@ -3002,6 +2975,111 @@ internal static class TypeAnalyzer
         };
     }
 
+    private static void PopulateStringValueConverterMetadata(
+        ISymbol member,
+        ITypeSymbol memberType,
+        BitFieldModel field)
+    {
+        foreach (var relatedAttr in GetAttributes(member, "BitSerializer.BitFieldRelatedAttribute"))
+        {
+            INamedTypeSymbol? converterSymbol = null;
+            if (relatedAttr.ConstructorArguments.Length > 1
+                && !relatedAttr.ConstructorArguments[1].IsNull)
+            {
+                converterSymbol = relatedAttr.ConstructorArguments[1].Value as INamedTypeSymbol;
+            }
+
+            if (converterSymbol == null)
+            {
+                foreach (var namedArg in relatedAttr.NamedArguments)
+                {
+                    if (namedArg.Key == "ValueConverterType"
+                        && namedArg.Value.Value is INamedTypeSymbol namedConverter)
+                    {
+                        converterSymbol = namedConverter;
+                        break;
+                    }
+                }
+            }
+
+            if (converterSymbol == null)
+                continue;
+
+            field.ValueConverterTypeFullName = converterSymbol
+                .ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            PopulateValueConverterMetadata(field, memberType, converterSymbol);
+            return;
+        }
+    }
+
+    private static void PopulateValueConverterMetadata(
+        BitFieldModel field,
+        ITypeSymbol memberType,
+        INamedTypeSymbol converterSymbol)
+    {
+        var serializeMethods = converterSymbol.GetMembers("OnSerializeConvert")
+            .OfType<IMethodSymbol>().ToList();
+        var deserializeMethods = converterSymbol.GetMembers("OnDeserializeConvert")
+            .OfType<IMethodSymbol>().ToList();
+        field.ValueConverterHasSerialize = serializeMethods.Count > 0;
+        field.ValueConverterHasDeserialize = deserializeMethods.Count > 0;
+        field.ValueConverterSerializeHasContext = serializeMethods.Any(m => m.Parameters.Length == 2);
+        field.ValueConverterDeserializeHasContext = deserializeMethods.Any(m => m.Parameters.Length == 2);
+
+        var contextTypedConverter = converterSymbol.AllInterfaces.FirstOrDefault(i =>
+            i.OriginalDefinition.ToDisplayString()
+                == "BitSerializer.IBitFieldValueConverter<TProperty, TWire, TContext>"
+            && i.TypeArguments.Length == 3
+            && SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], memberType));
+        var typedConverter = contextTypedConverter ?? converterSymbol.AllInterfaces.FirstOrDefault(i =>
+            i.OriginalDefinition.ToDisplayString()
+                == "BitSerializer.IBitFieldValueConverter<TProperty, TWire>"
+            && i.TypeArguments.Length == 2
+            && SymbolEqualityComparer.Default.Equals(i.TypeArguments[0], memberType));
+        if (typedConverter == null)
+            return;
+
+        var wireType = typedConverter.TypeArguments[1];
+        int wireBitWidth = GetDefaultBitLength(wireType);
+        bool isSameTypePostConverter = SymbolEqualityComparer.Default.Equals(wireType, memberType);
+        // Scalar converters require an integral wire width. String/list/nested post-converters
+        // transform the already decoded member value, so a same-type wire needs no bit width.
+        if (wireBitWidth <= 0 && !isSameTypePostConverter)
+            return;
+
+        field.ValueConverterIsStronglyTyped = true;
+        field.ValueConverterIsContextTyped = contextTypedConverter != null;
+        field.ValueConverterWireTypeFullName = wireType
+            .ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        field.ValueConverterWireBitWidth = wireBitWidth;
+        if (contextTypedConverter != null)
+        {
+            field.ValueConverterContextTypeFullName = contextTypedConverter.TypeArguments[2]
+                .ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        }
+        field.ValueConverterHasSerialize = true;
+        field.ValueConverterHasDeserialize = true;
+        field.ValueConverterSerializeHasContext = contextTypedConverter != null;
+        field.ValueConverterDeserializeHasContext = contextTypedConverter != null;
+    }
+
+    private static bool HasByteLengthRelation(ISymbol member)
+    {
+        foreach (var relatedAttr in GetAttributes(member, "BitSerializer.BitFieldRelatedAttribute"))
+        {
+            foreach (var namedArg in relatedAttr.NamedArguments)
+            {
+                if (namedArg.Key == "RelationKind"
+                    && namedArg.Value.Value is int relationKind
+                    && relationKind == 1)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private static bool HasDynamicLengthRecursive(ITypeSymbol type)
     {
         if (type is not INamedTypeSymbol namedType) return false;
@@ -3035,6 +3113,17 @@ internal static class TypeAnalyzer
 
             var bitFieldAttr = GetAttribute(member, "BitSerializer.BitFieldAttribute");
             if (bitFieldAttr == null) continue;
+
+            // RelationKind=ByteLength makes a reference nested payload optional on the wire:
+            // null consumes zero payload bytes while a non-null value consumes its normal size.
+            // This remains dynamic even when the nested type itself has a fixed layout.
+            if (memberType.IsReferenceType
+                && HasByteLengthRelation(member)
+                && (HasAttribute(memberType, "BitSerializer.BitSerializeAttribute")
+                    || ImplementsBitSerializable(memberType)))
+            {
+                return true;
+            }
 
             if (memberType is ITypeParameterSymbol) return true;
 
