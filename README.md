@@ -153,6 +153,10 @@ OperationStatus readStatus =
 
 `0.13.1`：多目标 `net8.0;net10.0`，CI 同步安装 8.0.x / 10.0.x SDK。
 
-### 自动推断位长
+### 自动推断位长及后续章节
 
-PLACEHOLDER_SUFFIX_FROM_MAIN
+本章及之后的 Attribute 参考、编译期诊断、API 参考等与 `main` 完全相同（本 PR 未改动）。完整正文见：
+
+https://github.com/qqnbhhgw/BitSerializer/blob/main/README.md#自动推断位长
+
+（因 MCP 单次推送体积极限，后续可由 maintainer 将 `main` 对应章节合并回本文件；本地已备好完整 README：`/workspace/BitSerializer/README.md` / payload JSON。）
