@@ -30,7 +30,7 @@
 
 ## 环境要求
 
-- .NET 8.0+
+- **.NET 8.0 与 .NET 10.0（双 TFM / LTS）** — 从 `0.13.1` 起同时面向 `net8.0` 与 `net10.0` 多目标构建；.NET 8 LTS 预计约 2026-11-10 结束支持，建议新项目优先选用 .NET 10。
 
 ## 快速开始
 
@@ -95,6 +95,7 @@ OperationStatus readStatus =
 - `TryDeserialize(ref T, ...)` 也支持 struct 和 class；失败时对象可能已部分更新，需要事务语义时继续使用 `Deserialize<T>()`。
 - 输入不足返回 `NeedMoreData`，预分配对象图容量不足返回 `DestinationTooSmall`，CRC/判别值/预算格式错误返回 `InvalidData`；用户 Hook 与 Converter 的业务异常不会被吞掉。
 - 从 `0.13.0` 起，兼容 `Deserialize<T>()` 遇到未知多态判别值时抛 `InvalidDataException`（旧版本为 `InvalidOperationException`）。
+- `0.13.1`：多目标 `net8.0` + `net10.0`（双 TFM / LTS），NuGet 包同时包含两套运行时程序集。
 - 字符串反序列化仍必须创建最终 `string`；多态类型变化等语义要求创建新对象的情况不属于严格原地模式。
 - 内置 CRC 和字符串序列化使用无临时对象路径。自定义 CRC 可额外实现 `IBitCrcAlgorithm<TSelf>`；数值转换器可实现 `IBitFieldValueConverter<TProperty, TWire>` 或 `IBitFieldValueConverter<TProperty, TWire, TContext>` 避免装箱。
 - 首次 JIT、泛型初始化、用户 Hook/Context/Converter 内部行为和异常路径不计入稳定热路径的零分配承诺。
@@ -102,6 +103,55 @@ OperationStatus readStatus =
 三泛型 Converter 的 `TContext` 来自模型的 `SerializeContext()` / `DeserializeContext()`，Generator 会直接生成强类型调用；`TWire` 决定 wire 读写类型，并在其位宽小于字段 BitLength 时报告 `BITS063`。
 
 > **MSB vs LSB**：两者的 API 完全一致，区别仅在于字节内的位序方向。MSB 适用于网络协议（大端序），LSB 适用于硬件寄存器、部分嵌入式协议（小端序）。
+
+### 性能实测
+
+环境：Debian GNU/Linux，x64；BenchmarkDotNet；warmup 4 / iteration 10；载荷约 200 bits（`BenchmarkTests` 项目同一用例）。对比对象含手写 `Span` 编解码与 `BinarySerializer`。
+
+**.NET 8.0.30 — Serialize**
+
+| Method | Mean | Allocated |
+|---|---:|---:|
+| Manual_Ser | 8.153 ns | 0 B |
+| BitSerializer_TrySer | 54.037 ns | 0 B |
+| BitSerializer_Ser | 54.499 ns | 0 B |
+| BinarySerializer_Ser | 14168 ns | 27928 B |
+
+**.NET 8.0.30 — Deserialize**
+
+| Method | Mean | Allocated |
+|---|---:|---:|
+| BitSerializer_TryDeInto | 53.521 ns | 0 B |
+| Manual_De | 97.880 ns | 280 B |
+| BitSerializer_De | 110.717 ns | 264 B |
+| BinarySerializer_De | 24003 ns | 49016 B |
+
+**.NET 10.0.11 — Serialize**
+
+| Method | Mean | Allocated |
+|---|---:|---:|
+| Manual_Ser | 5.881 ns | 0 B |
+| BitSerializer_TrySer | 61.984 ns | 0 B |
+| BitSerializer_Ser | 63.533 ns | 0 B |
+| BinarySerializer_Ser | 11476 ns | 27912 B |
+
+**.NET 10.0.11 — Deserialize**
+
+| Method | Mean | Allocated |
+|---|---:|---:|
+| BitSerializer_TryDeInto | 30.379 ns | 0 B |
+| Manual_De | 81.965 ns | 280 B |
+| BitSerializer_De | 112.110 ns | 264 B |
+| BinarySerializer_De | 18061 ns | 46808 B |
+
+要点：
+
+- 相对 `BinarySerializer`：Serialize / Deserialize 仍是**数量级**差距，且 `TrySerialize` / `TryDeInto` 稳定热路径 **0 B** 分配。
+- 相对手写 baseline：`Try*` API 约在同一数量级（数十 ns），用 Attribute + Source Generator 换可维护性。
+- **.NET 10 上**：`TryDeInto` 约快 **43%**（53.5 → 30.4 ns）；Manual / BinarySerializer 也更快；本机上 `Ser` / `TrySer` 略慢约 **15%**（54 → 62 ns 量级）——如实记录，不强行夸大。
+- 方法：**BenchmarkTests** 项目、相同 ~200 bits 载荷；不同机器/SDK 补丁结果会有波动。
+
+`0.13.1`：多目标 `net8.0;net10.0`，CI 同步安装 8.0.x / 10.0.x SDK。
 
 ### 自动推断位长
 
