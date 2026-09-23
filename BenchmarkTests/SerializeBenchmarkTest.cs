@@ -170,7 +170,11 @@ public static class BenchmarkDataSerializer
     }
 }
 
+#if NET10_0
+[SimpleJob(RuntimeMoniker.Net10_0, warmupCount: 4, iterationCount: 10)]
+#else
 [SimpleJob(RuntimeMoniker.Net80, warmupCount: 4, iterationCount: 10)]
+#endif
 [MemoryDiagnoser]
 [RankColumn]
 [GroupBenchmarksBy(BenchmarkDotNet.Configs.BenchmarkLogicalGroupRule.ByCategory)]
@@ -358,7 +362,11 @@ public partial class HighPerformanceByteLengthData
     };
 }
 
+#if NET10_0
+[SimpleJob(RuntimeMoniker.Net10_0, warmupCount: 4, iterationCount: 10)]
+#else
 [SimpleJob(RuntimeMoniker.Net80, warmupCount: 4, iterationCount: 10)]
+#endif
 [MemoryDiagnoser]
 public class AllocationBenchmark
 {
